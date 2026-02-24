@@ -162,6 +162,7 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
         "freq_mhz": metric("freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"),
         "freq_requested_mhz": metric("freq_requested_mhz", "Intel GPU Frequency Requested", freq_requested, "MHz"),
+        "interrupts_per_s": metric("interrupts_per_s", "Intel GPU Interrupts", safe_float(dig(raw, ["interrupts", "count"])), "irq/s"),
         "power_gpu_w": metric("power_gpu_w", "Intel GPU Power", p_gpu, "W"),
         "power_pkg_w": metric("power_pkg_w", "Intel Package Power", p_pkg, "W"),
 
