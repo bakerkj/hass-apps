@@ -304,14 +304,13 @@ def publish_discovery(
             "device": device,
         }
 
-# Suggested display precision in Home Assistant UI (does not affect MQTT state payload).
-if m["unit"] == "W":
-    payload["suggested_display_precision"] = 1
-elif m["unit"] == "%":
-    payload["suggested_display_precision"] = 1
-elif m["unit"] == "MHz":
-    payload["suggested_display_precision"] = 0
-
+        # Suggested display precision in Home Assistant UI
+        if m["unit"] == "W":
+            payload["suggested_display_precision"] = 1
+        elif m["unit"] == "%":
+            payload["suggested_display_precision"] = 1
+        elif m["unit"] == "MHz":
+            payload["suggested_display_precision"] = 0
 
         if m["unit"] == "W":
             payload["device_class"] = "power"
