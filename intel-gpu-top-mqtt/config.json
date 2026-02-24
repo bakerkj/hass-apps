@@ -2,7 +2,7 @@
   "name": "Intel GPU Top MQTT (Discovery)",
   "slug": "intel_gpu_top_mqtt",
   "description": "Runs intel_gpu_top and publishes Intel GPU metrics to MQTT (separate topics per sensor) with Home Assistant discovery + attributes.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "arch": [
     "amd64"
   ],
@@ -13,7 +13,10 @@
   "homeassistant_api": true,
   "host_network": false,
   "ingress": false,
-  "protection_mode": false,
+  "full_access": true,
+  "privileged": [
+    "PERFMON"
+  ],
   "devices": [
     "/dev/dri:/dev/dri:rwm"
   ],
