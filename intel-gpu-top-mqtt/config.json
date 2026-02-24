@@ -1,0 +1,56 @@
+{
+  "name": "Intel GPU Top MQTT (Discovery)",
+  "slug": "intel_gpu_top_mqtt",
+  "description": "Runs intel_gpu_top and publishes Intel GPU metrics to MQTT (separate topics per sensor) with Home Assistant discovery + attributes.",
+  "version": "0.3.0",
+  "arch": [
+    "amd64"
+  ],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "hassio_api": true,
+  "homeassistant_api": true,
+  "host_network": false,
+  "ingress": false,
+  "protection_mode": false,
+  "devices": [
+    "/dev/dri:/dev/dri:rwm"
+  ],
+  "options": {
+    "interval_seconds": 5,
+    "mqtt_host": "core-mosquitto",
+    "mqtt_port": 1883,
+    "mqtt_username": "frigate-write",
+    "mqtt_password": "changeme",
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "intel_gpu",
+    "client_id": "intel-gpu-top-app",
+    "preferred_device_regex": "",
+    "log_level": "INFO",
+    "publish_raw_sample": true,
+
+    "heartbeat_interval_seconds": 10,
+    "sample_timeout_seconds": 25,
+    "mqtt_disconnect_timeout_seconds": 60,
+    "intel_restart_grace_seconds": 10
+  },
+  "schema": {
+    "interval_seconds": "int(1,60)",
+    "mqtt_host": "str",
+    "mqtt_port": "port",
+    "mqtt_username": "str",
+    "mqtt_password": "password",
+    "mqtt_discovery_prefix": "str",
+    "mqtt_base_topic": "str",
+    "client_id": "str",
+    "preferred_device_regex": "str",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "publish_raw_sample": "bool",
+
+    "heartbeat_interval_seconds": "int(1,60)",
+    "sample_timeout_seconds": "int(5,300)",
+    "mqtt_disconnect_timeout_seconds": "int(5,600)",
+    "intel_restart_grace_seconds": "int(1,60)"
+  }
+}
