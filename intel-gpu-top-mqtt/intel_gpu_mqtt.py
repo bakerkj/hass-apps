@@ -304,6 +304,15 @@ def publish_discovery(
             "device": device,
         }
 
+# Suggested display precision in Home Assistant UI (does not affect MQTT state payload).
+if m["unit"] == "W":
+    payload["suggested_display_precision"] = 1
+elif m["unit"] == "%":
+    payload["suggested_display_precision"] = 1
+elif m["unit"] == "MHz":
+    payload["suggested_display_precision"] = 0
+
+
         if m["unit"] == "W":
             payload["device_class"] = "power"
             payload["icon"] = "mdi:flash-outline"
@@ -576,7 +585,8 @@ def main() -> int:
                         continue
 
                     state_topic = f"{base_topic}/{key}/state"
-                    payload = f"{val:.3f}".rstrip("0").rstrip(".")
+                    # Publish full-precision numeric value; HA can format display using suggested_display_precision.
+                    payload = repr(float(val))
                     sinfo = client.publish(state_topic, payload, qos=0, retain=False)
                     log.debug("MQTT state %s=%s mid=%s rc=%s", state_topic, payload, sinfo.mid, sinfo.rc)
 
