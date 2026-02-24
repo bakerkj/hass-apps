@@ -65,12 +65,12 @@ def dig(d: Dict[str, Any], path: list[str]) -> Any:
     return cur
 
 
-def find_engine_busy(raw: Dict[str, Any], engine_name: str) -> Optional[float]:
+def find_engine_field(raw: Dict[str, Any], engine_name: str, field: str) -> Optional[float]:
     engines = raw.get("engines")
     if isinstance(engines, dict):
         for k, v in engines.items():
             if k.lower() == engine_name.lower() and isinstance(v, dict):
-                return safe_float(v.get("busy"))
+                return safe_float(v.get(field))
     return None
 
 
@@ -139,52 +139,121 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             attrs.update(extra_attrs)
         return {"key": key, "name": name, "value": value, "unit": unit, "attrs": attrs}
 
-    gpu_busy = safe_float(dig(raw, ["gpu", "busy"])) or safe_float(raw.get("busy"))
-    rc6 = safe_float(dig(raw, ["rc6", "value"])) or safe_float(raw.get("rc6"))
-    freq = safe_float(dig(raw, ["frequency", "actual"]))
-    p_gpu = safe_float(dig(raw, ["power", "gpu"]))
-    p_pkg = safe_float(dig(raw, ["power", "pkg"]))
+# Note: intel_gpu_top JSON schema varies a bit by version.
+# For your system, power keys are capitalized: power.GPU and power.Package.
+rc6 = safe_float(dig(raw, ["rc6", "value"])) or safe_float(raw.get("rc6"))
+freq = safe_float(dig(raw, ["frequency", "actual"]))
 
-    metrics = {
-        "gpu_busy_percent": metric("gpu_busy_percent", "Intel GPU Busy", gpu_busy, "%"),
-        "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
-        "freq_mhz": metric("freq_mhz", "Intel GPU Frequency", freq, "MHz"),
-        "power_gpu_w": metric("power_gpu_w", "Intel GPU Power", p_gpu, "W"),
-        "power_pkg_w": metric("power_pkg_w", "Intel Package Power", p_pkg, "W"),
-        "engine_render_3d_busy_percent": metric(
-            "engine_render_3d_busy_percent",
-            "Intel GPU Engine Render/3D Busy",
-            find_engine_busy(raw, "Render/3D"),
-            "%",
-            {"engine": "Render/3D"},
-        ),
-        "engine_video_busy_percent": metric(
-            "engine_video_busy_percent",
-            "Intel GPU Engine Video Busy",
-            find_engine_busy(raw, "Video"),
-            "%",
-            {"engine": "Video"},
-        ),
-        "engine_videoenhance_busy_percent": metric(
-            "engine_videoenhance_busy_percent",
-            "Intel GPU Engine VideoEnhance Busy",
-            find_engine_busy(raw, "VideoEnhance"),
-            "%",
-            {"engine": "VideoEnhance"},
-        ),
-        "engine_blitter_busy_percent": metric(
-            "engine_blitter_busy_percent",
-            "Intel GPU Engine Blitter Busy",
-            find_engine_busy(raw, "Blitter"),
-            "%",
-            {"engine": "Blitter"},
-        ),
-    }
+p_gpu = (
+    safe_float(dig(raw, ["power", "GPU"]))
+    or safe_float(dig(raw, ["power", "gpu"]))
+)
+p_pkg = (
+    safe_float(dig(raw, ["power", "Package"]))
+    or safe_float(dig(raw, ["power", "pkg"]))
+    or safe_float(dig(raw, ["power", "package"]))
+)
 
-    if isinstance(raw.get("engines"), dict):
-        metrics["gpu_busy_percent"]["attrs"]["engines_present"] = list(raw["engines"].keys())
+metrics = {
+    "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
+    "freq_mhz": metric("freq_mhz", "Intel GPU Frequency", freq, "MHz"),
+    "power_gpu_w": metric("power_gpu_w", "Intel GPU Power", p_gpu, "W"),
+    "power_pkg_w": metric("power_pkg_w", "Intel Package Power", p_pkg, "W"),
 
-    return metrics
+    # Render/3D
+    "engine_render_3d_busy_percent": metric(
+        "engine_render_3d_busy_percent",
+        "Intel GPU Engine Render/3D Busy",
+        find_engine_field(raw, "Render/3D", "busy"),
+        "%",
+        {"engine": "Render/3D", "field": "busy"},
+    ),
+    "engine_render_3d_semaphore_percent": metric(
+        "engine_render_3d_semaphore_percent",
+        "Intel GPU Engine Render/3D Semaphore Wait",
+        find_engine_field(raw, "Render/3D", "sema"),
+        "%",
+        {"engine": "Render/3D", "field": "semaphore_wait"},
+    ),
+    "engine_render_3d_wait_percent": metric(
+        "engine_render_3d_wait_percent",
+        "Intel GPU Engine Render/3D Wait",
+        find_engine_field(raw, "Render/3D", "wait"),
+        "%",
+        {"engine": "Render/3D", "field": "wait"},
+    ),
+
+    # Video
+    "engine_video_busy_percent": metric(
+        "engine_video_busy_percent",
+        "Intel GPU Engine Video Busy",
+        find_engine_field(raw, "Video", "busy"),
+        "%",
+        {"engine": "Video", "field": "busy"},
+    ),
+    "engine_video_semaphore_percent": metric(
+        "engine_video_semaphore_percent",
+        "Intel GPU Engine Video Semaphore Wait",
+        find_engine_field(raw, "Video", "sema"),
+        "%",
+        {"engine": "Video", "field": "semaphore_wait"},
+    ),
+    "engine_video_wait_percent": metric(
+        "engine_video_wait_percent",
+        "Intel GPU Engine Video Wait",
+        find_engine_field(raw, "Video", "wait"),
+        "%",
+        {"engine": "Video", "field": "wait"},
+    ),
+
+    # VideoEnhance
+    "engine_videoenhance_busy_percent": metric(
+        "engine_videoenhance_busy_percent",
+        "Intel GPU Engine VideoEnhance Busy",
+        find_engine_field(raw, "VideoEnhance", "busy"),
+        "%",
+        {"engine": "VideoEnhance", "field": "busy"},
+    ),
+    "engine_videoenhance_semaphore_percent": metric(
+        "engine_videoenhance_semaphore_percent",
+        "Intel GPU Engine VideoEnhance Semaphore Wait",
+        find_engine_field(raw, "VideoEnhance", "sema"),
+        "%",
+        {"engine": "VideoEnhance", "field": "semaphore_wait"},
+    ),
+    "engine_videoenhance_wait_percent": metric(
+        "engine_videoenhance_wait_percent",
+        "Intel GPU Engine VideoEnhance Wait",
+        find_engine_field(raw, "VideoEnhance", "wait"),
+        "%",
+        {"engine": "VideoEnhance", "field": "wait"},
+    ),
+
+    # Blitter
+    "engine_blitter_busy_percent": metric(
+        "engine_blitter_busy_percent",
+        "Intel GPU Engine Blitter Busy",
+        find_engine_field(raw, "Blitter", "busy"),
+        "%",
+        {"engine": "Blitter", "field": "busy"},
+    ),
+    "engine_blitter_semaphore_percent": metric(
+        "engine_blitter_semaphore_percent",
+        "Intel GPU Engine Blitter Semaphore Wait",
+        find_engine_field(raw, "Blitter", "sema"),
+        "%",
+        {"engine": "Blitter", "field": "semaphore_wait"},
+    ),
+    "engine_blitter_wait_percent": metric(
+        "engine_blitter_wait_percent",
+        "Intel GPU Engine Blitter Wait",
+        find_engine_field(raw, "Blitter", "wait"),
+        "%",
+        {"engine": "Blitter", "field": "wait"},
+    ),
+}
+
+return metrics
 
 
 def publish_discovery(
@@ -224,6 +293,26 @@ def publish_discovery(
 
         if m["unit"] == "W":
             payload["device_class"] = "power"
+
+# Icon per engine type (MQTT Discovery supports "icon": "mdi:...")
+engine = m.get("attrs", {}).get("engine")
+engine_icons = {
+    "Render/3D": "mdi:cube-outline",
+    "Video": "mdi:video-outline",
+    "VideoEnhance": "mdi:video-plus-outline",
+    "Blitter": "mdi:image-move",
+}
+
+if engine in engine_icons:
+    payload["icon"] = engine_icons[engine]
+else:
+    # Optional icons for non-engine sensors
+    if key.startswith("power_"):
+        payload["icon"] = "mdi:flash-outline"
+    elif key.startswith("freq_"):
+        payload["icon"] = "mdi:speedometer"
+    elif key.startswith("rc6_"):
+        payload["icon"] = "mdi:sleep"
 
         config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
         info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
