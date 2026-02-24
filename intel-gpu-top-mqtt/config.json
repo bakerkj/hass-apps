@@ -27,7 +27,7 @@
     "mqtt_username": "frigate-write",
     "mqtt_password": "changeme",
     "mqtt_discovery_prefix": "homeassistant",
-    "mqtt_base_topic": "intel_gpu",
+    "mqtt_base_topic": "intel_gpu_top",
     "client_id": "intel-gpu-top-app",
     "preferred_device_regex": "",
     "log_level": "INFO",

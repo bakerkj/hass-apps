@@ -370,7 +370,7 @@ def main() -> int:
     ap.add_argument("--mqtt-username", default="")
     ap.add_argument("--mqtt-password", default="")
     ap.add_argument("--mqtt-discovery-prefix", default="homeassistant")
-    ap.add_argument("--mqtt-base-topic", default="intel_gpu")
+    ap.add_argument("--mqtt-base-topic", default="intel_gpu_top")
     ap.add_argument("--client-id", default="intel-gpu-top-addon")
     ap.add_argument("--preferred-device-regex", default="")
     ap.add_argument("--log-level", default="INFO")
