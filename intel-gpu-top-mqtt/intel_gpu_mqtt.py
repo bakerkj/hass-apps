@@ -148,7 +148,8 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     # Note: intel_gpu_top JSON schema varies a bit by version.
     # On your system, power keys are capitalized: power.GPU and power.Package.
     rc6 = safe_float(dig(raw, ["rc6", "value"])) or safe_float(raw.get("rc6"))
-    freq = safe_float(dig(raw, ["frequency", "actual"]))
+    freq_actual = safe_float(dig(raw, ["frequency", "actual"]))
+    freq_requested = safe_float(dig(raw, ["frequency", "requested"]))
 
     p_gpu = safe_float(dig(raw, ["power", "GPU"])) or safe_float(dig(raw, ["power", "gpu"]))
     p_pkg = (
@@ -159,7 +160,8 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
     metrics: Dict[str, Dict[str, Any]] = {
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
-        "freq_mhz": metric("freq_mhz", "Intel GPU Frequency", freq, "MHz"),
+        "freq_mhz": metric("freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"),
+        "freq_requested_mhz": metric("freq_requested_mhz", "Intel GPU Frequency Requested", freq_requested, "MHz"),
         "power_gpu_w": metric("power_gpu_w", "Intel GPU Power", p_gpu, "W"),
         "power_pkg_w": metric("power_pkg_w", "Intel Package Power", p_pkg, "W"),
 
