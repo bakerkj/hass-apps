@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -76,30 +77,31 @@ def find_engine_busy(raw: Dict[str, Any], engine_name: str) -> Optional[float]:
 def list_intel_gpu_top_devices(log: logging.Logger) -> str:
     """Return stdout of `intel_gpu_top -L` (or empty string)."""
     try:
-        out = subprocess.check_output(["intel_gpu_top", "-L"], text=True, stderr=subprocess.STDOUT, timeout=5)
+        out = subprocess.check_output(
+            ["intel_gpu_top", "-L"], text=True, stderr=subprocess.STDOUT, timeout=5
+        )
         return out
     except Exception as e:
         log.warning("Failed to list devices with intel_gpu_top -L: %s", e)
         return ""
 
 
-def auto_select_device_arg(device_listing: str, preferred_regex: str, log: logging.Logger) -> Optional[str]:
+def auto_select_device_arg(device_listing: str, preferred_regex: str, log: logging.Logger) -> tuple[Optional[str], Optional[str]]:
     """Pick a -d argument for intel_gpu_top based on `intel_gpu_top -L` output.
 
-    Strategy:
-      1) If preferred_regex provided, choose first line matching it that also contains /dev/dri/renderD*
-      2) Else choose first /dev/dri/renderD* found.
-    Returns something like: 'drm:/dev/dri/renderD128' or None.
+    Returns:
+      (device_arg, render_node_path)
+      e.g. ("drm:/dev/dri/renderD128", "/dev/dri/renderD128")
     """
     lines = [ln.strip() for ln in device_listing.splitlines() if ln.strip()]
-    render_candidates = []
+    render_candidates: list[tuple[str, str]] = []
     for ln in lines:
         m = re.search(r"(/dev/dri/renderD\d+)", ln)
         if m:
             render_candidates.append((ln, m.group(1)))
 
     if not render_candidates:
-        return None
+        return None, None
 
     if preferred_regex:
         try:
@@ -107,13 +109,13 @@ def auto_select_device_arg(device_listing: str, preferred_regex: str, log: loggi
             for ln, path in render_candidates:
                 if rx.search(ln) or rx.search(path):
                     log.info("Auto-selected device by regex '%s': %s", preferred_regex, ln)
-                    return f"drm:{path}"
+                    return f"drm:{path}", path
         except re.error as e:
             log.warning("Invalid preferred_device_regex '%s': %s", preferred_regex, e)
 
     ln, path = render_candidates[0]
     log.info("Auto-selected first available device: %s", ln)
-    return f"drm:{path}"
+    return f"drm:{path}", path
 
 
 def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -123,13 +125,9 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
        - attrs (dict)
        - name (human name)
     """
-    # base attributes that apply to all sensors
     ts = time.time()
-    common_attrs = {
-        "ts": ts,
-    }
+    common_attrs: Dict[str, Any] = {"ts": ts}
 
-    # Some versions include a 'name'/'device' field; keep a subset as attributes
     for k in ["pci_id", "device", "driver", "card", "gt", "timestamp"]:
         v = raw.get(k)
         if v is not None and isinstance(v, (str, int, float)):
@@ -139,13 +137,7 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         attrs = dict(common_attrs)
         if extra_attrs:
             attrs.update(extra_attrs)
-        return {
-            "key": key,
-            "name": name,
-            "value": value,
-            "unit": unit,
-            "attrs": attrs,
-        }
+        return {"key": key, "name": name, "value": value, "unit": unit, "attrs": attrs}
 
     gpu_busy = safe_float(dig(raw, ["gpu", "busy"])) or safe_float(raw.get("busy"))
     rc6 = safe_float(dig(raw, ["rc6", "value"])) or safe_float(raw.get("rc6"))
@@ -189,8 +181,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         ),
     }
 
-    # Add a few additional raw fields as attributes if present
-    # Keep it small and useful.
     if isinstance(raw.get("engines"), dict):
         metrics["gpu_busy_percent"]["attrs"]["engines_present"] = list(raw["engines"].keys())
 
@@ -204,6 +194,7 @@ def publish_discovery(
     device_id: str,
     device_name: str,
     metrics: Dict[str, Dict[str, Any]],
+    log: logging.Logger,
 ) -> None:
     device = {
         "identifiers": [device_id],
@@ -215,11 +206,10 @@ def publish_discovery(
     availability_topic = f"{base_topic}/availability"
 
     for key, m in metrics.items():
-        # Only publish discovery for metrics we can actually produce (even if value None sometimes)
         state_topic = f"{base_topic}/{key}/state"
         attr_topic = f"{base_topic}/{key}/attributes"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "name": m["name"],
             "unique_id": f"{device_id}_{key}",
             "object_id": f"intel_gpu_{key}",
@@ -232,12 +222,43 @@ def publish_discovery(
             "device": device,
         }
 
-        # Provide some hints for HA where applicable
         if m["unit"] == "W":
             payload["device_class"] = "power"
 
         config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
-        client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+        info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+        log.debug("MQTT discovery publish %s mid=%s rc=%s", config_topic, info.mid, info.rc)
+
+
+class MqttHealth:
+    def __init__(self) -> None:
+        self.connected: bool = False
+        self.last_connect_ok: float = 0.0
+        self.last_disconnect: float = 0.0
+
+
+def start_intel_gpu_top(
+    interval_ms: int,
+    dev_arg: Optional[str],
+    log: logging.Logger,
+) -> subprocess.Popen:
+    cmd = ["intel_gpu_top", "-J", "-s", str(interval_ms), "-o", "-"]
+    if dev_arg:
+        cmd += ["-d", dev_arg]
+    log.info("Starting: %s", " ".join(cmd))
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # line-buffered in text mode
+        )
+    except FileNotFoundError:
+        log.error("intel_gpu_top not found in container; check package install.")
+        raise
+    log.info("intel_gpu_top process started pid=%s", proc.pid)
+    return proc
 
 
 def main() -> int:
@@ -252,7 +273,14 @@ def main() -> int:
     ap.add_argument("--client-id", default="intel-gpu-top-addon")
     ap.add_argument("--preferred-device-regex", default="")
     ap.add_argument("--log-level", default="INFO")
-    ap.add_argument("--publish-raw-sample", type=lambda s: str(s).lower() in ["1","true","yes","y","on"], default=True)
+    ap.add_argument("--publish-raw-sample", type=lambda s: str(s).lower() in ["1", "true", "yes", "y", "on"], default=True)
+
+    # New health/heartbeat knobs (defaults are sane; you can wire them into add-on options later if desired)
+    ap.add_argument("--heartbeat-interval-seconds", type=int, default=10)
+    ap.add_argument("--sample-timeout-seconds", type=int, default=20)
+    ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=60)
+    ap.add_argument("--intel-restart-grace-seconds", type=int, default=10)
+
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -261,33 +289,19 @@ def main() -> int:
     )
     log = logging.getLogger("intel_gpu_mqtt")
 
-    interval_ms = max(1, args.interval_seconds) * 1000
+    interval_s = max(1, args.interval_seconds)
+    interval_ms = interval_s * 1000
 
+    # Device selection
     listing = list_intel_gpu_top_devices(log)
-    dev_arg = auto_select_device_arg(listing, args.preferred_device_regex, log)
+    log.info("intel_gpu_top -L output:\n%s", listing if listing else "(none)")
+    dev_arg, dev_path = auto_select_device_arg(listing, args.preferred_device_regex, log)
+    log.info("Selected device arg: %s", dev_arg or "(none)")
+    if dev_path:
+        log.info("Selected render node: %s", dev_path)
 
-    cmd = ["intel_gpu_top", "-J", "-s", str(interval_ms), "-o", "-"]
-    if dev_arg:
-        cmd += ["-d", dev_arg]
-    else:
-        log.warning("No /dev/dri/renderD* found via intel_gpu_top -L; running without -d.")
-
-    log.info("Starting: %s", " ".join(cmd))
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0,
-        )
-    except FileNotFoundError:
-        log.error("intel_gpu_top not found in container; check Dockerfile package install.")
-        return 2
-
-    device_id = "intel_gpu_top"
-    device_name = "Intel GPU (intel_gpu_top)"
+    # MQTT setup with reconnect logic
+    health = MqttHealth()
     base_topic = args.mqtt_base_topic
 
     client = mqtt.Client(client_id=args.client_id, clean_session=True)
@@ -296,27 +310,145 @@ def main() -> int:
 
     client.will_set(f"{base_topic}/availability", "offline", qos=1, retain=True)
 
+    # Backoff for reconnect attempts
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+    def on_connect(_client, _userdata, _flags, rc):
+        if rc == 0:
+            health.connected = True
+            health.last_connect_ok = time.time()
+            log.info("MQTT connected successfully")
+            # Mark available on every connect (retained)
+            _client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
+        else:
+            health.connected = False
+            log.error("MQTT connection failed rc=%s", rc)
+
+    def on_disconnect(_client, _userdata, rc):
+        health.connected = False
+        health.last_disconnect = time.time()
+        # rc==0 is clean disconnect; nonzero implies unexpected
+        if rc == 0:
+            log.warning("MQTT disconnected (clean)")
+        else:
+            log.warning("MQTT disconnected rc=%s (will retry)", rc)
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+
     log.info("Connecting MQTT to %s:%d", args.mqtt_host, args.mqtt_port)
-    client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+    try:
+        client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+    except Exception as e:
+        log.error("Initial MQTT connect failed: %s", e)
+        # Let supervisor restart us
+        return 10
+
     client.loop_start()
 
-    client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
+    # Start intel_gpu_top
+    try:
+        proc = start_intel_gpu_top(interval_ms, dev_arg, log)
+    except FileNotFoundError:
+        return 2
+
+    device_id = "intel_gpu_top"
+    device_name = "Intel GPU (intel_gpu_top)"
 
     buf = ""
     discovery_published = False
     last_publish_time = 0.0
+    last_heartbeat_time = 0.0
+    last_sample_time = 0.0
+    last_intel_restart_attempt = 0.0
+
+    def restart_intel_gpu_top(reason: str) -> None:
+        nonlocal proc, buf, last_intel_restart_attempt, dev_arg, dev_path, listing
+        now = time.time()
+        if now - last_intel_restart_attempt < args.intel_restart_grace_seconds:
+            log.warning("Skipping intel_gpu_top restart (grace period) reason=%s", reason)
+            return
+        last_intel_restart_attempt = now
+
+        log.warning("Restarting intel_gpu_top reason=%s", reason)
+        try:
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    proc.kill()
+        except Exception as e:
+            log.warning("Error stopping intel_gpu_top: %s", e)
+
+        # Re-select device in case GPU nodes changed
+        listing = list_intel_gpu_top_devices(log)
+        dev_arg, dev_path = auto_select_device_arg(listing, args.preferred_device_regex, log)
+        log.info("Re-selected device arg: %s", dev_arg or "(none)")
+        if dev_path:
+            log.info("Re-selected render node: %s", dev_path)
+
+        buf = ""
+        proc = start_intel_gpu_top(interval_ms, dev_arg, log)
 
     try:
         assert proc.stdout is not None
+
         while True:
-            chunk = proc.stdout.read(4096)
-            if chunk:
-                buf += chunk
+            # ----- Watchdogs -----
+
+            now = time.time()
+
+            # GPU disappearance / device node check
+            if dev_path is not None and not os.path.exists(dev_path):
+                log.error("GPU render node disappeared: %s", dev_path)
+                restart_intel_gpu_top("render_node_disappeared")
+
+            # Sample timeout watchdog
+            if last_sample_time > 0 and (now - last_sample_time) > args.sample_timeout_seconds:
+                log.error("No intel_gpu_top samples for %.1fs", now - last_sample_time)
+                # Try restart once; if it keeps failing, we'll exit via repeated timeout
+                restart_intel_gpu_top("sample_timeout")
+
+            # MQTT disconnect watchdog: exit nonzero so add-on supervisor restarts us
+            if not health.connected and health.last_disconnect > 0:
+                if (now - health.last_disconnect) > args.mqtt_disconnect_timeout_seconds:
+                    log.error(
+                        "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
+                        now - health.last_disconnect,
+                        args.mqtt_disconnect_timeout_seconds,
+                    )
+                    return 11
+
+            # Heartbeat publish (independent of samples)
+            if now - last_heartbeat_time >= args.heartbeat_interval_seconds:
+                last_heartbeat_time = now
+                hb_payload = json.dumps(
+                    {
+                        "ts": now,
+                        "mqtt_connected": health.connected,
+                        "last_sample_age_s": (now - last_sample_time) if last_sample_time else None,
+                        "device": dev_path,
+                    }
+                )
+                info = client.publish(f"{base_topic}/heartbeat", hb_payload, qos=0, retain=False)
+                log.debug("Heartbeat publish mid=%s rc=%s payload=%s", info.mid, info.rc, hb_payload)
+
+            # ----- Read intel_gpu_top output line-by-line -----
+
+            line = proc.stdout.readline()
+            if line:
+                # Log *each line* from intel_gpu_top
+                log.debug("intel_gpu_top: %s", line.rstrip("\n"))
+
+                buf += line
                 obj, buf = extract_latest_json_object(buf)
                 if not obj:
                     continue
 
+                last_sample_time = time.time()
                 metrics = build_metrics(obj)
+                log.debug("Parsed metrics keys=%s", list(metrics.keys()))
 
                 # Publish discovery once we have our first sample (retained)
                 if not discovery_published:
@@ -328,42 +460,57 @@ def main() -> int:
                         device_id,
                         device_name,
                         metrics,
+                        log,
                     )
                     discovery_published = True
 
                 # Rate-limit publishing to once per interval_seconds
                 now = time.time()
-                if now - last_publish_time < args.interval_seconds:
+                if now - last_publish_time < interval_s:
                     continue
                 last_publish_time = now
 
                 # Publish each sensor to its own state topic, plus attributes topic
                 for key, m in metrics.items():
                     val = m["value"]
+
+                    # Always update attributes (ts, etc.)
+                    attr_topic = f"{base_topic}/{key}/attributes"
+                    ainfo = client.publish(attr_topic, json.dumps(m["attrs"]), qos=0, retain=False)
+                    log.debug("MQTT attrs %s mid=%s rc=%s", attr_topic, ainfo.mid, ainfo.rc)
+
                     if val is None:
-                        # Don't spam 'unknown'; just skip state update but still update attrs timestamp
-                        client.publish(f"{base_topic}/{key}/attributes", json.dumps(m["attrs"]), qos=0, retain=False)
                         continue
 
-                    client.publish(f"{base_topic}/{key}/state", f"{val:.3f}".rstrip("0").rstrip("."), qos=0, retain=False)
-                    client.publish(f"{base_topic}/{key}/attributes", json.dumps(m["attrs"]), qos=0, retain=False)
+                    state_topic = f"{base_topic}/{key}/state"
+                    payload = f"{val:.3f}".rstrip("0").rstrip(".")
+                    sinfo = client.publish(state_topic, payload, qos=0, retain=False)
+                    log.debug("MQTT state %s=%s mid=%s rc=%s", state_topic, payload, sinfo.mid, sinfo.rc)
 
                 if args.publish_raw_sample:
                     # Publish a raw sample snapshot for debugging (non-discovery)
-                    client.publish(f"{base_topic}/raw_sample", json.dumps(obj)[:200000], qos=0, retain=False)
+                    raw_topic = f"{base_topic}/raw_sample"
+                    rinfo = client.publish(raw_topic, json.dumps(obj)[:200000], qos=0, retain=False)
+                    log.debug("MQTT raw_sample mid=%s rc=%s", rinfo.mid, rinfo.rc)
 
             else:
+                # No line read. Check if process died.
                 rc = proc.poll()
                 if rc is not None:
-                    err = ""
+                    err_tail = ""
                     if proc.stderr is not None:
-                        err = proc.stderr.read()[-4000:]
-                    log.error("intel_gpu_top exited rc=%s stderr_tail=%s", rc, err)
-                    return 3
-                time.sleep(0.1)
+                        try:
+                            err_tail = proc.stderr.read()[-4000:]
+                        except Exception:
+                            err_tail = "(stderr read failed)"
+                    log.error("intel_gpu_top exited rc=%s stderr_tail=%s", rc, err_tail)
+                    restart_intel_gpu_top("intel_gpu_top_exited")
+                else:
+                    # Still running but no line available; small sleep
+                    time.sleep(0.05)
 
     except KeyboardInterrupt:
-        log.info("Shutting down")
+        log.info("Shutting down (SIGINT)")
     finally:
         try:
             client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
@@ -371,7 +518,8 @@ def main() -> int:
             pass
         client.loop_stop()
         try:
-            proc.terminate()
+            if proc and proc.poll() is None:
+                proc.terminate()
         except Exception:
             pass
 
