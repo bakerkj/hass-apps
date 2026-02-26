@@ -151,12 +151,15 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     freq_actual = safe_float(dig(raw, ["frequency", "actual"]))
     freq_requested = safe_float(dig(raw, ["frequency", "requested"]))
 
-    p_gpu = safe_float(dig(raw, ["power", "GPU"])) or safe_float(dig(raw, ["power", "gpu"]))
-    p_pkg = (
-        safe_float(dig(raw, ["power", "Package"]))
-        or safe_float(dig(raw, ["power", "pkg"]))
-        or safe_float(dig(raw, ["power", "package"]))
-    )
+    p_gpu = safe_float(dig(raw, ["power", "GPU"]))
+    if p_gpu is None:
+        p_gpu = safe_float(dig(raw, ["power", "gpu"]))
+
+    p_pkg = safe_float(dig(raw, ["power", "Package"]))
+    if p_pkg is None:
+        p_pkg = safe_float(dig(raw, ["power", "pkg"]))
+    if p_pkg is None:
+        p_pkg = safe_float(dig(raw, ["power", "package"]))
 
     metrics: Dict[str, Dict[str, Any]] = {
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
