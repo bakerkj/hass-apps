@@ -36,15 +36,37 @@ def sanitize_key(k: str) -> str:
 
 
 def friendly_name(col: str) -> str:
+    c = col.strip()
     replacements = {
         "PkgWatt": "CPU Package Power",
         "CorWatt": "CPU Cores Power",
         "GFXWatt": "CPU iGPU Power",
         "RAMWatt": "CPU DRAM Power",
         "PkgTmp": "CPU Package Temperature",
+        "CorTmp": "CPU Cores Temperature",
         "Busy%": "CPU Busy",
+        "CPU%": "CPU Busy",
+        "GFX%": "CPU iGPU Busy",
+        "Bzy_MHz": "CPU Busy Frequency",
+        "TSC_MHz": "CPU TSC Frequency",
+        "Totl%C0": "CPU Total C0 (active)",
+        "Pkg%pc2": "CPU Package C2",
+        "Pkg%pc3": "CPU Package C3",
+        "Pkg%pc6": "CPU Package C6",
+        "Pkg%pc7": "CPU Package C7",
+        "Pkg%pc8": "CPU Package C8",
+        "Pkg%pc9": "CPU Package C9",
+        "Pkg%pc10": "CPU Package C10",
     }
-    return replacements.get(col, f"Turbostat {col}")
+    if c in replacements:
+        return replacements[c]
+    s = c
+    s = s.replace("_pct", "%")
+    s = s.replace("_per_", "/")
+    s = s.replace("_", " ")
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return f"Turbostat {s}"
 
 
 def guess_meta(original_col: str) -> Tuple[Optional[str], Optional[str], str, int]:
@@ -203,7 +225,7 @@ def build_discovery_payloads(
     device_id: str,
     device_name: str,
     state_topic: str,
-    availability_topic: str,
+    availability_topics: Dict[str, str],
     cols: Dict[str, str],
 ) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
@@ -230,7 +252,7 @@ def build_discovery_payloads(
             "entity_category": "diagnostic",
             "state_class": "measurement",
             "suggested_display_precision": int(sdp),
-            "availability_topic": availability_topic,
+            "availability_topic": availability_topics.get(json_key, ""),
             "payload_available": "online",
             "payload_not_available": "offline",
         }
@@ -319,6 +341,8 @@ def main() -> int:
 
     state_topic = f"{base_topic}/state"
     availability_topic = f"{base_topic}/availability"
+    availability_topics: Dict[str, str] = {}
+    state_topics: Dict[str, str] = {}
     heartbeat_topic = f"{base_topic}/heartbeat"
 
     pub = MqttPublisher(
@@ -360,6 +384,8 @@ def main() -> int:
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
+                availability_topics = {k: f"{base_topic}/{k}/availability" for k in cols_map.values()}
+                state_topics = {k: f"{base_topic}/{k}/state" for k in cols_map.values()}
 
             payload: Dict[str, Any] = {}
             for col, val in values.items():
@@ -383,13 +409,15 @@ def main() -> int:
             if not discovered and pub.wait_connected(0.1):
                 # set availability online
                 pub.publish(availability_topic, "online", retain=True)
+                for _k, _t in availability_topics.items():
+                    pub.publish(_t, "online", retain=True)
 
                 disc = build_discovery_payloads(
                     discovery_prefix=discovery_prefix,
                     device_id=device_id,
                     device_name=device_name,
                     state_topic=state_topic,
-                    availability_topic=availability_topic,
+                    availability_topics=availability_topics,
                     cols=cols_map,
                 )
                 for t, cfg in disc.items():
@@ -398,6 +426,15 @@ def main() -> int:
                 log("INFO", f"Published discovery for {len(disc)} sensors", log_level)
 
             pub.publish(state_topic, json.dumps(payload, separators=(",", ":")), retain=True)
+
+            for _k, _v in payload.items():
+                if _k.startswith("_"):
+                    continue
+                if _k not in state_topics:
+                    continue
+                if isinstance(_v, (dict, list)):
+                    continue
+                pub.publish(state_topics[_k], str(_v), retain=True)
 
             # Heartbeat
             if now - last_heartbeat >= heartbeat_interval:
@@ -426,6 +463,8 @@ def main() -> int:
     # Clean shutdown
     try:
         pub.publish(availability_topic, "offline", retain=True)
+        for _k, _t in availability_topics.items():
+            pub.publish(_t, "offline", retain=True)
         time.sleep(0.2)
     except Exception:
         pass
