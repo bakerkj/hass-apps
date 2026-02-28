@@ -2,7 +2,7 @@
   "name": "Turbostat to MQTT",
   "slug": "turbostat_mqtt",
   "description": "Runs turbostat and publishes all turbostat.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "arch": [
     "amd64"
   ],
