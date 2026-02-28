@@ -1,8 +1,8 @@
 {
   "name": "Turbostat to MQTT",
   "slug": "turbostat_mqtt",
-  "description": "Runs turbostat and publishes all turbostat.",
-  "version": "0.0.4",
+  "description": "Runs turbostat and publishes to MQTT.",
+  "version": "0.0.5",
   "arch": [
     "amd64"
   ],
@@ -15,10 +15,8 @@
   "ingress": false,
   "full_access": true,
   "privileged": [
-    "SYS_RAWIO"
-  ],
-  "devices": [
-    "/dev/cpu:/dev/cpu:rwm"
+    "PERFMON"
+
   ],
   "options": {
     "interval_seconds": 10,
