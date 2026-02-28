@@ -1,5 +1,5 @@
 ARG BUILD_FROM
-FROM $BUILD_FROM
+FROM ${BUILD_FROM}
 
 # turbostat is part of linux-tools on Alpine
 RUN apk add --no-cache \
