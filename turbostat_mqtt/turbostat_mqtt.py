@@ -392,8 +392,8 @@ def main() -> int:
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
-            skip_cols = {'IRQ', 'NMI', 'SMI', 'Pkg%pc2', 'Pkg%pc3', 'Pkg%pc6', 'Pkg%pc8', 'Pk%pc10', 'CPU%LPI', 'SYS%LPI'}
-            cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
+                skip_cols = {'IRQ', 'NMI', 'SMI', 'Pkg%pc2', 'Pkg%pc3', 'Pkg%pc6', 'Pkg%pc8', 'Pk%pc10', 'CPU%LPI', 'SYS%LPI'}
+                cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
                 availability_topics = {k: f"{base_topic}/{k}/availability" for k in cols_map.values()}
 
             payload: Dict[str, Any] = {}
