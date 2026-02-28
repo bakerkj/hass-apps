@@ -3,10 +3,11 @@ FROM ${BUILD_FROM}
 
 # turbostat is part of linux-tools on Alpine
 RUN apk add --no-cache \
-      python3 py3-pip \
+      python3 \
       linux-tools \
       util-linux \
-    && pip3 install --no-cache-dir paho-mqtt
+      py3-paho-mqtt \
+      cpupower
 
 COPY run.sh /run.sh
 
