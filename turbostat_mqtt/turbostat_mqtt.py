@@ -392,10 +392,14 @@ def main() -> int:
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
+            skip_cols = {'IRQ', 'NMI', 'SMI', 'Pkg%pc2', 'Pkg%pc3', 'Pkg%pc6', 'Pkg%pc8', 'Pk%pc10', 'CPU%LPI', 'SYS%LPI'}
+            cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
                 availability_topics = {k: f"{base_topic}/{k}/availability" for k in cols_map.values()}
 
             payload: Dict[str, Any] = {}
             for col, val in values.items():
+                if col not in cols_map:
+                    continue
                 key = cols_map.get(col) or sanitize_key(col)
                 try:
                     if re.fullmatch(r"[-+]?\d+", val):
@@ -407,7 +411,7 @@ def main() -> int:
 
             payload["_ts_ms"] = int(now * 1000)
             if publish_raw:
-                payload["_raw"] = {cols_map.get(c, sanitize_key(c)): values[c] for c in values.keys()}
+                payload["_raw"] = {cols_map[c]: values[c] for c in values.keys() if c in cols_map}
                 payload["_raw_header"] = header
             if publish_raw:
                 payload["_raw_line"] = raw_line
