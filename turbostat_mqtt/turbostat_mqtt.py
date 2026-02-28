@@ -80,7 +80,7 @@ def friendly_name(col: str) -> str:
 def guess_meta(original_col: str) -> Tuple[Optional[str], Optional[str], str, int]:
     col = original_col.strip()
 
-    if col.endswith("%") or col in ("CPU%", "GFX%"):
+    if "%" in col or col in ("CPU%", "GFX%"):
         return "%", None, "mdi:percent", 1
 
     if col.lower().endswith("tmp") or "temp" in col.lower():
