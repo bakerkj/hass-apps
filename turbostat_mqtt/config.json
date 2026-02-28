@@ -1,0 +1,51 @@
+{
+  "name": "Turbostat MQTT",
+  "slug": "turbostat_mqtt",
+  "description": "Runs turbostat and publishes all turbostat.",
+  "version": "0.0.1",
+  "arch": [
+    "amd64"
+  ],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "hassio_api": true,
+  "homeassistant_api": true,
+  "host_network": false,
+  "ingress": false,
+  "full_access": true,
+  "privileged": [
+    "SYS_RAWIO"
+  ],
+  "devices": [
+    "/dev/cpu:/dev/cpu:rwm"
+  ],
+  "options": {
+    "interval_seconds": 10,
+    "mqtt_host": "core-mosquitto",
+    "mqtt_port": 1883,
+    "mqtt_username": "frigate-write",
+    "mqtt_password": "changeme",
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "turbostat",
+    "client_id": "turbostat-mqtt",
+    "log_level": "INFO",
+    "publish_raw_sample": true,
+    "heartbeat_interval_seconds": 10,
+    "mqtt_disconnect_timeout_seconds": 60
+  },
+  "schema": {
+    "interval_seconds": "int(1,60)",
+    "mqtt_host": "str",
+    "mqtt_port": "port",
+    "mqtt_username": "str",
+    "mqtt_password": "password",
+    "mqtt_discovery_prefix": "str",
+    "mqtt_base_topic": "str",
+    "client_id": "str",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "publish_raw_sample": "bool",
+    "heartbeat_interval_seconds": "int(1,60)",
+    "mqtt_disconnect_timeout_seconds": "int(5,600)"
+  }
+}
