@@ -5,15 +5,12 @@ import os
 import re
 import shlex
 import signal
-import selectors
 import threading
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
-OPENING_RE = re.compile(r"Opening '([^']+\.jpg)' for writing")
 
 def log(level: str, msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -92,6 +89,7 @@ class StreamCfg:
     interval_seconds: int
     output_dir: Path
     filename_format: str
+    date_dir_format: str
     latest_name: str
     retain_count: int
     retain_days: int
@@ -99,157 +97,163 @@ class StreamCfg:
     extra_output_args: str
 
 class Worker:
-    def __init__(self, cfg: StreamCfg, ffmpeg_cmd: List[str], log_level: str):
+    def __init__(self, cfg: StreamCfg, ffmpeg_cfg: Dict[str, str], log_level: str):
         self.cfg = cfg
-        self.ffmpeg_cmd = ffmpeg_cmd
-        self.proc: Optional[subprocess.Popen] = None
-        self.reader_thread: Optional[threading.Thread] = None
+        self.ffmpeg_cfg = ffmpeg_cfg
+        self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.backoff = 1.0
         self.log_level = log_level
+        self.next_due = 0.0
 
     def start(self) -> None:
-        if self.reader_thread and self.reader_thread.is_alive():
-            try:
-                self.stop_event.set()
-                self.reader_thread.join(timeout=1.0)
-            except Exception:
-                pass
+        if self.thread and self.thread.is_alive():
+            return
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        log("INFO", f"[{self.cfg.name}] Starting ffmpeg worker")
-        log("INFO", f"[{self.cfg.name}] cmd: {' '.join(shlex.quote(x) for x in self.ffmpeg_cmd)}")
-
-        self.proc = subprocess.Popen(
-            self.ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        log("INFO", f"[{self.cfg.name}] Starting worker")
         self.stop_event.clear()
-        self.reader_thread = threading.Thread(target=self._io_reader, daemon=True)
-        self.reader_thread.start()
         self.backoff = 1.0
+        # Attempt to align the first snapshot to the next whole minute boundary
+        # (i.e., :00 seconds). Subsequent snapshots follow a fixed cadence.
+        now_wall = time.time()
+        next_minute_wall = (int(now_wall) // 60 + 1) * 60
+        align_delay = max(0.0, next_minute_wall - now_wall)
+        self.next_due = time.monotonic() + align_delay
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
 
     def poll(self) -> Optional[int]:
-        if not self.proc:
+        if not self.thread:
             return None
-        return self.proc.poll()
+        return None if self.thread.is_alive() else 0
 
     def stop(self, sig=signal.SIGTERM) -> None:
-        if not self.proc:
-            return
         try:
             self.stop_event.set()
         except Exception:
             pass
-        try:
-            self.proc.send_signal(sig)
-        except Exception:
-            pass
-        if self.reader_thread and self.reader_thread.is_alive():
+        if self.thread and self.thread.is_alive():
             try:
-                self.reader_thread.join(timeout=1.0)
+                self.thread.join(timeout=2.0)
             except Exception:
                 pass
 
-    def _io_reader(self) -> None:
-        if not self.proc:
-            return
-        sel = selectors.DefaultSelector()
+    def _is_vaapi(self) -> bool:
+        hwaccel_args = self.ffmpeg_cfg.get("global_hwaccel_args", "") or ""
+        return bool(re.search(r"(^|\s)-hwaccel\s+vaapi(\s|$)", hwaccel_args))
+
+    def _tmp_snapshot_path(self) -> Path:
+        tmp_dir = self.cfg.output_dir / ".tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        return tmp_dir / f"{self.cfg.name}-{time.monotonic_ns()}.jpg"
+
+    def _final_snapshot_path(self, now_ts: float) -> Path:
+        date_dir = time.strftime(self.cfg.date_dir_format, time.localtime(now_ts))
+        out_dir = self.cfg.output_dir / date_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filename = time.strftime(self.cfg.filename_format, time.localtime(now_ts))
+        return out_dir / filename
+
+    def _build_ffmpeg_cmd(self, out_path: Path) -> List[str]:
+        cmd: List[str] = ["ffmpeg", "-nostdin"]
+
+        def extend_args(arg_str: str) -> None:
+            if arg_str:
+                cmd.extend(shlex.split(arg_str))
+
+        extend_args(self.ffmpeg_cfg.get("global_hwaccel_args", "") or "")
+        extend_args(self.ffmpeg_cfg.get("global_input_args", "") or "")
+        extend_args(self.cfg.extra_input_args)
+        cmd.extend(["-i", self.cfg.url])
+
+        # Grab a single frame.
+        if self._is_vaapi():
+            cmd.extend(["-vf", "hwdownload,format=nv12"])
+        cmd.extend(["-an", "-frames:v", "1"])
+        extend_args(self.ffmpeg_cfg.get("global_output_args", "") or "")
+        extend_args(self.cfg.extra_output_args)
+        cmd.extend(["-atomic_writing", "1"])
+        cmd.extend(["-update", "1"])
+        cmd.extend(["-y"])
+        cmd.extend([str(out_path)])
+        return cmd
+
+    def _run_one_snapshot(self) -> int:
+        rc = 1
+        tmp_path = self._tmp_snapshot_path()
+        now_ts = time.time()
+        final_path = self._final_snapshot_path(now_ts)
+        cmd = self._build_ffmpeg_cmd(tmp_path)
+
+        log("INFO", f"[{self.cfg.name}] cmd: {' '.join(shlex.quote(x) for x in cmd)}")
+
+        proc: Optional[subprocess.Popen] = None
         try:
-            if self.proc.stdout:
-                sel.register(self.proc.stdout, selectors.EVENT_READ, data="stdout")
-            if self.proc.stderr:
-                sel.register(self.proc.stderr, selectors.EVENT_READ, data="stderr")
-        except Exception:
-            return
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            out, err = proc.communicate(timeout=max(5, min(120, int(self.cfg.interval_seconds))))
+            rc = int(proc.returncode or 0)
+            if out:
+                for line in out.splitlines():
+                    if line:
+                        log("INFO", f"[{self.cfg.name}] [stdout] {line}")
+            if err:
+                for line in err.splitlines():
+                    if line:
+                        log("INFO", f"[{self.cfg.name}] [stderr] {line}")
+            if rc != 0:
+                return rc
 
-        try:
-            while not self.stop_event.is_set():
-                events = sel.select(timeout=0.5)
-                if not events:
-                    # If the process exited, stop draining.
-                    if self.proc.poll() is not None:
-                        break
-                    continue
-                for key, _mask in events:
-                    try:
-                        line = key.fileobj.readline()
-                    except Exception:
-                        line = ""
-                    if not line:
-                        try:
-                            sel.unregister(key.fileobj)
-                        except Exception:
-                            pass
-                        continue
-                    line = line.rstrip()
-                    if not line:
-                        continue
-
-                    # Parse path directly from ffmpeg log
-                    m = OPENING_RE.search(line)
-                    if m:
-                        path = m.group(1)
-                        try:
-                            p = Path(path)
-                            latest_path = self.cfg.output_dir / self.cfg.latest_name
-                            set_latest_symlink(p, latest_path)
-                        except Exception as e:
-                            log("WARNING", f"[{self.cfg.name}] latest update failed: {e}")
-
-                    log("INFO", f"[{self.cfg.name}] {line}")
-        except Exception:
-            pass
+            tmp_path.replace(final_path)
+            latest_path = self.cfg.output_dir / self.cfg.latest_name
+            set_latest_symlink(final_path, latest_path)
+            return 0
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            log("WARNING", f"[{self.cfg.name}] ffmpeg timed out")
+            return 124
+        except Exception as e:
+            log("WARNING", f"[{self.cfg.name}] snapshot failed: {e}")
+            return rc
         finally:
             try:
-                sel.close()
+                if tmp_path.exists():
+                    tmp_path.unlink()
             except Exception:
                 pass
 
-    def restart_with_backoff(self) -> None:
-        delay = min(self.backoff, 60.0)
-        log("WARNING", f"[{self.cfg.name}] ffmpeg exited. Restarting in {delay:.1f}s")
-        time.sleep(delay)
-        self.backoff = min(self.backoff * 2.0, 60.0)
-        self.start()
+    def _run(self) -> None:
+        interval = max(1, int(self.cfg.interval_seconds))
+        while not self.stop_event.is_set():
+            now = time.monotonic()
+            delay = self.next_due - now
+            if delay > 0:
+                if self.stop_event.wait(delay):
+                    break
 
-def build_ffmpeg_cmd(
-    url: str,
-    interval_seconds: int,
-    output_path_pattern: str,
-    global_input_args: str,
-    global_hwaccel_args: str,
-    extra_input_args: str,
-    global_output_args: str,
-    extra_output_args: str,
-) -> List[str]:
-    cmd: List[str] = ["ffmpeg", "-nostdin"]
+            # Resync if we fell behind significantly.
+            now = time.monotonic()
+            if (now - self.next_due) > (interval * 1.5):
+                self.next_due = now
 
-    def extend_args(arg_str: str) -> None:
-        if arg_str:
-            cmd.extend(shlex.split(arg_str))
+            rc = self._run_one_snapshot()
+            if rc == 0:
+                self.backoff = 1.0
+                self.next_due += interval
+                continue
 
-    extend_args(global_hwaccel_args)
-    extend_args(global_input_args)
-    extend_args(extra_input_args)
-
-    cmd.extend(["-i", url])
-
-    # emit one frame per interval
-    vf = f"fps=1/{interval_seconds}"
-    # If using VAAPI hardware-accelerated decode, frames may remain in GPU memory.
-    # Download to system memory and normalize pixel format for JPEG encoding.
-    if re.search(r"(^|\s)-hwaccel\s+vaapi(\s|$)", global_hwaccel_args):
-         vf = vf + ",hwdownload,format=nv12"
-    cmd.extend(["-vf", vf, "-an"])
-
-    extend_args(global_output_args)
-    extend_args(extra_output_args)
-
-    cmd.extend(["-f", "image2", "-atomic_writing", "1", "-strftime", "1", output_path_pattern])
-    return cmd
+            backoff_delay = min(self.backoff, 60.0)
+            log("WARNING", f"[{self.cfg.name}] snapshot failed (rc={rc}). Backing off {backoff_delay:.1f}s")
+            self.backoff = min(self.backoff * 2.0, 60.0)
+            self.next_due = time.monotonic() + backoff_delay
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -267,9 +271,11 @@ def main() -> int:
         return 0
 
     ff = opts.get("ffmpeg") or {}
-    global_input_args = ff.get("global_input_args", "") or ""
-    global_hwaccel_args = ff.get("global_hwaccel_args", "") or ""
-    global_output_args = ff.get("global_output_args", "") or ""
+    ffmpeg_cfg: Dict[str, str] = {
+        "global_input_args": ff.get("global_input_args", "") or "",
+        "global_hwaccel_args": ff.get("global_hwaccel_args", "") or "",
+        "global_output_args": ff.get("global_output_args", "") or "",
+    }
 
     hk = opts.get("housekeeping") or {}
     retention_interval = int(hk.get("retention_interval_seconds", 60) or 60)
@@ -286,6 +292,7 @@ def main() -> int:
             interval_seconds=int(s["interval_seconds"]),
             output_dir=ensure_media_path(s["output_dir"]),
             filename_format=s.get("filename_format") or "%Y%m%d-%H%M%S.jpg",
+            date_dir_format=s.get("date_dir_format") or "%Y/%m/%d",
             latest_name=s.get("latest_name") or "latest.jpg",
             retain_count=int(s.get("retain_count") or 0),
             retain_days=int(s.get("retain_days") or 0),
@@ -293,19 +300,7 @@ def main() -> int:
             extra_output_args=s.get("extra_output_args") or "",
         )
 
-        out_pattern = str(cfg.output_dir / cfg.filename_format)
-        cmd = build_ffmpeg_cmd(
-            url=cfg.url,
-            interval_seconds=cfg.interval_seconds,
-            output_path_pattern=out_pattern,
-            global_input_args=global_input_args,
-            global_hwaccel_args=global_hwaccel_args,
-            extra_input_args=cfg.extra_input_args,
-            global_output_args=global_output_args,
-            extra_output_args=cfg.extra_output_args,
-        )
-
-        workers[cfg.name] = Worker(cfg, cmd, log_level=log_level)
+        workers[cfg.name] = Worker(cfg, ffmpeg_cfg, log_level=log_level)
         cfgs[cfg.name] = cfg
 
     stopping = False
@@ -328,11 +323,6 @@ def main() -> int:
             return 1
 
     while True:
-        for w in workers.values():
-            rc = w.poll()
-            if rc is not None and not stopping:
-                w.restart_with_backoff()
-
         now = time.time()
         if (now - last_retention) >= retention_interval:
             last_retention = now
@@ -345,9 +335,6 @@ def main() -> int:
 
         if stopping:
             time.sleep(1.0)
-            for w in workers.values():
-                if w.poll() is None:
-                    w.stop(signal.SIGKILL)
             return 0
 
         time.sleep(0.1)

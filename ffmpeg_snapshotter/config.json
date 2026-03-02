@@ -1,8 +1,8 @@
 {
   "name": "FFmpeg Snapshotter",
   "slug": "ffmpeg_snapshotter",
-  "description": "Runs ffmpeg (multiple workers) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks using ffmpeg log output (no directory scans).",
-  "version": "0.7.0",
+  "description": "Runs ffmpeg on-demand to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
+  "version": "0.8.0",
   "arch": [
     "aarch64",
     "amd64",
@@ -30,7 +30,7 @@
     "ffmpeg": {
       "global_input_args": "-hide_banner -loglevel info -rtsp_transport tcp -timeout 5000000 -fflags +genpts+discardcorrupt -skip_frame nokey",
       "global_hwaccel_args": "-hwaccel vaapi -hwaccel_device /dev/dri/renderD128 -hwaccel_output_format vaapi",
-      "global_output_args": ""
+      "global_output_args": "-q:v 3"
     },
     "housekeeping": {
       "retention_interval_seconds": 60
@@ -54,6 +54,7 @@
         "interval_seconds": "int(1,3600)",
         "output_dir": "str",
         "filename_format": "str?",
+        "date_dir_format": "str?",
         "latest_name": "str?",
         "retain_count": "int(0,100000)?",
         "retain_days": "int(0,3650)?",
