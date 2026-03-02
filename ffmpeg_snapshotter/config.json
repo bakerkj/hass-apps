@@ -1,0 +1,65 @@
+{
+  "name": "FFmpeg Snapshotter",
+  "slug": "ffmpeg_snapshotter",
+  "description": "Runs ffmpeg (multiple workers) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks using ffmpeg log output (no directory scans).",
+  "version": "0.7.0",
+  "arch": [
+    "aarch64",
+    "amd64",
+    "armv7",
+    "i386"
+  ],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "hassio_api": true,
+  "homeassistant_api": true,
+  "host_network": false,
+  "ingress": false,
+  "full_access": true,
+  "devices": [
+    "/dev/dri:/dev/dri:rwm"
+  ],
+  "map": [
+    "media:rw",
+    "config:rw",
+    "share:rw"
+  ],
+  "options": {
+    "log_level": "INFO",
+    "ffmpeg": {
+      "global_input_args": "-hide_banner -loglevel info -rtsp_transport tcp -timeout 5000000 -fflags +genpts+discardcorrupt -skip_frame nokey",
+      "global_hwaccel_args": "-hwaccel vaapi -hwaccel_device /dev/dri/renderD128 -hwaccel_output_format vaapi",
+      "global_output_args": ""
+    },
+    "housekeeping": {
+      "retention_interval_seconds": 60
+    },
+    "streams": []
+  },
+  "schema": {
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "ffmpeg": {
+      "global_input_args": "str?",
+      "global_hwaccel_args": "str?",
+      "global_output_args": "str?"
+    },
+    "housekeeping": {
+      "retention_interval_seconds": "int(5,3600)?"
+    },
+    "streams": [
+      {
+        "name": "str",
+        "url": "str",
+        "interval_seconds": "int(1,3600)",
+        "output_dir": "str",
+        "filename_format": "str?",
+        "latest_name": "str?",
+        "retain_count": "int(0,100000)?",
+        "retain_days": "int(0,3650)?",
+        "extra_input_args": "str?",
+        "extra_output_args": "str?"
+      }
+    ]
+  }
+}
