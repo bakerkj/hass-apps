@@ -97,7 +97,7 @@ class StreamCfg:
     extra_output_args: str
 
 class Worker:
-    def __init__(self, cfg: StreamCfg, ffmpeg_cfg: Dict[str, str], log_level: str):
+    def __init__(self, cfg: StreamCfg, ffmpeg_cfg: Dict[str, str], log_level: str, start_offset_seconds: float = 0.0):
         self.cfg = cfg
         self.ffmpeg_cfg = ffmpeg_cfg
         self.thread: Optional[threading.Thread] = None
@@ -105,6 +105,7 @@ class Worker:
         self.backoff = 1.0
         self.log_level = log_level
         self.next_due = 0.0
+        self.start_offset_seconds = float(start_offset_seconds)
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -113,11 +114,13 @@ class Worker:
         log("INFO", f"[{self.cfg.name}] Starting worker")
         self.stop_event.clear()
         self.backoff = 1.0
-        # Attempt to align the first snapshot to the next whole minute boundary
-        # (i.e., :00 seconds). Subsequent snapshots follow a fixed cadence.
+        # Attempt to align the first snapshot to evenly distribute load across streams
+        # sharing the same interval. This aligns to the next wall-clock interval boundary
+        # plus this stream's assigned offset within that interval.
         now_wall = time.time()
-        next_minute_wall = (int(now_wall) // 60 + 1) * 60
-        align_delay = max(0.0, next_minute_wall - now_wall)
+        interval = max(1, int(self.cfg.interval_seconds))
+        offset = float(self.start_offset_seconds) % interval
+        align_delay = (offset - (now_wall % interval)) % interval
         self.next_due = time.monotonic() + align_delay
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -174,8 +177,7 @@ class Worker:
         extend_args(self.cfg.extra_output_args)
         cmd.extend(["-atomic_writing", "1"])
         cmd.extend(["-update", "1"])
-        cmd.extend(["-y"])
-        cmd.extend([str(out_path)])
+        cmd.extend(["-y", str(out_path)])
         return cmd
 
     def _run_one_snapshot(self) -> int:
@@ -299,9 +301,23 @@ def main() -> int:
             extra_input_args=s.get("extra_input_args") or "",
             extra_output_args=s.get("extra_output_args") or "",
         )
-
-        workers[cfg.name] = Worker(cfg, ffmpeg_cfg, log_level=log_level)
         cfgs[cfg.name] = cfg
+
+    # Evenly distribute start offsets for streams that share the same interval.
+    # For example, if 6 streams have interval 60, they will start at 0,10,20,30,40,50 seconds.
+    offsets: Dict[str, float] = {}
+    groups: Dict[int, list] = {}
+    for s in streams:
+        interval = int(s["interval_seconds"])
+        groups.setdefault(interval, []).append(s["name"])
+
+    for interval, names in groups.items():
+        n = max(1, len(names))
+        for i, name in enumerate(names):
+            offsets[name] = (float(i) * float(interval)) / float(n)
+
+    for name, cfg in cfgs.items():
+        workers[name] = Worker(cfg, ffmpeg_cfg, log_level=log_level, start_offset_seconds=offsets.get(name, 0.0))
 
     stopping = False
 

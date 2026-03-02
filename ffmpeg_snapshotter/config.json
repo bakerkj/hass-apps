@@ -1,7 +1,7 @@
 {
   "name": "FFmpeg Snapshotter",
   "slug": "ffmpeg_snapshotter",
-  "description": "Runs ffmpeg on-demand to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
+  "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "version": "0.8.0",
   "arch": [
     "aarch64",
