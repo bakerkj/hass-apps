@@ -3,7 +3,7 @@
   "version": "0.1.7",
   "slug": "birdnet_audio_stream",
   "description": "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc",
-  "url": "https://github.com/keneli/local-addons/tree/main/birdnet_audio_stream",
+  "url": "https://github.com/bakerkj/hass-apps/birdnet_audio_stream",
   "arch": [
     "amd64",
     "aarch64",
