@@ -1,0 +1,62 @@
+{
+  "name": "BirdNET Audio Stream",
+  "version": "0.1.7",
+  "slug": "birdnet_audio_stream",
+  "description": "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc",
+  "url": "https://github.com/keneli/local-addons/tree/main/birdnet_audio_stream",
+  "arch": [
+    "amd64",
+    "aarch64",
+    "armv7"
+  ],
+  "init": false,
+  "startup": "services",
+  "boot": "auto",
+  "audio": true,
+  "usb": true,
+  "full_access": false,
+  "map": [
+    "addon_config:rw"
+  ],
+  "options": {
+    "stream_name": "birdnet",
+    "alsa_device": "default",
+    "sample_rate": 48000,
+    "channels": 1,
+    "codec": "opus",
+    "bitrate": "96k",
+    "username": "",
+    "password": "",
+    "input_format": "alsa",
+    "go2rtc_log_level": "info",
+    "ffmpeg_log_level": "warning",
+    "ffmpeg_volume": 1.5,
+    "mixer_control": "Capture",
+    "mixer_volume": "100%"
+  },
+  "schema": {
+    "stream_name": "str",
+    "alsa_device": "str",
+    "sample_rate": "int(8000,192000)",
+    "channels": "int(1,2)",
+    "codec": "list(opus|flac|pcm)",
+    "bitrate": "str?",
+    "username": "str?",
+    "password": "password?",
+    "input_format": "list(alsa|pulse)",
+    "go2rtc_log_level": "list(trace|debug|info|warn|error|fatal)",
+    "ffmpeg_log_level": "list(quiet|panic|fatal|error|warning|info|verbose|debug|trace)",
+    "ffmpeg_volume": "float",
+    "mixer_control": "str",
+    "mixer_volume": "str"
+  },
+  "ports": {
+    "8554/tcp": 8554,
+    "1984/tcp": 1984
+  },
+  "ports_description": {
+    "8554/tcp": "RTSP audio stream",
+    "1984/tcp": "go2rtc API"
+  },
+  "panel_icon": "mdi:microphone"
+}
