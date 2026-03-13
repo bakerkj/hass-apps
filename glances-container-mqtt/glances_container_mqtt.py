@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import paho.mqtt.client as mqtt
 import requests
@@ -155,12 +156,28 @@ def fetch_containers(
     timeout_seconds: int,
     auth: Optional[tuple[str, str]],
 ) -> list[dict[str, Any]]:
-    base = base_url.rstrip("/")
-    candidates = [endpoint]
-    if endpoint != "/api/4/containers":
-        candidates.append("/api/4/containers")
-    if endpoint != "/api/3/containers":
-        candidates.append("/api/3/containers")
+    raw_base = (base_url or "").strip()
+    parsed = urlsplit(raw_base)
+
+    if parsed.scheme and parsed.netloc:
+        # glances_url is host/base URL; glances_endpoint controls API path.
+        base = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+    else:
+        base = raw_base.rstrip("/")
+
+    normalized_endpoint = "/" + (endpoint or "").strip().lstrip("/")
+    if normalized_endpoint == "/":
+        normalized_endpoint = "/api/3/containers"
+
+    candidates: list[str] = []
+    for ep in (
+        normalized_endpoint,
+        "/api/3/containers",
+        "/api/4/containers",
+    ):
+        norm = "/" + ep.lstrip("/")
+        if norm not in candidates:
+            candidates.append(norm)
 
     last_error = ""
 
@@ -292,9 +309,11 @@ def main() -> int:
         return value
 
     args.interval_seconds = resolve(args.interval_seconds, "interval_seconds", 10, int)
-    args.glances_url = resolve(args.glances_url, "glances_url", "", str)
+    args.glances_url = resolve(
+        args.glances_url, "glances_url", "http://localhost:61209", str
+    )
     args.glances_endpoint = resolve(
-        args.glances_endpoint, "glances_endpoint", "/api/4/containers", str
+        args.glances_endpoint, "glances_endpoint", "/api/3/containers", str
     )
     args.glances_username = resolve(args.glances_username, "glances_username", "", str)
     args.glances_password = resolve(args.glances_password, "glances_password", "", str)
@@ -330,6 +349,9 @@ def main() -> int:
         args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 30, int
     )
 
+    args.glances_url = args.glances_url.strip()
+    args.glances_endpoint = "/" + args.glances_endpoint.strip().lstrip("/")
+
     if not args.glances_url:
         ap.error("glances_url is required (via --glances-url or --options)")
     if not args.mqtt_host:
@@ -340,6 +362,12 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     log = logging.getLogger("glances_container_mqtt")
+    log.info(
+        "Config: glances_url=%s glances_endpoint=%s options_file=%s",
+        args.glances_url,
+        args.glances_endpoint,
+        args.options,
+    )
 
     include_rx = (
         re.compile(args.container_include_regex, re.IGNORECASE)
