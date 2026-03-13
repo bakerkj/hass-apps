@@ -1,0 +1,7 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:3.22
+labels:
+  org.opencontainers.image.title: "Turbostat to MQTT"
+  org.opencontainers.image.description: "Runs turbostat and publishes to MQTT."
+  org.opencontainers.image.source: "https://github.com/bakerkj/hass-apps"
+  org.opencontainers.image.licenses: "MIT"

@@ -1,0 +1,7 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:3.22
+labels:
+  org.opencontainers.image.title: "Intel GPU Top MQTT (Discovery)"
+  org.opencontainers.image.description: "Runs intel_gpu_top and publishes Intel GPU metrics to MQTT (separate topics per sensor) with Home Assistant discovery + attributes."
+  org.opencontainers.image.source: "https://github.com/bakerkj/hass-apps"
+  org.opencontainers.image.licenses: "MIT"
