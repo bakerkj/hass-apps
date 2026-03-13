@@ -195,9 +195,14 @@ def fetch_containers(
     if normalized_endpoint == "/":
         normalized_endpoint = "/api/3/containers"
 
-    # If glances_url already includes a full containers endpoint, trust it directly.
-    if base_path.endswith("/containers"):
+    if base_path and normalized_endpoint.lstrip("/").startswith(
+        base_path.lstrip("/") + "/"
+    ):
+        request_path = normalized_endpoint
+    elif base_path.endswith("/containers"):
         request_path = base_path
+    elif base_path and normalized_endpoint.startswith("/api/"):
+        request_path = normalized_endpoint
     elif base_path:
         request_path = f"{base_path}/{normalized_endpoint.lstrip('/')}"
     else:
@@ -215,8 +220,14 @@ def fetch_containers(
         if isinstance(payload, dict):
             if isinstance(payload.get("containers"), list):
                 return [x for x in payload["containers"] if isinstance(x, dict)]
+            if isinstance(payload.get("containers"), dict):
+                return [
+                    x for x in payload["containers"].values() if isinstance(x, dict)
+                ]
             if isinstance(payload.get("container"), list):
                 return [x for x in payload["container"] if isinstance(x, dict)]
+            if isinstance(payload.get("container"), dict):
+                return [x for x in payload["container"].values() if isinstance(x, dict)]
 
         raise RuntimeError(f"Unexpected payload shape from {url}")
     except Exception as exc:
@@ -477,6 +488,7 @@ def main() -> int:
     client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
 
     discovered: dict[str, set[str]] = {}
+    warned_zero_metric_slugs: set[str] = set()
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
@@ -515,6 +527,12 @@ def main() -> int:
             continue
 
         seen_slugs: set[str] = set()
+        if not containers:
+            log.warning(
+                "Glances returned 0 containers for source=%s endpoint=%s",
+                args.glances_url,
+                args.glances_endpoint,
+            )
 
         for container in containers:
             container_name = first_nonempty(
@@ -525,6 +543,10 @@ def main() -> int:
             )
 
             if not container_name or not container_ident:
+                log.warning(
+                    "Skipping container missing name/id. keys=%s",
+                    ",".join(sorted(container.keys())),
+                )
                 continue
 
             if include_rx and not include_rx.search(container_name):
@@ -563,11 +585,14 @@ def main() -> int:
                 "ts": now,
             }
 
+            metrics_published = 0
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
                 value = metric_value(container, metric_key)
                 if value is None:
                     continue
+
+                metrics_published += 1
 
                 if metric_key not in discovered[container_slug]:
                     publish_discovery(
@@ -589,6 +614,20 @@ def main() -> int:
 
                 client.publish(attr_topic, json.dumps(attrs), qos=0, retain=False)
                 client.publish(state_topic, repr(float(value)), qos=0, retain=False)
+
+            if (
+                metrics_published == 0
+                and container_slug not in warned_zero_metric_slugs
+            ):
+                warned_zero_metric_slugs.add(container_slug)
+                log.warning(
+                    "No selected metrics found for container %s (selected=%s). Top-level keys=%s",
+                    container_name,
+                    ",".join(selected_metrics),
+                    ",".join(sorted(container.keys())),
+                )
+            elif metrics_published > 0 and container_slug in warned_zero_metric_slugs:
+                warned_zero_metric_slugs.discard(container_slug)
 
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
