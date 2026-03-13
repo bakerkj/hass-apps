@@ -10,6 +10,14 @@ to Home Assistant.
 - Supports container include/exclude regex filters.
 - Supports metric include-list selection.
 
+## Networking
+
+This add-on uses `host_network: true` so it can reach the official Glances
+add-on when Glances is running on host network.
+
+Default Glances target: `http://localhost:61209` with endpoint
+`/api/3/containers`.
+
 ## Default Metrics
 
 - `cpu_percent`
