@@ -63,6 +63,12 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_size",
         "state_class": "total_increasing",
     },
+    "status": {
+        "paths": [("status",), ("Status",), ("state",), ("State",)],
+        "name": "Status",
+        "icon": "mdi:information-outline",
+        "value_type": "string",
+    },
 }
 
 OPTION_KEYS: set[str] = {
@@ -97,14 +103,21 @@ def slugify(value: str) -> str:
 
 def container_display_name(value: str) -> str:
     display = value.strip()
-    match = re.match(r"^addon_[0-9a-f]+_(.+)$", display, re.IGNORECASE)
-    if match:
-        display = match.group(1).strip()
-
     if not display:
         return "Unknown"
 
-    return display[0].upper() + display[1:]
+    if display.lower().startswith("addon_"):
+        display = display[6:]
+        parts = display.split("_", 1)
+        if len(parts) == 2 and re.fullmatch(r"[0-9a-f]+", parts[0], re.IGNORECASE):
+            display = parts[1]
+
+    display = re.sub(r"[_\-]+", " ", display)
+    display = re.sub(r"\s+", " ", display).strip()
+    if not display:
+        return "Unknown"
+
+    return " ".join(part.capitalize() for part in display.split(" "))
 
 
 def safe_float(value: Any) -> Optional[float]:
@@ -116,6 +129,13 @@ def safe_float(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def safe_text(value: Any) -> Optional[str]:
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def deep_get(container: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -146,13 +166,18 @@ def first_nonempty(container: dict[str, Any], keys: list[str]) -> Optional[str]:
     return None
 
 
-def metric_value(container: dict[str, Any], metric_key: str) -> Optional[float]:
+def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
     metric_def = METRIC_DEFS.get(metric_key)
     if metric_def is None:
         return None
 
+    value_type = metric_def.get("value_type", "number")
     for path in metric_def["paths"]:
-        value = safe_float(deep_get(container, path))
+        raw_value = deep_get(container, path)
+        if value_type == "string":
+            value = safe_text(raw_value)
+        else:
+            value = safe_float(raw_value)
         if value is not None:
             return value
     return None
@@ -281,7 +306,6 @@ def publish_discovery(
     device_id: str,
     base_topic: str,
     container_slug: str,
-    container_name: str,
     container_display_name: str,
     container_ident: str,
     metric_key: str,
@@ -292,8 +316,10 @@ def publish_discovery(
     state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
     attr_topic = f"{base_topic}/{container_slug}/{metric_key}/attributes"
 
+    friendly_container_name = f"Container {container_display_name}"
+
     payload: dict[str, Any] = {
-        "name": f"{container_name} {metric_def['name']}",
+        "name": f"{friendly_container_name} {metric_def['name']}",
         "unique_id": f"{device_id}_{sensor_id}",
         "object_id": f"{device_id}_{sensor_id}",
         "state_topic": state_topic,
@@ -301,16 +327,17 @@ def publish_discovery(
         "availability_topic": f"{base_topic}/availability",
         "payload_available": "online",
         "payload_not_available": "offline",
-        "unit_of_measurement": metric_def.get("unit", ""),
         "device": {
             "identifiers": [f"{device_id}_{container_slug}"],
-            "name": f"Container {container_display_name}",
+            "name": friendly_container_name,
             "manufacturer": "Glances",
             "model": "Container",
             "serial_number": container_ident,
         },
     }
 
+    if metric_def.get("unit"):
+        payload["unit_of_measurement"] = metric_def["unit"]
     if metric_def.get("icon"):
         payload["icon"] = metric_def["icon"]
     if metric_def.get("device_class"):
@@ -385,7 +412,7 @@ def main() -> int:
     args.include_metrics = resolve(
         args.include_metrics,
         "include_metrics",
-        "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total",
+        "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total,status",
         str,
     )
     args.container_include_regex = resolve(
@@ -585,7 +612,6 @@ def main() -> int:
                         args.client_id,
                         base_topic,
                         container_slug,
-                        container_name,
                         display_name,
                         container_ident,
                         metric_key,
@@ -597,7 +623,11 @@ def main() -> int:
                 attr_topic = f"{base_topic}/{container_slug}/{metric_key}/attributes"
 
                 client.publish(attr_topic, json.dumps(attrs), qos=0, retain=False)
-                client.publish(state_topic, repr(float(value)), qos=0, retain=False)
+                if metric_def.get("value_type") == "string":
+                    state_payload = str(value)
+                else:
+                    state_payload = repr(float(value))
+                client.publish(state_topic, state_payload, qos=0, retain=False)
 
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:

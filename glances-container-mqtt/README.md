@@ -26,6 +26,7 @@ Default Glances target: `http://localhost:61209` with endpoint
 - `network_tx_total`
 - `io_read_total`
 - `io_write_total`
+- `status`
 
 Metric sources are aligned with Glances container payloads, preferring
 cumulative counters:
