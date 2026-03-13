@@ -28,13 +28,8 @@ repos:
     rev: v4.0.0-alpha.8
     hooks:
       - id: prettier
-        types_or: [yaml, json]
-
-  - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.21.0
-    hooks:
-      - id: markdownlint-cli2
-        args: ["--fix"]
+        types_or: [yaml, json, markdown]
+        args: ["--prose-wrap", "always"]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
