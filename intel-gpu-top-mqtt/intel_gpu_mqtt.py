@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -351,29 +350,84 @@ def start_intel_gpu_top(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--interval-seconds", type=int, default=5)
-    ap.add_argument("--mqtt-host", required=True)
-    ap.add_argument("--mqtt-port", type=int, default=1883)
-    ap.add_argument("--mqtt-username", default="")
-    ap.add_argument("--mqtt-password", default="")
-    ap.add_argument("--mqtt-discovery-prefix", default="homeassistant")
-    ap.add_argument("--mqtt-base-topic", default="intel_gpu_top")
-    ap.add_argument("--client-id", default="intel-gpu-top-addon")
-    ap.add_argument("--preferred-device-regex", default="")
-    ap.add_argument("--log-level", default="INFO")
-    ap.add_argument(
-        "--publish-raw-sample",
-        type=lambda s: str(s).lower() in ["1", "true", "yes", "y", "on"],
-        default=True,
-    )
+    ap.add_argument("--options", default="")
+    ap.add_argument("--interval-seconds", type=int, default=None)
+    ap.add_argument("--mqtt-host", default=None)
+    ap.add_argument("--mqtt-port", type=int, default=None)
+    ap.add_argument("--mqtt-username", default=None)
+    ap.add_argument("--mqtt-password", default=None)
+    ap.add_argument("--mqtt-discovery-prefix", default=None)
+    ap.add_argument("--mqtt-base-topic", default=None)
+    ap.add_argument("--client-id", default=None)
+    ap.add_argument("--preferred-device-regex", default=None)
+    ap.add_argument("--log-level", default=None)
+    ap.add_argument("--publish-raw-sample", default=None)
 
-    # New health/heartbeat knobs (defaults are sane; you can wire them into add-on options later if desired)
-    ap.add_argument("--heartbeat-interval-seconds", type=int, default=10)
-    ap.add_argument("--sample-timeout-seconds", type=int, default=20)
-    ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=60)
-    ap.add_argument("--intel-restart-grace-seconds", type=int, default=10)
+    ap.add_argument("--heartbeat-interval-seconds", type=int, default=None)
+    ap.add_argument("--sample-timeout-seconds", type=int, default=None)
+    ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=None)
+    ap.add_argument("--intel-restart-grace-seconds", type=int, default=None)
 
     args = ap.parse_args()
+
+    opts: dict[str, Any] = {}
+    if args.options:
+        with open(args.options, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            raise ValueError("options file must contain a JSON object")
+        opts = payload
+
+    def resolve(cli_value: Any, key: str, default: Any, cast=None) -> Any:
+        value = cli_value if cli_value is not None else opts.get(key, default)
+        if value is None:
+            value = default
+        if cast is not None:
+            return cast(value)
+        return value
+
+    def parse_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    args.interval_seconds = resolve(args.interval_seconds, "interval_seconds", 5, int)
+    args.mqtt_host = resolve(args.mqtt_host, "mqtt_host", "", str)
+    args.mqtt_port = resolve(args.mqtt_port, "mqtt_port", 1883, int)
+    args.mqtt_username = resolve(args.mqtt_username, "mqtt_username", "", str)
+    args.mqtt_password = resolve(args.mqtt_password, "mqtt_password", "", str)
+    args.mqtt_discovery_prefix = resolve(
+        args.mqtt_discovery_prefix, "mqtt_discovery_prefix", "homeassistant", str
+    )
+    args.mqtt_base_topic = resolve(
+        args.mqtt_base_topic, "mqtt_base_topic", "intel_gpu_top", str
+    )
+    args.client_id = resolve(args.client_id, "client_id", "intel-gpu-top-addon", str)
+    args.preferred_device_regex = resolve(
+        args.preferred_device_regex, "preferred_device_regex", "", str
+    )
+    args.log_level = resolve(args.log_level, "log_level", "INFO", str)
+    args.publish_raw_sample = parse_bool(
+        resolve(args.publish_raw_sample, "publish_raw_sample", True)
+    )
+
+    args.heartbeat_interval_seconds = resolve(
+        args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 10, int
+    )
+    args.sample_timeout_seconds = resolve(
+        args.sample_timeout_seconds, "sample_timeout_seconds", 20, int
+    )
+    args.mqtt_disconnect_timeout_seconds = resolve(
+        args.mqtt_disconnect_timeout_seconds, "mqtt_disconnect_timeout_seconds", 60, int
+    )
+    args.intel_restart_grace_seconds = resolve(
+        args.intel_restart_grace_seconds, "intel_restart_grace_seconds", 10, int
+    )
+
+    if not args.mqtt_host:
+        ap.error("mqtt_host is required (via --mqtt-host or --options)")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -655,4 +709,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

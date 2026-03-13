@@ -9,8 +9,7 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/reposi
   igt-gpu-tools \
   python3 \
   py3-paho-mqtt \
-  bash \
-  jq
+  bash
 
 COPY run.sh /run.sh
 COPY intel_gpu_mqtt.py /intel_gpu_mqtt.py
