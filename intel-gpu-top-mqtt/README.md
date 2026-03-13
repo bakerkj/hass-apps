@@ -1,28 +1,48 @@
 # Intel GPU Top MQTT (Home Assistant Add-on)
 
-This add-on runs `intel_gpu_top` inside the add-on container and publishes Intel GPU metrics to MQTT using **Home Assistant MQTT Discovery**.
+This add-on runs `intel_gpu_top` and publishes Intel GPU metrics to MQTT
+using Home Assistant MQTT Discovery.
 
-## Features
+## What It Publishes
 
-- `protection_mode: false`
-- Maps `/dev/dri` into the container
-- Auto-selects GPU device using `intel_gpu_top -L` (prefers first `/dev/dri/renderD*`)
-  - Optionally set `preferred_device_regex` to pick a specific device if you have multiple Intel GPUs.
-- Publishes **separate MQTT topics per sensor**
-- Publishes **attributes** per sensor (`json_attributes_topic`)
-- Publishes an availability topic
-- Optional `publish_raw_sample` for debugging
+Default base topic: `intel_gpu_top`
 
-## MQTT Topics
+- Availability: `intel_gpu_top/availability`
+- Heartbeat: `intel_gpu_top/heartbeat`
+- Optional raw sample: `intel_gpu_top/raw_sample`
+- Per-sensor state: `intel_gpu_top/<sensor_key>/state`
+- Per-sensor attributes: `intel_gpu_top/<sensor_key>/attributes`
 
-Base topic (default): `intel_gpu`
+Published sensor keys:
 
-- Availability: `intel_gpu/availability`
-- Per-sensor state: `intel_gpu/<sensor_key>/state`
-- Per-sensor attributes: `intel_gpu/<sensor_key>/attributes`
-- Optional debug: `intel_gpu/raw_sample`
+- `rc6_percent`
+- `freq_mhz`
+- `freq_requested_mhz`
+- `interrupts_per_s`
+- `power_gpu_w`
+- `power_pkg_w`
+- `engine_render_3d_busy_percent`
+- `engine_video_busy_percent`
+- `engine_videoenhance_busy_percent`
+- `engine_blitter_busy_percent`
 
-## Notes
+Notes:
 
-- Ensure your host exposes Intel GPU nodes at `/dev/dri` (typical).
-- If metrics are missing/zero, the host kernel/perf settings may restrict access.
+- Wait/semaphore engine metrics are intentionally not published.
+- Deprecated discovery entries for old wait/semaphore sensors are cleared
+  automatically.
+
+## Runtime Behavior
+
+- Auto-selects a render node using `intel_gpu_top -L`.
+- Optional `preferred_device_regex` allows selecting a specific GPU.
+- Publishes MQTT discovery once the first valid sample is parsed.
+- Includes watchdogs for:
+  - sample timeout
+  - render node disappearance
+  - prolonged MQTT disconnect
+
+## Requirements
+
+- `/dev/dri` must be available in the add-on container.
+- Host/kernel permissions must allow `intel_gpu_top` to collect metrics.
