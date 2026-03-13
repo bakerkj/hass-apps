@@ -6,5 +6,5 @@ labels:
   org.opencontainers.image.title: "BirdNET Audio Stream"
   org.opencontainers.image.description:
     "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc"
-  org.opencontainers.image.source: "https://github.com/keneli/local-addons"
+  org.opencontainers.image.source: "https://github.com/bakerkj/hass-apps"
   org.opencontainers.image.licenses: "MIT"
