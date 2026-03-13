@@ -1,6 +1,7 @@
 # FFmpeg Snapshotter (Home Assistant Add-on)
 
-This add-on takes periodic JPEG snapshots from configured RTSP streams using ffmpeg.
+This add-on takes periodic JPEG snapshots from configured RTSP streams using
+ffmpeg.
 
 ## What It Does
 
@@ -20,5 +21,6 @@ This add-on takes periodic JPEG snapshots from configured RTSP streams using ffm
 
 ## Notes
 
-- VAAPI hwaccel arguments are supported; when used, output filter includes `hwdownload,format=nv12`.
+- VAAPI hwaccel arguments are supported; when used, output filter includes
+  `hwdownload,format=nv12`.
 - If no streams are configured, the add-on exits cleanly.

@@ -1,7 +1,7 @@
 # Turbostat MQTT (Home Assistant Add-on)
 
-This add-on runs `turbostat --Summary` and publishes parsed metrics to
-MQTT with Home Assistant discovery.
+This add-on runs `turbostat --Summary` and publishes parsed metrics to MQTT with
+Home Assistant discovery.
 
 ## What It Does
 
@@ -27,6 +27,6 @@ Default base topic: `turbostat`
 ## Notes
 
 - Sensor set depends on turbostat columns available on your host.
-- A few noisy columns are intentionally skipped (`IRQ`, `NMI`, `SMI`,
-  selected package/system residency fields).
+- A few noisy columns are intentionally skipped (`IRQ`, `NMI`, `SMI`, selected
+  package/system residency fields).
 - Values are retained in MQTT for stable dashboard/history behavior.

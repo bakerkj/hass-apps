@@ -1,7 +1,7 @@
 # Intel GPU Top MQTT (Home Assistant Add-on)
 
-This add-on runs `intel_gpu_top` and publishes Intel GPU metrics to MQTT
-using Home Assistant MQTT Discovery.
+This add-on runs `intel_gpu_top` and publishes Intel GPU metrics to MQTT using
+Home Assistant MQTT Discovery.
 
 ## What It Publishes
 

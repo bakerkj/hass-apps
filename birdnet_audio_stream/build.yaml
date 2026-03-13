@@ -4,6 +4,7 @@ build_from:
   armv7: ghcr.io/home-assistant/armv7-base:3.22
 labels:
   org.opencontainers.image.title: "BirdNET Audio Stream"
-  org.opencontainers.image.description: "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc"
+  org.opencontainers.image.description:
+    "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc"
   org.opencontainers.image.source: "https://github.com/keneli/local-addons"
   org.opencontainers.image.licenses: "MIT"

@@ -1,7 +1,7 @@
 # BirdNET Audio Stream (Home Assistant Add-on)
 
-This add-on uses go2rtc + ffmpeg to stream microphone audio over RTSP
-for BirdNET-style consumers.
+This add-on uses go2rtc + ffmpeg to stream microphone audio over RTSP for
+BirdNET-style consumers.
 
 ## What It Does
 
@@ -27,4 +27,5 @@ RTSP URL format:
 
 - Uses add-on options to generate go2rtc config at runtime.
 - `bitrate` is used for Opus when configured.
-- `ffmpeg_volume`, channel count, and sample rate are applied in ffmpeg input template.
+- `ffmpeg_volume`, channel count, and sample rate are applied in ffmpeg input
+  template.
