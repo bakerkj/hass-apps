@@ -15,6 +15,17 @@ from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 
+DEPRECATED_METRIC_KEYS: tuple[str, ...] = (
+    "engine_blitter_semaphore_percent",
+    "engine_blitter_wait_percent",
+    "engine_render_3d_semaphore_percent",
+    "engine_render_3d_wait_percent",
+    "engine_video_semaphore_percent",
+    "engine_video_wait_percent",
+    "engine_videoenhance_semaphore_percent",
+    "engine_videoenhance_wait_percent",
+)
+
 
 def extract_latest_json_object(buf: str) -> Tuple[Optional[dict], str]:
     """Parse the latest complete dict object from intel_gpu_top -J streaming output."""
@@ -193,20 +204,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "Render/3D", "field": "busy"},
         ),
-        "engine_render_3d_semaphore_percent": metric(
-            "engine_render_3d_semaphore_percent",
-            "Intel GPU Engine Render/3D Semaphore Wait",
-            find_engine_field(raw, "Render/3D", "sema"),
-            "%",
-            {"engine": "Render/3D", "field": "semaphore_wait"},
-        ),
-        "engine_render_3d_wait_percent": metric(
-            "engine_render_3d_wait_percent",
-            "Intel GPU Engine Render/3D Wait",
-            find_engine_field(raw, "Render/3D", "wait"),
-            "%",
-            {"engine": "Render/3D", "field": "wait"},
-        ),
         # Video
         "engine_video_busy_percent": metric(
             "engine_video_busy_percent",
@@ -214,20 +211,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             find_engine_field(raw, "Video", "busy"),
             "%",
             {"engine": "Video", "field": "busy"},
-        ),
-        "engine_video_semaphore_percent": metric(
-            "engine_video_semaphore_percent",
-            "Intel GPU Engine Video Semaphore Wait",
-            find_engine_field(raw, "Video", "sema"),
-            "%",
-            {"engine": "Video", "field": "semaphore_wait"},
-        ),
-        "engine_video_wait_percent": metric(
-            "engine_video_wait_percent",
-            "Intel GPU Engine Video Wait",
-            find_engine_field(raw, "Video", "wait"),
-            "%",
-            {"engine": "Video", "field": "wait"},
         ),
         # VideoEnhance
         "engine_videoenhance_busy_percent": metric(
@@ -237,20 +220,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "VideoEnhance", "field": "busy"},
         ),
-        "engine_videoenhance_semaphore_percent": metric(
-            "engine_videoenhance_semaphore_percent",
-            "Intel GPU Engine VideoEnhance Semaphore Wait",
-            find_engine_field(raw, "VideoEnhance", "sema"),
-            "%",
-            {"engine": "VideoEnhance", "field": "semaphore_wait"},
-        ),
-        "engine_videoenhance_wait_percent": metric(
-            "engine_videoenhance_wait_percent",
-            "Intel GPU Engine VideoEnhance Wait",
-            find_engine_field(raw, "VideoEnhance", "wait"),
-            "%",
-            {"engine": "VideoEnhance", "field": "wait"},
-        ),
         # Blitter
         "engine_blitter_busy_percent": metric(
             "engine_blitter_busy_percent",
@@ -258,20 +227,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             find_engine_field(raw, "Blitter", "busy"),
             "%",
             {"engine": "Blitter", "field": "busy"},
-        ),
-        "engine_blitter_semaphore_percent": metric(
-            "engine_blitter_semaphore_percent",
-            "Intel GPU Engine Blitter Semaphore Wait",
-            find_engine_field(raw, "Blitter", "sema"),
-            "%",
-            {"engine": "Blitter", "field": "semaphore_wait"},
-        ),
-        "engine_blitter_wait_percent": metric(
-            "engine_blitter_wait_percent",
-            "Intel GPU Engine Blitter Wait",
-            find_engine_field(raw, "Blitter", "wait"),
-            "%",
-            {"engine": "Blitter", "field": "wait"},
         ),
     }
 
@@ -345,6 +300,21 @@ def publish_discovery(
         info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
         log.debug(
             "MQTT discovery publish %s mid=%s rc=%s", config_topic, info.mid, info.rc
+        )
+
+
+def clear_deprecated_discovery(
+    client: mqtt.Client,
+    discovery_prefix: str,
+    device_id: str,
+    log: logging.Logger,
+) -> None:
+    """Clear retained discovery configs for sensors we no longer publish."""
+    for key in DEPRECATED_METRIC_KEYS:
+        config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
+        info = client.publish(config_topic, "", qos=1, retain=True)
+        log.debug(
+            "MQTT discovery remove %s mid=%s rc=%s", config_topic, info.mid, info.rc
         )
 
 
@@ -594,6 +564,9 @@ def main() -> int:
 
                 # Publish discovery once we have our first sample (retained)
                 if not discovery_published:
+                    clear_deprecated_discovery(
+                        client, args.mqtt_discovery_prefix, device_id, log
+                    )
                     log.info("Publishing MQTT discovery for %d sensors", len(metrics))
                     publish_discovery(
                         client,
