@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
@@ -138,7 +136,9 @@ class MqttPublisher:
         self._stop = threading.Event()
 
         # Queue holds (topic, payload, retain, enqueued_ts)
-        self._q: "queue.Queue[Tuple[str, str, bool, float]]" = queue.Queue(maxsize=max(queue_max, 1))
+        self._q: "queue.Queue[Tuple[str, str, bool, float]]" = queue.Queue(
+            maxsize=max(queue_max, 1)
+        )
 
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
@@ -180,10 +180,16 @@ class MqttPublisher:
             except queue.Full:
                 pass
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int) -> None:
+    def _on_connect(
+        self, client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int
+    ) -> None:
         if rc == 0:
             self._connected.set()
-            log("INFO", f"MQTT connected to {self.cfg.host}:{self.cfg.port}", self.log_level)
+            log(
+                "INFO",
+                f"MQTT connected to {self.cfg.host}:{self.cfg.port}",
+                self.log_level,
+            )
         else:
             log("ERROR", f"MQTT connect failed rc={rc}", self.log_level)
 
@@ -200,7 +206,11 @@ class MqttPublisher:
                 self._client.connect(self.cfg.host, self.cfg.port, keepalive=30)
                 self._client.loop_forever(retry_first_connection=True)
             except Exception as e:
-                log("WARNING", f"MQTT loop error: {e} (retry in {backoff:.1f}s)", self.log_level)
+                log(
+                    "WARNING",
+                    f"MQTT loop error: {e} (retry in {backoff:.1f}s)",
+                    self.log_level,
+                )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
 
@@ -212,7 +222,10 @@ class MqttPublisher:
                 continue
 
             # Drop stale messages if we've been disconnected too long
-            if not self._connected.is_set() and (time.time() - enq_ts) > self.disconnect_timeout_s:
+            if (
+                not self._connected.is_set()
+                and (time.time() - enq_ts) > self.disconnect_timeout_s
+            ):
                 continue
 
             if not self._connected.is_set():
@@ -390,9 +403,22 @@ def main() -> int:
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
-                skip_cols = {'IRQ', 'NMI', 'SMI', 'Pkg%pc2', 'Pkg%pc3', 'Pkg%pc6', 'Pkg%pc8', 'Pk%pc10', 'CPU%LPI', 'SYS%LPI'}
+                skip_cols = {
+                    "IRQ",
+                    "NMI",
+                    "SMI",
+                    "Pkg%pc2",
+                    "Pkg%pc3",
+                    "Pkg%pc6",
+                    "Pkg%pc8",
+                    "Pk%pc10",
+                    "CPU%LPI",
+                    "SYS%LPI",
+                }
                 cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
-                availability_topics = {k: f"{base_topic}/{k}/availability" for k in cols_map.values()}
+                availability_topics = {
+                    k: f"{base_topic}/{k}/availability" for k in cols_map.values()
+                }
 
             payload: Dict[str, Any] = {}
             for col, val in values.items():
@@ -409,7 +435,9 @@ def main() -> int:
 
             payload["_ts_ms"] = int(now * 1000)
             if publish_raw:
-                payload["_raw"] = {cols_map[c]: values[c] for c in values.keys() if c in cols_map}
+                payload["_raw"] = {
+                    cols_map[c]: values[c] for c in values.keys() if c in cols_map
+                }
                 payload["_raw_header"] = header
             if publish_raw:
                 payload["_raw_line"] = raw_line
@@ -435,7 +463,9 @@ def main() -> int:
                 discovered = True
                 log("INFO", f"Published discovery for {len(disc)} sensors", log_level)
 
-            pub.publish(state_topic, json.dumps(payload, separators=(",", ":")), retain=True)
+            pub.publish(
+                state_topic, json.dumps(payload, separators=(",", ":")), retain=True
+            )
             for k, v in payload.items():
                 if k.startswith("_"):
                     continue
@@ -445,7 +475,9 @@ def main() -> int:
             if now - last_heartbeat >= heartbeat_interval:
                 last_heartbeat = now
                 hb = {"ts_ms": int(now * 1000), "connected": pub.is_connected()}
-                pub.publish(heartbeat_topic, json.dumps(hb, separators=(",", ":")), retain=True)
+                pub.publish(
+                    heartbeat_topic, json.dumps(hb, separators=(",", ":")), retain=True
+                )
 
             # CLI status (like intel_gpu_top add-on)
             if now - last_status_line >= 10.0:
@@ -454,7 +486,11 @@ def main() -> int:
                 for k in ("pkgwatt", "corwatt", "gfxwatt", "ramwatt"):
                     if k in payload:
                         bits.append(f"{k}={payload[k]}")
-                log("INFO", " | ".join(bits) if bits else f"Published {len(payload)} keys", log_level)
+                log(
+                    "INFO",
+                    " | ".join(bits) if bits else f"Published {len(payload)} keys",
+                    log_level,
+                )
 
             # Stall watchdog: handled outside loop by periodic check
 

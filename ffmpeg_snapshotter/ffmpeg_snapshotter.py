@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -12,15 +11,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+
 def log(level: str, msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts} [{level}] {msg}", flush=True)
+
 
 def ensure_media_path(output_dir: str) -> Path:
     p = Path(output_dir)
     if not str(p).startswith("/media/"):
         p = Path("/media") / p
     return p
+
 
 def set_latest_symlink(target: Path, latest_path: Path) -> None:
     # Best-effort symlink update. If symlinks aren't supported on /media, we log once per attempt.
@@ -34,6 +36,7 @@ def set_latest_symlink(target: Path, latest_path: Path) -> None:
     except Exception as e:
         log("WARNING", f"Failed to update symlink {latest_path} -> {target}: {e}")
 
+
 def apply_retention_days(dir_path: Path, retain_days: int) -> None:
     if retain_days <= 0:
         return
@@ -44,14 +47,27 @@ def apply_retention_days(dir_path: Path, retain_days: int) -> None:
     # Exclude latest.jpg.
     try:
         subprocess.run(
-            ["find", str(dir_path), "-type", "f", "-name", "*.jpg", "!", "-name", "latest.jpg",
-             "-mtime", f"+{retain_days}", "-delete"],
+            [
+                "find",
+                str(dir_path),
+                "-type",
+                "f",
+                "-name",
+                "*.jpg",
+                "!",
+                "-name",
+                "latest.jpg",
+                "-mtime",
+                f"+{retain_days}",
+                "-delete",
+            ],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except Exception as e:
         log("WARNING", f"Retention (days) failed for {dir_path}: {e}")
+
 
 def apply_retention_count(dir_path: Path, retain_count: int) -> None:
     if retain_count <= 0:
@@ -82,6 +98,7 @@ def apply_retention_count(dir_path: Path, retain_count: int) -> None:
     except Exception as e:
         log("WARNING", f"Retention (count) failed for {dir_path}: {e}")
 
+
 @dataclass
 class StreamCfg:
     name: str
@@ -96,8 +113,15 @@ class StreamCfg:
     extra_input_args: str
     extra_output_args: str
 
+
 class Worker:
-    def __init__(self, cfg: StreamCfg, ffmpeg_cfg: Dict[str, str], log_level: str, start_offset_seconds: float = 0.0):
+    def __init__(
+        self,
+        cfg: StreamCfg,
+        ffmpeg_cfg: Dict[str, str],
+        log_level: str,
+        start_offset_seconds: float = 0.0,
+    ):
         self.cfg = cfg
         self.ffmpeg_cfg = ffmpeg_cfg
         self.thread: Optional[threading.Thread] = None
@@ -197,7 +221,9 @@ class Worker:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            out, err = proc.communicate(timeout=max(5, min(120, int(self.cfg.interval_seconds))))
+            out, err = proc.communicate(
+                timeout=max(5, min(120, int(self.cfg.interval_seconds)))
+            )
             rc = int(proc.returncode or 0)
             if out:
                 for line in out.splitlines():
@@ -253,9 +279,13 @@ class Worker:
                 continue
 
             backoff_delay = min(self.backoff, 60.0)
-            log("WARNING", f"[{self.cfg.name}] snapshot failed (rc={rc}). Backing off {backoff_delay:.1f}s")
+            log(
+                "WARNING",
+                f"[{self.cfg.name}] snapshot failed (rc={rc}). Backing off {backoff_delay:.1f}s",
+            )
             self.backoff = min(self.backoff * 2.0, 60.0)
             self.next_due = time.monotonic() + backoff_delay
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -317,7 +347,12 @@ def main() -> int:
             offsets[name] = (float(i) * float(interval)) / float(n)
 
     for name, cfg in cfgs.items():
-        workers[name] = Worker(cfg, ffmpeg_cfg, log_level=log_level, start_offset_seconds=offsets.get(name, 0.0))
+        workers[name] = Worker(
+            cfg,
+            ffmpeg_cfg,
+            log_level=log_level,
+            start_offset_seconds=offsets.get(name, 0.0),
+        )
 
     stopping = False
 
@@ -354,6 +389,7 @@ def main() -> int:
             return 0
 
         time.sleep(0.1)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

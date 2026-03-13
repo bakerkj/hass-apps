@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
@@ -69,7 +67,9 @@ def dig(d: Dict[str, Any], path: list[str]) -> Any:
     return cur
 
 
-def find_engine_field(raw: Dict[str, Any], engine_name: str, field: str) -> Optional[float]:
+def find_engine_field(
+    raw: Dict[str, Any], engine_name: str, field: str
+) -> Optional[float]:
     engines = raw.get("engines")
     if isinstance(engines, dict):
         for k, v in engines.items():
@@ -90,7 +90,9 @@ def list_intel_gpu_top_devices(log: logging.Logger) -> str:
         return ""
 
 
-def auto_select_device_arg(device_listing: str, preferred_regex: str, log: logging.Logger) -> tuple[Optional[str], Optional[str]]:
+def auto_select_device_arg(
+    device_listing: str, preferred_regex: str, log: logging.Logger
+) -> tuple[Optional[str], Optional[str]]:
     """Pick a -d argument for intel_gpu_top based on `intel_gpu_top -L` output.
 
     Returns:
@@ -112,7 +114,9 @@ def auto_select_device_arg(device_listing: str, preferred_regex: str, log: loggi
             rx = re.compile(preferred_regex, re.IGNORECASE)
             for ln, path in render_candidates:
                 if rx.search(ln) or rx.search(path):
-                    log.info("Auto-selected device by regex '%s': %s", preferred_regex, ln)
+                    log.info(
+                        "Auto-selected device by regex '%s': %s", preferred_regex, ln
+                    )
                     return f"drm:{path}", path
         except re.error as e:
             log.warning("Invalid preferred_device_regex '%s': %s", preferred_regex, e)
@@ -124,10 +128,10 @@ def auto_select_device_arg(device_listing: str, preferred_regex: str, log: loggi
 
 def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Return metrics dict keyed by sensor key with fields:
-       - value (numeric or None)
-       - unit
-       - attrs (dict)
-       - name (human name)
+    - value (numeric or None)
+    - unit
+    - attrs (dict)
+    - name (human name)
     """
     ts = time.time()
     common_attrs: Dict[str, Any] = {"ts": ts}
@@ -167,12 +171,20 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
     metrics: Dict[str, Dict[str, Any]] = {
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
-        "freq_mhz": metric("freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"),
-        "freq_requested_mhz": metric("freq_requested_mhz", "Intel GPU Frequency Requested", freq_requested, "MHz"),
-        "interrupts_per_s": metric("interrupts_per_s", "Intel GPU Interrupts", safe_float(dig(raw, ["interrupts", "count"])), "irq/s"),
+        "freq_mhz": metric(
+            "freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"
+        ),
+        "freq_requested_mhz": metric(
+            "freq_requested_mhz", "Intel GPU Frequency Requested", freq_requested, "MHz"
+        ),
+        "interrupts_per_s": metric(
+            "interrupts_per_s",
+            "Intel GPU Interrupts",
+            safe_float(dig(raw, ["interrupts", "count"])),
+            "irq/s",
+        ),
         "power_gpu_w": metric("power_gpu_w", "Intel GPU Power", p_gpu, "W"),
         "power_pkg_w": metric("power_pkg_w", "Intel Package Power", p_pkg, "W"),
-
         # Render/3D
         "engine_render_3d_busy_percent": metric(
             "engine_render_3d_busy_percent",
@@ -195,7 +207,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "Render/3D", "field": "wait"},
         ),
-
         # Video
         "engine_video_busy_percent": metric(
             "engine_video_busy_percent",
@@ -218,7 +229,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "Video", "field": "wait"},
         ),
-
         # VideoEnhance
         "engine_videoenhance_busy_percent": metric(
             "engine_videoenhance_busy_percent",
@@ -241,7 +251,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "VideoEnhance", "field": "wait"},
         ),
-
         # Blitter
         "engine_blitter_busy_percent": metric(
             "engine_blitter_busy_percent",
@@ -267,7 +276,6 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     }
 
     return metrics
-
 
 
 def publish_discovery(
@@ -335,8 +343,9 @@ def publish_discovery(
 
         config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
         info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
-        log.debug("MQTT discovery publish %s mid=%s rc=%s", config_topic, info.mid, info.rc)
-
+        log.debug(
+            "MQTT discovery publish %s mid=%s rc=%s", config_topic, info.mid, info.rc
+        )
 
 
 class MqttHealth:
@@ -382,7 +391,11 @@ def main() -> int:
     ap.add_argument("--client-id", default="intel-gpu-top-addon")
     ap.add_argument("--preferred-device-regex", default="")
     ap.add_argument("--log-level", default="INFO")
-    ap.add_argument("--publish-raw-sample", type=lambda s: str(s).lower() in ["1", "true", "yes", "y", "on"], default=True)
+    ap.add_argument(
+        "--publish-raw-sample",
+        type=lambda s: str(s).lower() in ["1", "true", "yes", "y", "on"],
+        default=True,
+    )
 
     # New health/heartbeat knobs (defaults are sane; you can wire them into add-on options later if desired)
     ap.add_argument("--heartbeat-interval-seconds", type=int, default=10)
@@ -404,7 +417,9 @@ def main() -> int:
     # Device selection
     listing = list_intel_gpu_top_devices(log)
     log.info("intel_gpu_top -L output:\n%s", listing if listing else "(none)")
-    dev_arg, dev_path = auto_select_device_arg(listing, args.preferred_device_regex, log)
+    dev_arg, dev_path = auto_select_device_arg(
+        listing, args.preferred_device_regex, log
+    )
     log.info("Selected device arg: %s", dev_arg or "(none)")
     if dev_path:
         log.info("Selected render node: %s", dev_path)
@@ -475,7 +490,9 @@ def main() -> int:
         nonlocal proc, buf, last_intel_restart_attempt, dev_arg, dev_path, listing
         now = time.time()
         if now - last_intel_restart_attempt < args.intel_restart_grace_seconds:
-            log.warning("Skipping intel_gpu_top restart (grace period) reason=%s", reason)
+            log.warning(
+                "Skipping intel_gpu_top restart (grace period) reason=%s", reason
+            )
             return
         last_intel_restart_attempt = now
 
@@ -492,7 +509,9 @@ def main() -> int:
 
         # Re-select device in case GPU nodes changed
         listing = list_intel_gpu_top_devices(log)
-        dev_arg, dev_path = auto_select_device_arg(listing, args.preferred_device_regex, log)
+        dev_arg, dev_path = auto_select_device_arg(
+            listing, args.preferred_device_regex, log
+        )
         log.info("Re-selected device arg: %s", dev_arg or "(none)")
         if dev_path:
             log.info("Re-selected render node: %s", dev_path)
@@ -514,14 +533,19 @@ def main() -> int:
                 restart_intel_gpu_top("render_node_disappeared")
 
             # Sample timeout watchdog
-            if last_sample_time > 0 and (now - last_sample_time) > args.sample_timeout_seconds:
+            if (
+                last_sample_time > 0
+                and (now - last_sample_time) > args.sample_timeout_seconds
+            ):
                 log.error("No intel_gpu_top samples for %.1fs", now - last_sample_time)
                 # Try restart once; if it keeps failing, we'll exit via repeated timeout
                 restart_intel_gpu_top("sample_timeout")
 
             # MQTT disconnect watchdog: exit nonzero so add-on supervisor restarts us
             if not health.connected and health.last_disconnect > 0:
-                if (now - health.last_disconnect) > args.mqtt_disconnect_timeout_seconds:
+                if (
+                    now - health.last_disconnect
+                ) > args.mqtt_disconnect_timeout_seconds:
                     log.error(
                         "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
                         now - health.last_disconnect,
@@ -536,12 +560,21 @@ def main() -> int:
                     {
                         "ts": now,
                         "mqtt_connected": health.connected,
-                        "last_sample_age_s": (now - last_sample_time) if last_sample_time else None,
+                        "last_sample_age_s": (now - last_sample_time)
+                        if last_sample_time
+                        else None,
                         "device": dev_path,
                     }
                 )
-                info = client.publish(f"{base_topic}/heartbeat", hb_payload, qos=0, retain=False)
-                log.debug("Heartbeat publish mid=%s rc=%s payload=%s", info.mid, info.rc, hb_payload)
+                info = client.publish(
+                    f"{base_topic}/heartbeat", hb_payload, qos=0, retain=False
+                )
+                log.debug(
+                    "Heartbeat publish mid=%s rc=%s payload=%s",
+                    info.mid,
+                    info.rc,
+                    hb_payload,
+                )
 
             # ----- Read intel_gpu_top output line-by-line -----
 
@@ -585,8 +618,12 @@ def main() -> int:
 
                     # Always update attributes (ts, etc.)
                     attr_topic = f"{base_topic}/{key}/attributes"
-                    ainfo = client.publish(attr_topic, json.dumps(m["attrs"]), qos=0, retain=False)
-                    log.debug("MQTT attrs %s mid=%s rc=%s", attr_topic, ainfo.mid, ainfo.rc)
+                    ainfo = client.publish(
+                        attr_topic, json.dumps(m["attrs"]), qos=0, retain=False
+                    )
+                    log.debug(
+                        "MQTT attrs %s mid=%s rc=%s", attr_topic, ainfo.mid, ainfo.rc
+                    )
 
                     if val is None:
                         continue
@@ -595,12 +632,20 @@ def main() -> int:
                     # Publish full-precision numeric value; HA can format display using suggested_display_precision.
                     payload = repr(float(val))
                     sinfo = client.publish(state_topic, payload, qos=0, retain=False)
-                    log.debug("MQTT state %s=%s mid=%s rc=%s", state_topic, payload, sinfo.mid, sinfo.rc)
+                    log.debug(
+                        "MQTT state %s=%s mid=%s rc=%s",
+                        state_topic,
+                        payload,
+                        sinfo.mid,
+                        sinfo.rc,
+                    )
 
                 if args.publish_raw_sample:
                     # Publish a raw sample snapshot for debugging (non-discovery)
                     raw_topic = f"{base_topic}/raw_sample"
-                    rinfo = client.publish(raw_topic, json.dumps(obj)[:200000], qos=0, retain=False)
+                    rinfo = client.publish(
+                        raw_topic, json.dumps(obj)[:200000], qos=0, retain=False
+                    )
                     log.debug("MQTT raw_sample mid=%s rc=%s", rinfo.mid, rinfo.rc)
 
             else:
