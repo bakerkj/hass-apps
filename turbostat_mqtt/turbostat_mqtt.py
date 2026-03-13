@@ -375,7 +375,6 @@ def main() -> int:
 
     cols_map: Dict[str, str] = {}
     discovered = False
-    last_sample_ts = 0.0
     last_heartbeat = 0.0
     last_status_line = 0.0
 
@@ -388,7 +387,6 @@ def main() -> int:
                 break
 
             now = time.time()
-            last_sample_ts = now
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
