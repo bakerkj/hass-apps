@@ -488,7 +488,6 @@ def main() -> int:
     client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
 
     discovered: dict[str, set[str]] = {}
-    warned_zero_metric_slugs: set[str] = set()
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
@@ -527,13 +526,6 @@ def main() -> int:
             continue
 
         seen_slugs: set[str] = set()
-        if not containers:
-            log.warning(
-                "Glances returned 0 containers for source=%s endpoint=%s",
-                args.glances_url,
-                args.glances_endpoint,
-            )
-
         for container in containers:
             container_name = first_nonempty(
                 container, ["name", "container_name", "Name", "id", "Id"]
@@ -543,10 +535,6 @@ def main() -> int:
             )
 
             if not container_name or not container_ident:
-                log.warning(
-                    "Skipping container missing name/id. keys=%s",
-                    ",".join(sorted(container.keys())),
-                )
                 continue
 
             if include_rx and not include_rx.search(container_name):
@@ -584,15 +572,11 @@ def main() -> int:
                 "source": args.glances_url,
                 "ts": now,
             }
-
-            metrics_published = 0
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
                 value = metric_value(container, metric_key)
                 if value is None:
                     continue
-
-                metrics_published += 1
 
                 if metric_key not in discovered[container_slug]:
                     publish_discovery(
@@ -614,20 +598,6 @@ def main() -> int:
 
                 client.publish(attr_topic, json.dumps(attrs), qos=0, retain=False)
                 client.publish(state_topic, repr(float(value)), qos=0, retain=False)
-
-            if (
-                metrics_published == 0
-                and container_slug not in warned_zero_metric_slugs
-            ):
-                warned_zero_metric_slugs.add(container_slug)
-                log.warning(
-                    "No selected metrics found for container %s (selected=%s). Top-level keys=%s",
-                    container_name,
-                    ",".join(selected_metrics),
-                    ",".join(sorted(container.keys())),
-                )
-            elif metrics_published > 0 and container_slug in warned_zero_metric_slugs:
-                warned_zero_metric_slugs.discard(container_slug)
 
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
