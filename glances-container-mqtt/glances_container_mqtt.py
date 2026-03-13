@@ -65,6 +65,29 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
     },
 }
 
+OPTION_KEYS: set[str] = {
+    "interval_seconds",
+    "glances_url",
+    "glances_endpoint",
+    "glances_username",
+    "glances_password",
+    "glances_timeout_seconds",
+    "include_metrics",
+    "container_include_regex",
+    "container_exclude_regex",
+    "mqtt_host",
+    "mqtt_port",
+    "mqtt_username",
+    "mqtt_password",
+    "mqtt_discovery_prefix",
+    "mqtt_base_topic",
+    "client_id",
+    "log_level",
+    "heartbeat_interval_seconds",
+}
+
+SENSITIVE_OPTION_KEYS: set[str] = {"glances_password", "mqtt_password"}
+
 
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_\-]+", "_", value.strip().lower())
@@ -160,48 +183,85 @@ def fetch_containers(
     parsed = urlsplit(raw_base)
 
     if parsed.scheme and parsed.netloc:
-        # glances_url is host/base URL; glances_endpoint controls API path.
-        base = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+        base_root = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+        base_path = parsed.path.rstrip("/")
+        if not base_path:
+            base_path = ""
     else:
-        base = raw_base.rstrip("/")
+        base_root = raw_base.rstrip("/")
+        base_path = ""
 
     normalized_endpoint = "/" + (endpoint or "").strip().lstrip("/")
     if normalized_endpoint == "/":
         normalized_endpoint = "/api/3/containers"
 
-    candidates: list[str] = []
-    for ep in (
-        normalized_endpoint,
-        "/api/3/containers",
-        "/api/4/containers",
-    ):
-        norm = "/" + ep.lstrip("/")
-        if norm not in candidates:
-            candidates.append(norm)
+    # If glances_url already includes a full containers endpoint, trust it directly.
+    if base_path.endswith("/containers"):
+        request_path = base_path
+    elif base_path:
+        request_path = f"{base_path}/{normalized_endpoint.lstrip('/')}"
+    else:
+        request_path = normalized_endpoint
 
-    last_error = ""
+    url = f"{base_root}/{request_path.lstrip('/')}"
+    try:
+        res = requests.get(url, timeout=timeout_seconds, auth=auth)
+        res.raise_for_status()
+        payload = res.json()
 
-    for ep in candidates:
-        url = f"{base}/{ep.lstrip('/')}"
-        try:
-            res = requests.get(url, timeout=timeout_seconds, auth=auth)
-            res.raise_for_status()
-            payload = res.json()
+        if isinstance(payload, list):
+            return [x for x in payload if isinstance(x, dict)]
 
-            if isinstance(payload, list):
-                return [x for x in payload if isinstance(x, dict)]
+        if isinstance(payload, dict):
+            if isinstance(payload.get("containers"), list):
+                return [x for x in payload["containers"] if isinstance(x, dict)]
+            if isinstance(payload.get("container"), list):
+                return [x for x in payload["container"] if isinstance(x, dict)]
 
-            if isinstance(payload, dict):
-                if isinstance(payload.get("containers"), list):
-                    return [x for x in payload["containers"] if isinstance(x, dict)]
-                if isinstance(payload.get("container"), list):
-                    return [x for x in payload["container"] if isinstance(x, dict)]
+        raise RuntimeError(f"Unexpected payload shape from {url}")
+    except Exception as exc:
+        raise RuntimeError(f"Unable to fetch Glances containers: {url}: {exc}") from exc
 
-            last_error = f"Unexpected payload shape from {url}"
-        except Exception as exc:
-            last_error = f"{url}: {exc}"
 
-    raise RuntimeError(f"Unable to fetch Glances containers: {last_error}")
+def load_options_file(path: str, ap: argparse.ArgumentParser) -> dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except OSError as exc:
+        ap.error(f"unable to read options file {path}: {exc}")
+    except json.JSONDecodeError as exc:
+        ap.error(f"invalid JSON in options file {path}: {exc}")
+
+    if not isinstance(payload, dict):
+        ap.error("options file must contain a JSON object")
+
+    nested = payload.get("options")
+    if isinstance(nested, dict) and not any(key in payload for key in OPTION_KEYS):
+        opts = nested
+    else:
+        opts = payload
+
+    if not isinstance(opts, dict):
+        ap.error("options object must be a JSON object")
+
+    known_keys = sorted(key for key in opts.keys() if key in OPTION_KEYS)
+    if not known_keys:
+        ap.error(
+            "options file does not contain recognized add-on keys; "
+            "expected top-level keys or an 'options' object"
+        )
+
+    return opts
+
+
+def redact_options_for_log(opts: dict[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, value in opts.items():
+        if key in SENSITIVE_OPTION_KEYS and str(value).strip():
+            redacted[key] = "***"
+        else:
+            redacted[key] = value
+    return redacted
 
 
 def publish_discovery(
@@ -289,16 +349,7 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    try:
-        with open(args.options, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except OSError as exc:
-        ap.error(f"unable to read options file {args.options}: {exc}")
-
-    if not isinstance(payload, dict):
-        ap.error("options file must contain a JSON object")
-
-    opts: dict[str, Any] = payload
+    opts = load_options_file(args.options, ap)
 
     def resolve(cli_value: Any, key: str, default: Any, cast=None) -> Any:
         value = cli_value if cli_value is not None else opts.get(key, default)
@@ -333,7 +384,7 @@ def main() -> int:
         args.container_exclude_regex, "container_exclude_regex", "", str
     )
 
-    args.mqtt_host = resolve(args.mqtt_host, "mqtt_host", "", str)
+    args.mqtt_host = resolve(args.mqtt_host, "mqtt_host", "core-mosquitto", str)
     args.mqtt_port = resolve(args.mqtt_port, "mqtt_port", 1883, int)
     args.mqtt_username = resolve(args.mqtt_username, "mqtt_username", "", str)
     args.mqtt_password = resolve(args.mqtt_password, "mqtt_password", "", str)
@@ -362,11 +413,39 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     log = logging.getLogger("glances_container_mqtt")
+    unknown_option_keys = sorted(key for key in opts.keys() if key not in OPTION_KEYS)
+    if unknown_option_keys:
+        log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
     log.info(
-        "Config: glances_url=%s glances_endpoint=%s options_file=%s",
-        args.glances_url,
-        args.glances_endpoint,
-        args.options,
+        "Raw options file values: %s",
+        json.dumps(redact_options_for_log(opts), sort_keys=True),
+    )
+    log.info(
+        "Effective configuration: %s",
+        json.dumps(
+            {
+                "options_file": args.options,
+                "interval_seconds": args.interval_seconds,
+                "glances_url": args.glances_url,
+                "glances_endpoint": args.glances_endpoint,
+                "glances_username": args.glances_username,
+                "glances_password": "***" if args.glances_password else "",
+                "glances_timeout_seconds": args.glances_timeout_seconds,
+                "include_metrics": args.include_metrics,
+                "container_include_regex": args.container_include_regex,
+                "container_exclude_regex": args.container_exclude_regex,
+                "mqtt_host": args.mqtt_host,
+                "mqtt_port": args.mqtt_port,
+                "mqtt_username": args.mqtt_username,
+                "mqtt_password": "***" if args.mqtt_password else "",
+                "mqtt_discovery_prefix": args.mqtt_discovery_prefix,
+                "mqtt_base_topic": args.mqtt_base_topic,
+                "client_id": args.client_id,
+                "log_level": args.log_level,
+                "heartbeat_interval_seconds": args.heartbeat_interval_seconds,
+            },
+            sort_keys=True,
+        ),
     )
 
     include_rx = (
