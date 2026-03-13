@@ -4,20 +4,14 @@
   "slug": "birdnet_audio_stream",
   "description": "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc",
   "url": "https://github.com/bakerkj/hass-apps/birdnet_audio_stream",
-  "arch": [
-    "amd64",
-    "aarch64",
-    "armv7"
-  ],
+  "arch": ["amd64", "aarch64", "armv7"],
   "init": false,
   "startup": "services",
   "boot": "auto",
   "audio": true,
   "usb": true,
   "full_access": false,
-  "map": [
-    "addon_config:rw"
-  ],
+  "map": ["addon_config:rw"],
   "options": {
     "stream_name": "birdnet",
     "alsa_device": "default",

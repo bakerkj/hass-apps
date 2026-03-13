@@ -3,12 +3,7 @@
   "slug": "ffmpeg_snapshotter",
   "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "version": "0.8.0",
-  "arch": [
-    "aarch64",
-    "amd64",
-    "armv7",
-    "i386"
-  ],
+  "arch": ["aarch64", "amd64", "armv7", "i386"],
   "startup": "services",
   "boot": "auto",
   "init": false,
@@ -17,14 +12,8 @@
   "host_network": false,
   "ingress": false,
   "full_access": true,
-  "devices": [
-    "/dev/dri:/dev/dri:rwm"
-  ],
-  "map": [
-    "media:rw",
-    "config:rw",
-    "share:rw"
-  ],
+  "devices": ["/dev/dri:/dev/dri:rwm"],
+  "map": ["media:rw", "config:rw", "share:rw"],
   "options": {
     "log_level": "INFO",
     "ffmpeg": {
