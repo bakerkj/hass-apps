@@ -26,6 +26,10 @@ Default Glances target: `http://localhost:61209` with endpoint
 - `network_tx_total`
 - `io_read_total`
 - `io_write_total`
+- `network_rx_rate`
+- `network_tx_rate`
+- `io_read_rate`
+- `io_write_rate`
 - `status`
 
 Metric sources are aligned with Glances container payloads, preferring
@@ -42,4 +46,5 @@ Default base topic: `glances_containers`
 - Heartbeat: `glances_containers/heartbeat`
 - Per-sensor state: `glances_containers/<container_slug>/<metric_key>/state`
 
-Rate metrics, uptime, and memory-percent are intentionally not published.
+Rate metrics are computed directly from cumulative counters per container on
+each poll interval.

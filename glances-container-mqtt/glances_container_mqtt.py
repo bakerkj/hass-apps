@@ -63,6 +63,30 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_size",
         "state_class": "total_increasing",
     },
+    "network_rx_rate": {
+        "name": "Network RX Rate",
+        "unit": "B/s",
+        "icon": "mdi:download",
+        "state_class": "measurement",
+    },
+    "network_tx_rate": {
+        "name": "Network TX Rate",
+        "unit": "B/s",
+        "icon": "mdi:upload",
+        "state_class": "measurement",
+    },
+    "io_read_rate": {
+        "name": "Disk Read Rate",
+        "unit": "B/s",
+        "icon": "mdi:harddisk",
+        "state_class": "measurement",
+    },
+    "io_write_rate": {
+        "name": "Disk Write Rate",
+        "unit": "B/s",
+        "icon": "mdi:harddisk",
+        "state_class": "measurement",
+    },
     "status": {
         "paths": [("status",), ("Status",), ("state",), ("State",)],
         "name": "Status",
@@ -70,6 +94,15 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "value_type": "string",
     },
 }
+
+RATE_SOURCE_METRICS: dict[str, str] = {
+    "network_rx_rate": "network_rx_total",
+    "network_tx_rate": "network_tx_total",
+    "io_read_rate": "io_read_total",
+    "io_write_rate": "io_write_total",
+}
+
+RATE_METRICS: tuple[str, ...] = tuple(RATE_SOURCE_METRICS.keys())
 
 OPTION_KEYS: set[str] = {
     "interval_seconds",
@@ -181,6 +214,43 @@ def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
         if value is not None:
             return value
     return None
+
+
+def compute_rate_metrics(
+    container_slug: str,
+    container: dict[str, Any],
+    now: float,
+    last_totals_by_container: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    current_totals: dict[str, float] = {}
+    for total_metric in RATE_SOURCE_METRICS.values():
+        total_value = metric_value(container, total_metric)
+        if total_value is not None:
+            current_totals[total_metric] = float(total_value)
+
+    previous = last_totals_by_container.get(container_slug)
+    rate_values: dict[str, float] = {}
+
+    if previous is not None:
+        dt = now - previous.get("_ts", now)
+        if dt > 0:
+            for rate_metric, total_metric in RATE_SOURCE_METRICS.items():
+                current_total = current_totals.get(total_metric)
+                previous_total = previous.get(total_metric)
+                if current_total is None or previous_total is None:
+                    continue
+                if current_total < previous_total:
+                    continue
+                rate_values[rate_metric] = (current_total - previous_total) / dt
+
+    if current_totals:
+        snapshot = {"_ts": now}
+        snapshot.update(current_totals)
+        last_totals_by_container[container_slug] = snapshot
+    else:
+        last_totals_by_container.pop(container_slug, None)
+
+    return rate_values
 
 
 def parse_include_metrics(raw: str, log: logging.Logger) -> list[str]:
@@ -410,7 +480,7 @@ def main() -> int:
     args.include_metrics = resolve(
         args.include_metrics,
         "include_metrics",
-        "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total,status",
+        "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total,network_rx_rate,network_tx_rate,io_read_rate,io_write_rate,status",
         str,
     )
     args.container_include_regex = resolve(
@@ -513,6 +583,7 @@ def main() -> int:
     client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
 
     discovered: dict[str, set[str]] = {}
+    last_totals_by_container: dict[str, dict[str, float]] = {}
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
@@ -585,11 +656,12 @@ def main() -> int:
                     stale_metric,
                 )
                 discovered[container_slug].discard(stale_metric)
+            rate_values = compute_rate_metrics(
+                container_slug, container, now, last_totals_by_container
+            )
+
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
-                value = metric_value(container, metric_key)
-                if value is None:
-                    continue
 
                 if metric_key not in discovered[container_slug]:
                     publish_discovery(
@@ -604,6 +676,14 @@ def main() -> int:
                         metric_def,
                     )
                     discovered[container_slug].add(metric_key)
+
+                if metric_key in RATE_METRICS:
+                    value = rate_values.get(metric_key)
+                else:
+                    value = metric_value(container, metric_key)
+
+                if value is None:
+                    continue
 
                 state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
 
@@ -624,6 +704,7 @@ def main() -> int:
                     metric_key,
                 )
             del discovered[stale_slug]
+            last_totals_by_container.pop(stale_slug, None)
 
         sleep_to_interval(loop_start_monotonic)
 
