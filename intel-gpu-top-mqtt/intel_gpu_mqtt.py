@@ -264,7 +264,7 @@ def publish_discovery(
         payload: Dict[str, Any] = {
             "name": m["name"],
             "unique_id": f"{device_id}_{key}",
-            "object_id": f"intel_gpu_{key}",
+            "default_entity_id": f"sensor.intel_gpu_{key}",
             "state_topic": state_topic,
             "availability_topic": availability_topic,
             "payload_available": "online",

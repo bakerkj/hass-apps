@@ -319,7 +319,7 @@ def publish_discovery(
     payload: dict[str, Any] = {
         "name": f"{friendly_container_name} {metric_def['name']}",
         "unique_id": f"{device_id}_{sensor_id}",
-        "object_id": f"container_{container_slug}_{metric_key}",
+        "default_entity_id": f"sensor.container_{container_slug}_{metric_key}",
         "state_topic": state_topic,
         "availability_topic": f"{base_topic}/availability",
         "payload_available": "online",
