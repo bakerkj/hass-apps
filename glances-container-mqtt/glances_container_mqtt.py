@@ -317,7 +317,8 @@ def publish_discovery(
     friendly_container_name = f"Container {container_display_name}"
 
     payload: dict[str, Any] = {
-        "name": f"{friendly_container_name} {metric_def['name']}",
+        "name": metric_def["name"],
+        "has_entity_name": True,
         "unique_id": f"{device_id}_{sensor_id}",
         "default_entity_id": f"sensor.container_{container_slug}_{metric_key}",
         "state_topic": state_topic,
