@@ -41,7 +41,5 @@ Default base topic: `glances_containers`
 - Availability: `glances_containers/availability`
 - Heartbeat: `glances_containers/heartbeat`
 - Per-sensor state: `glances_containers/<container_slug>/<metric_key>/state`
-- Per-sensor attributes:
-  `glances_containers/<container_slug>/<metric_key>/attributes`
 
 Rate metrics, uptime, and memory-percent are intentionally not published.

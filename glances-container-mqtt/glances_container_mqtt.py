@@ -314,16 +314,13 @@ def publish_discovery(
     sensor_id = f"{container_slug}_{metric_key}"
     config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
     state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
-    attr_topic = f"{base_topic}/{container_slug}/{metric_key}/attributes"
-
     friendly_container_name = f"Container {container_display_name}"
 
     payload: dict[str, Any] = {
         "name": f"{friendly_container_name} {metric_def['name']}",
         "unique_id": f"{device_id}_{sensor_id}",
-        "object_id": f"{device_id}_{sensor_id}",
+        "object_id": f"container_{container_slug}_{metric_key}",
         "state_topic": state_topic,
-        "json_attributes_topic": attr_topic,
         "availability_topic": f"{base_topic}/availability",
         "payload_available": "online",
         "payload_not_available": "offline",
@@ -570,8 +567,8 @@ def main() -> int:
                 continue
 
             short_id = container_ident.replace("/", "_")[:12]
-            container_slug = slugify(f"{container_name}_{short_id}")
             display_name = container_display_name(container_name)
+            container_slug = slugify(f"{display_name}_{short_id}")
             seen_slugs.add(container_slug)
 
             if container_slug not in discovered:
@@ -587,18 +584,6 @@ def main() -> int:
                     stale_metric,
                 )
                 discovered[container_slug].discard(stale_metric)
-
-            attrs = {
-                "container_name": container_name,
-                "container_id": container_ident,
-                "image": first_nonempty(container, ["image", "Image", "image_name"]),
-                "status": first_nonempty(
-                    container, ["status", "Status", "state", "State"]
-                ),
-                "engine": first_nonempty(container, ["engine", "Engine"]),
-                "source": args.glances_url,
-                "ts": now,
-            }
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
                 value = metric_value(container, metric_key)
@@ -620,9 +605,7 @@ def main() -> int:
                     discovered[container_slug].add(metric_key)
 
                 state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
-                attr_topic = f"{base_topic}/{container_slug}/{metric_key}/attributes"
 
-                client.publish(attr_topic, json.dumps(attrs), qos=0, retain=False)
                 if metric_def.get("value_type") == "string":
                     state_payload = str(value)
                 else:
