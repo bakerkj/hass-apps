@@ -9,6 +9,7 @@ to Home Assistant.
 - Creates separate sensors per metric per container.
 - Supports container include/exclude regex filters.
 - Supports metric include-list selection.
+- Entity IDs are name-based (stable across container restarts).
 
 ## Networking
 

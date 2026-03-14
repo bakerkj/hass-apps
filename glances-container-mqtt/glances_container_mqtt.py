@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -391,7 +392,6 @@ def publish_discovery(
     base_topic: str,
     container_slug: str,
     container_display_name: str,
-    container_ident: str,
     metric_key: str,
     metric_def: dict[str, Any],
 ) -> None:
@@ -414,7 +414,6 @@ def publish_discovery(
             "name": friendly_container_name,
             "manufacturer": "Glances",
             "model": "Container",
-            "serial_number": container_ident,
         },
     }
 
@@ -642,11 +641,7 @@ def main() -> int:
             container_name = first_nonempty(
                 container, ["name", "container_name", "Name", "id", "Id"]
             )
-            container_ident = first_nonempty(
-                container, ["id", "Id", "container_id", "name", "Name"]
-            )
-
-            if not container_name or not container_ident:
+            if not container_name:
                 continue
 
             if include_rx and not include_rx.search(container_name):
@@ -654,9 +649,22 @@ def main() -> int:
             if exclude_rx and exclude_rx.search(container_name):
                 continue
 
-            short_id = container_ident.replace("/", "_")[:12]
             display_name = container_display_name(container_name)
-            container_slug = slugify(f"{display_name}_{short_id}")
+            base_slug = slugify(display_name)
+            container_slug = base_slug
+
+            # Prefer stable, name-based slugs so entity IDs survive container restarts.
+            # Only fall back when multiple containers normalize to the same display slug.
+            if container_slug in seen_slugs:
+                alt_slug = slugify(container_name)
+                if alt_slug and alt_slug not in seen_slugs:
+                    container_slug = alt_slug
+                else:
+                    name_hash = hashlib.sha1(
+                        container_name.encode("utf-8")
+                    ).hexdigest()[:8]
+                    container_slug = f"{base_slug}_{name_hash}"
+
             seen_slugs.add(container_slug)
 
             if container_slug not in discovered:
@@ -687,7 +695,6 @@ def main() -> int:
                         base_topic,
                         container_slug,
                         display_name,
-                        container_ident,
                         metric_key,
                         metric_def,
                     )
