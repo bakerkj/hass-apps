@@ -67,24 +67,28 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "name": "Network RX Rate",
         "unit": "B/s",
         "icon": "mdi:download",
+        "device_class": "data_rate",
         "state_class": "measurement",
     },
     "network_tx_rate": {
         "name": "Network TX Rate",
         "unit": "B/s",
         "icon": "mdi:upload",
+        "device_class": "data_rate",
         "state_class": "measurement",
     },
     "io_read_rate": {
         "name": "Disk Read Rate",
         "unit": "B/s",
         "icon": "mdi:harddisk",
+        "device_class": "data_rate",
         "state_class": "measurement",
     },
     "io_write_rate": {
         "name": "Disk Write Rate",
         "unit": "B/s",
         "icon": "mdi:harddisk",
+        "device_class": "data_rate",
         "state_class": "measurement",
     },
     "status": {
