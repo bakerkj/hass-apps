@@ -22,6 +22,8 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "unit": "%",
         "icon": "mdi:chip",
         "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "round_digits": 3,
     },
     "memory_usage": {
         "paths": [("memory_usage",), ("memory", "usage")],
@@ -69,6 +71,8 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "icon": "mdi:download",
         "device_class": "data_rate",
         "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "round_digits": 3,
     },
     "network_tx_rate": {
         "name": "Network TX Rate",
@@ -76,6 +80,8 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "icon": "mdi:upload",
         "device_class": "data_rate",
         "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "round_digits": 3,
     },
     "io_read_rate": {
         "name": "Disk Read Rate",
@@ -83,6 +89,8 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "icon": "mdi:harddisk",
         "device_class": "data_rate",
         "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "round_digits": 3,
     },
     "io_write_rate": {
         "name": "Disk Write Rate",
@@ -90,6 +98,8 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "icon": "mdi:harddisk",
         "device_class": "data_rate",
         "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "round_digits": 3,
     },
     "status": {
         "paths": [("status",), ("Status",), ("state",), ("State",)],
@@ -416,8 +426,10 @@ def publish_discovery(
         payload["device_class"] = metric_def["device_class"]
     if metric_def.get("state_class"):
         payload["state_class"] = metric_def["state_class"]
-    if metric_def.get("unit") == "%":
-        payload["suggested_display_precision"] = 1
+    if "suggested_display_precision" in metric_def:
+        payload["suggested_display_precision"] = metric_def[
+            "suggested_display_precision"
+        ]
 
     client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
@@ -694,7 +706,11 @@ def main() -> int:
                 if metric_def.get("value_type") == "string":
                     state_payload = str(value)
                 else:
-                    state_payload = repr(float(value))
+                    numeric_value = float(value)
+                    round_digits = metric_def.get("round_digits")
+                    if isinstance(round_digits, int):
+                        numeric_value = round(numeric_value, round_digits)
+                    state_payload = repr(numeric_value)
                 client.publish(state_topic, state_payload, qos=0, retain=False)
 
         stale = set(discovered.keys()) - seen_slugs
