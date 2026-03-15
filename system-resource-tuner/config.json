@@ -1,0 +1,40 @@
+{
+  "name": "System Resource Tuner",
+  "slug": "system_resource_tuner",
+  "description": "Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled.",
+  "url": "https://github.com/bakerkj/hass-apps/",
+  "version": "0.0.5",
+  "arch": ["amd64", "aarch64"],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "hassio_api": false,
+  "homeassistant_api": false,
+  "docker_api": true,
+  "host_network": false,
+  "ingress": false,
+  "full_access": true,
+  "privileged": ["NET_ADMIN", "SYS_ADMIN", "SYS_RAWIO", "SYS_TIME", "SYS_NICE"],
+  "apparmor": false,
+  "options": {
+    "interval_seconds": 60,
+    "apply_on_start": true,
+    "dry_run": false,
+    "log_level": "INFO",
+    "targets": []
+  },
+  "schema": {
+    "interval_seconds": "int(5,86400)",
+    "apply_on_start": "bool",
+    "dry_run": "bool",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "targets": [
+      {
+        "container": "str",
+        "cpuset_cpus": "str?",
+        "cpu_shares": "int(2,262144)?",
+        "blkio_weight": "int(10,1000)?"
+      }
+    ]
+  }
+}
