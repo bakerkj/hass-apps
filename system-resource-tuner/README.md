@@ -35,6 +35,8 @@ It can also tune selected processes (inside target containers):
 - Add-on uses `docker_api: true` to access the Docker API.
 - Add-on uses `host_pid: true` so process tuning can resolve and tune host PIDs
   directly.
+- Because `host_pid: true` is incompatible with S6 overlay startup, this add-on
+  bypasses `/init` and starts directly via `/run.sh`.
 - Add-on requests privileged capabilities: `NET_ADMIN`, `SYS_ADMIN`,
   `SYS_RAWIO`, `SYS_TIME`, `SYS_NICE`.
 - Add-on runs with `full_access: true`.

@@ -11,4 +11,4 @@ COPY system_resource_tuner.py /system_resource_tuner.py
 
 RUN chmod +x /run.sh
 
-CMD ["/run.sh"]
+ENTRYPOINT ["/run.sh"]
