@@ -501,7 +501,7 @@ def main() -> int:
         return 2
 
     device_id = "intel_gpu_top"
-    device_name = "Intel GPU"
+    device_name = "Intel GPU Top"
 
     buf = ""
     discovery_published = False
