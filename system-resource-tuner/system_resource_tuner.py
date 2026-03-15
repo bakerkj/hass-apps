@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import logging
 import re
 import shlex
@@ -246,35 +247,6 @@ def docker_inspect_limits(
         return None
 
 
-def docker_container_init_pid(container: str, log: logging.Logger) -> Optional[int]:
-    cmd = ["docker", "inspect", "-f", "{{.State.Pid}}", container]
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        log.warning(
-            "docker inspect (State.Pid) failed for %s: %s",
-            container,
-            cmd_error(proc),
-        )
-        return None
-
-    raw = (proc.stdout or "").strip()
-    try:
-        pid = int(raw)
-    except Exception:
-        log.warning(
-            "Unexpected State.Pid value for container=%s: '%s'",
-            container,
-            raw,
-        )
-        return None
-
-    if pid <= 0:
-        log.warning("Container=%s is not running (State.Pid=%d)", container, pid)
-        return None
-
-    return pid
-
-
 def desired_update_args(target: Target, current: dict[str, Any]) -> list[str]:
     args: list[str] = []
 
@@ -331,6 +303,35 @@ def apply_all(targets: list[Target], dry_run: bool, log: logging.Logger) -> None
         apply_target(target, dry_run, log)
 
 
+def docker_top_processes(
+    container: str,
+    log: logging.Logger,
+) -> list[tuple[int, str]]:
+    cmd = ["docker", "top", container, "-eo", "pid,args"]
+    proc = run_cmd(cmd)
+    if proc.returncode != 0:
+        log.warning(
+            "Failed to list processes in container=%s: %s",
+            container,
+            cmd_error(proc),
+        )
+        return []
+
+    rows: list[tuple[int, str]] = []
+    for line in proc.stdout.splitlines():
+        row = line.strip()
+        if not row:
+            continue
+
+        parts = row.split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+
+        rows.append((int(parts[0]), parts[1]))
+
+    return rows
+
+
 def find_matching_pid(
     container: str,
     process_match_regex: str,
@@ -342,28 +343,9 @@ def find_matching_pid(
         log.error("Invalid process_match_regex '%s': %s", process_match_regex, e)
         return None
 
-    cmd = ["docker", "exec", container, "ps", "-o", "pid,args"]
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        log.warning(
-            "Failed to list processes in container=%s: %s",
-            container,
-            cmd_error(proc),
-        )
-        return None
-
-    for line in proc.stdout.splitlines():
-        row = line.strip()
-        if not row:
-            continue
-        parts = row.split(None, 1)
-        if len(parts) != 2 or not parts[0].isdigit():
-            continue
-
-        pid = int(parts[0])
-        cmdline = parts[1]
+    for host_pid, cmdline in docker_top_processes(container, log):
         if matcher.search(cmdline):
-            return pid
+            return host_pid
 
     log.warning(
         "No process matched regex '%s' in container=%s",
@@ -373,214 +355,275 @@ def find_matching_pid(
     return None
 
 
-def read_process_nice(container: str, pid: int, log: logging.Logger) -> Optional[int]:
-    cmd = [
-        "docker",
-        "exec",
-        container,
-        "sh",
-        "-c",
-        f"awk '{{print $19}}' /proc/{pid}/stat",
-    ]
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        log.warning(
-            "Failed reading /proc/%d/stat in container=%s: %s",
-            pid,
-            container,
-            cmd_error(proc),
-        )
-        return None
-
-    raw = (proc.stdout or "").strip()
-    try:
-        return int(raw)
-    except Exception:
-        log.warning(
-            "Unexpected nice value for pid=%d in container=%s: '%s'",
-            pid,
-            container,
-            raw,
-        )
-        return None
-
-
-def read_process_cpuset(container: str, pid: int, log: logging.Logger) -> Optional[str]:
-    cmd = [
-        "docker",
-        "exec",
-        container,
-        "sh",
-        "-c",
-        f"awk '/^Cpus_allowed_list:/{{print $2}}' /proc/{pid}/status",
-    ]
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        log.warning(
-            "Failed reading /proc/%d/status in container=%s: %s",
-            pid,
-            container,
-            cmd_error(proc),
-        )
-        return None
-
-    return (proc.stdout or "").strip()
-
-
-def build_nsenter_python_cmd(
+def read_process_nice(
+    host_pid: int,
     container: str,
-    python_code: str,
-    args: list[str],
     log: logging.Logger,
-) -> Optional[list[str]]:
-    init_pid = docker_container_init_pid(container, log)
-    if init_pid is None:
+) -> Optional[int]:
+    try:
+        return os.getpriority(os.PRIO_PROCESS, host_pid)
+    except ProcessLookupError:
+        log.warning(
+            "Cannot read nice for container=%s host_pid=%d: process no longer exists",
+            container,
+            host_pid,
+        )
+        return None
+    except PermissionError as e:
+        log.warning(
+            "Cannot read nice for container=%s host_pid=%d: %s",
+            container,
+            host_pid,
+            e,
+        )
+        return None
+    except OSError as e:
+        log.warning(
+            "Cannot read nice for container=%s host_pid=%d: %s",
+            container,
+            host_pid,
+            e,
+        )
         return None
 
-    return [
-        "nsenter",
-        "--target",
-        str(init_pid),
-        "--pid",
-        "--",
-        "python3",
-        "-c",
-        python_code,
-        *args,
-    ]
+
+def read_task_cpuset(
+    task_pid: int,
+    container: str,
+    root_pid: int,
+    log: logging.Logger,
+) -> Optional[set[int]]:
+    try:
+        return set(os.sched_getaffinity(task_pid))
+    except ProcessLookupError:
+        log.debug(
+            "Task disappeared while reading affinity: container=%s host_pid=%d task_pid=%d",
+            container,
+            root_pid,
+            task_pid,
+        )
+        return None
+    except PermissionError as e:
+        log.warning(
+            "Cannot read affinity for container=%s host_pid=%d task_pid=%d: %s",
+            container,
+            root_pid,
+            task_pid,
+            e,
+        )
+        return None
+    except OSError as e:
+        log.warning(
+            "Cannot read affinity for container=%s host_pid=%d task_pid=%d: %s",
+            container,
+            root_pid,
+            task_pid,
+            e,
+        )
+        return None
+
+
+def list_process_threads(
+    host_pid: int,
+    container: str,
+    log: logging.Logger,
+) -> Optional[list[int]]:
+    task_dir = Path(f"/proc/{host_pid}/task")
+    try:
+        tids = sorted(
+            int(entry.name) for entry in task_dir.iterdir() if entry.name.isdigit()
+        )
+    except FileNotFoundError:
+        log.warning(
+            "Cannot list threads for container=%s host_pid=%d: process no longer exists",
+            container,
+            host_pid,
+        )
+        return None
+    except PermissionError as e:
+        log.warning(
+            "Cannot list threads for container=%s host_pid=%d: %s",
+            container,
+            host_pid,
+            e,
+        )
+        return None
+    except OSError as e:
+        log.warning(
+            "Cannot list threads for container=%s host_pid=%d: %s",
+            container,
+            host_pid,
+            e,
+        )
+        return None
+
+    if not tids:
+        log.warning(
+            "No threads found for container=%s host_pid=%d",
+            container,
+            host_pid,
+        )
+        return None
+
+    return tids
 
 
 def apply_process_nice(
     tuning: ProcessTuning,
-    pid: int,
+    host_pid: int,
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
     assert tuning.nice is not None
 
-    current_nice = read_process_nice(tuning.container, pid, log)
+    current_nice = read_process_nice(host_pid, tuning.container, log)
     if current_nice is not None and current_nice == tuning.nice:
         log.debug(
-            "No process nice change needed for container=%s pid=%d",
+            "No process nice change needed for container=%s host_pid=%d",
             tuning.container,
-            pid,
+            host_pid,
         )
         return
 
-    python_code = (
-        "import os,sys;"
-        "pid=int(sys.argv[1]);"
-        "nice=int(sys.argv[2]);"
-        "os.setpriority(os.PRIO_PROCESS, pid, nice)"
-    )
-    cmd = build_nsenter_python_cmd(
-        tuning.container,
-        python_code,
-        [str(pid), str(tuning.nice)],
-        log,
-    )
-    if cmd is None:
-        return
-
     if dry_run:
-        log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
+        log.info(
+            "DRY RUN: setpriority container=%s host_pid=%d nice=%d",
+            tuning.container,
+            host_pid,
+            tuning.nice,
+        )
         return
 
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
+    try:
+        os.setpriority(os.PRIO_PROCESS, host_pid, tuning.nice)
+    except ProcessLookupError:
         log.error(
-            "Failed setting nice=%d for container=%s pid=%d via nsenter: %s",
+            "Failed setting nice=%d for container=%s host_pid=%d: process no longer exists",
             tuning.nice,
             tuning.container,
-            pid,
-            cmd_error(proc),
+            host_pid,
+        )
+        return
+    except PermissionError as e:
+        log.error(
+            "Failed setting nice=%d for container=%s host_pid=%d: %s",
+            tuning.nice,
+            tuning.container,
+            host_pid,
+            e,
+        )
+        return
+    except OSError as e:
+        log.error(
+            "Failed setting nice=%d for container=%s host_pid=%d: %s",
+            tuning.nice,
+            tuning.container,
+            host_pid,
+            e,
         )
         return
 
     log.info(
-        "Process nice updated for container=%s pid=%d to nice=%d",
+        "Process nice updated for container=%s host_pid=%d to nice=%d",
         tuning.container,
-        pid,
+        host_pid,
         tuning.nice,
     )
 
 
-def apply_process_cpuset_python(
-    tuning: ProcessTuning,
-    pid: int,
-    dry_run: bool,
-    log: logging.Logger,
-) -> bool:
-    assert tuning.cpuset_cpus is not None
-
-    cpus = parse_cpuset_expression(tuning.cpuset_cpus)
-    if not cpus:
-        log.error(
-            "Cannot apply process affinity for container=%s pid=%d: invalid cpuset '%s'",
-            tuning.container,
-            pid,
-            tuning.cpuset_cpus,
-        )
-        return False
-
-    cpus_csv = ",".join(str(cpu) for cpu in sorted(cpus))
-    python_code = (
-        "import os,sys;"
-        "pid=int(sys.argv[1]);"
-        "cpus={int(x) for x in sys.argv[2].split(',') if x};"
-        "os.sched_setaffinity(pid, cpus)"
-    )
-    cmd = build_nsenter_python_cmd(
-        tuning.container,
-        python_code,
-        [str(pid), cpus_csv],
-        log,
-    )
-    if cmd is None:
-        return False
-
-    if dry_run:
-        log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
-        return True
-
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        log.error(
-            "Failed python cpuset=%s for container=%s pid=%d via nsenter: %s",
-            tuning.cpuset_cpus,
-            tuning.container,
-            pid,
-            cmd_error(proc),
-        )
-        return False
-
-    log.info(
-        "Process affinity updated for container=%s pid=%d to cpuset=%s",
-        tuning.container,
-        pid,
-        tuning.cpuset_cpus,
-    )
-    return True
-
-
 def apply_process_cpuset(
     tuning: ProcessTuning,
-    pid: int,
+    host_pid: int,
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
     assert tuning.cpuset_cpus is not None
 
-    current_cpuset = read_process_cpuset(tuning.container, pid, log)
-    if current_cpuset and cpuset_matches(current_cpuset, tuning.cpuset_cpus):
-        log.debug(
-            "No process affinity change needed for container=%s pid=%d",
+    desired_cpus = parse_cpuset_expression(tuning.cpuset_cpus)
+    if not desired_cpus:
+        log.error(
+            "Cannot apply process affinity for container=%s host_pid=%d: invalid cpuset '%s'",
             tuning.container,
-            pid,
+            host_pid,
+            tuning.cpuset_cpus,
         )
         return
 
-    _ = apply_process_cpuset_python(tuning, pid, dry_run, log)
+    thread_ids = list_process_threads(host_pid, tuning.container, log)
+    if not thread_ids:
+        return
+
+    all_match = True
+    for tid in thread_ids:
+        current = read_task_cpuset(tid, tuning.container, host_pid, log)
+        if current is None or current != desired_cpus:
+            all_match = False
+            break
+
+    if all_match:
+        log.debug(
+            "No process affinity change needed for container=%s host_pid=%d",
+            tuning.container,
+            host_pid,
+        )
+        return
+
+    if dry_run:
+        log.info(
+            "DRY RUN: sched_setaffinity container=%s host_pid=%d threads=%d cpuset=%s",
+            tuning.container,
+            host_pid,
+            len(thread_ids),
+            tuning.cpuset_cpus,
+        )
+        return
+
+    failures: list[str] = []
+    changed = 0
+    for tid in thread_ids:
+        try:
+            os.sched_setaffinity(tid, desired_cpus)
+            changed += 1
+        except ProcessLookupError:
+            log.debug(
+                "Task disappeared while setting affinity: container=%s host_pid=%d task_pid=%d",
+                tuning.container,
+                host_pid,
+                tid,
+            )
+        except PermissionError as e:
+            failures.append(f"task_pid={tid}: {e}")
+        except OSError as e:
+            failures.append(f"task_pid={tid}: {e}")
+
+    if failures:
+        preview = "; ".join(failures[:3])
+        if len(failures) > 3:
+            preview += f"; ... (+{len(failures) - 3} more)"
+        log.error(
+            "Failed applying affinity cpuset=%s for container=%s host_pid=%d: %s",
+            tuning.cpuset_cpus,
+            tuning.container,
+            host_pid,
+            preview,
+        )
+        return
+
+    if changed == 0:
+        log.warning(
+            "No threads were updated for container=%s host_pid=%d",
+            tuning.container,
+            host_pid,
+        )
+        return
+
+    log.info(
+        "Process affinity updated for container=%s host_pid=%d to cpuset=%s across %d thread(s)",
+        tuning.container,
+        host_pid,
+        tuning.cpuset_cpus,
+        changed,
+    )
 
 
 def apply_process_tuning(
@@ -591,15 +634,15 @@ def apply_process_tuning(
     if not tuning.is_configured:
         return
 
-    pid = find_matching_pid(tuning.container, tuning.process_match_regex, log)
-    if pid is None:
+    host_pid = find_matching_pid(tuning.container, tuning.process_match_regex, log)
+    if host_pid is None:
         return
 
     if tuning.nice is not None:
-        apply_process_nice(tuning, pid, dry_run, log)
+        apply_process_nice(tuning, host_pid, dry_run, log)
 
     if tuning.cpuset_cpus is not None:
-        apply_process_cpuset(tuning, pid, dry_run, log)
+        apply_process_cpuset(tuning, host_pid, dry_run, log)
 
 
 def main() -> int:

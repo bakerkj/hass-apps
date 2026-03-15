@@ -4,7 +4,6 @@ FROM ${BUILD_FROM}
 RUN apk add --no-cache \
   python3 \
   docker-cli \
-  util-linux \
   bash
 
 COPY run.sh /run.sh
