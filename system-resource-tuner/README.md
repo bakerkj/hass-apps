@@ -17,7 +17,7 @@ It can also tune selected processes (inside target containers):
 - MariaDB process via `mariadb_process`
 
 - Process niceness (`renice`)
-- Process CPU affinity for all threads (`add-on python3` +
+- Process CPU affinity for all threads (`nsenter` + add-on `python3` +
   `os.sched_setaffinity`)
 
 ## How It Works
@@ -33,8 +33,8 @@ It can also tune selected processes (inside target containers):
 ## Requirements
 
 - Add-on uses `docker_api: true` to access the Docker API.
-- Add-on uses `host_pid: true` so process tuning can resolve and tune host PIDs
-  directly.
+- Add-on uses `host_pid: true` so process tuning can enter target PID namespaces
+  via `nsenter`.
 - Add-on requests privileged capabilities: `NET_ADMIN`, `SYS_ADMIN`,
   `SYS_RAWIO`, `SYS_TIME`, `SYS_NICE`.
 - Add-on runs with `full_access: true`.
