@@ -509,9 +509,11 @@ def main() -> int:
     last_heartbeat_time = 0.0
     last_sample_time = 0.0
     last_intel_restart_attempt = 0.0
+    samples_since_intel_start = 0
 
     def restart_intel_gpu_top(reason: str) -> None:
         nonlocal proc, buf, last_intel_restart_attempt, dev_arg, dev_path, listing
+        nonlocal samples_since_intel_start
         now = time.time()
         if now - last_intel_restart_attempt < args.intel_restart_grace_seconds:
             log.warning(
@@ -541,6 +543,7 @@ def main() -> int:
             log.info("Re-selected render node: %s", dev_path)
 
         buf = ""
+        samples_since_intel_start = 0
         proc = start_intel_gpu_top(interval_ms, dev_arg, log)
 
     try:
@@ -614,6 +617,7 @@ def main() -> int:
 
                 last_sample_time = time.time()
                 metrics = build_metrics(obj)
+                samples_since_intel_start += 1
                 log.debug("Parsed metrics keys=%s", list(metrics.keys()))
 
                 # Publish discovery once we have our first sample (retained)
@@ -639,6 +643,14 @@ def main() -> int:
                     continue
                 last_publish_time = now
 
+                warmup_sample = samples_since_intel_start <= 1
+                if warmup_sample:
+                    log.debug(
+                        "Skipping state publish for warm-up sample #%d after "
+                        "intel_gpu_top start/restart",
+                        samples_since_intel_start,
+                    )
+
                 # Publish each sensor to its own state topic, plus attributes topic
                 for key, m in metrics.items():
                     val = m["value"]
@@ -652,7 +664,7 @@ def main() -> int:
                         "MQTT attrs %s mid=%s rc=%s", attr_topic, ainfo.mid, ainfo.rc
                     )
 
-                    if val is None:
+                    if warmup_sample or val is None:
                         continue
 
                     state_topic = f"{base_topic}/{key}/state"
