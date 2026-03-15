@@ -14,7 +14,7 @@ Per configured container target, it can apply:
 It can also tune the Home Assistant process (inside a target container):
 
 - Process niceness (`renice`)
-- Process CPU affinity for all threads (`taskset -apc`)
+- Process CPU affinity for all threads (`python3` + `os.sched_setaffinity`)
 
 ## How It Works
 
@@ -36,7 +36,7 @@ It can also tune the Home Assistant process (inside a target container):
   Advanced SSH.
 - Protection mode must be OFF for write operations (container resource changes).
 - Container names/IDs in `targets` must exist on the host.
-- For process affinity tuning, the target container must have `taskset`
+- For process affinity tuning, the target container must have `python3`
   available.
 
 ## Example Options

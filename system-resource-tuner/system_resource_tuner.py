@@ -439,6 +439,74 @@ def apply_process_nice(
     )
 
 
+def apply_process_cpuset_python(
+    tuning: HomeAssistantProcessTuning,
+    pid: int,
+    dry_run: bool,
+    log: logging.Logger,
+) -> bool:
+    assert tuning.cpuset_cpus is not None
+
+    cpus = parse_cpuset_expression(tuning.cpuset_cpus)
+    if not cpus:
+        log.error(
+            "Cannot apply process affinity for container=%s pid=%d: invalid cpuset '%s'",
+            tuning.container,
+            pid,
+            tuning.cpuset_cpus,
+        )
+        return False
+
+    cpus_csv = ",".join(str(cpu) for cpu in sorted(cpus))
+    python_code = (
+        "import os,sys;"
+        "pid=int(sys.argv[1]);"
+        "cpus={int(x) for x in sys.argv[2].split(',') if x};"
+        "os.sched_setaffinity(pid, cpus)"
+    )
+
+    cmd = [
+        "docker",
+        "exec",
+        tuning.container,
+        "python3",
+        "-c",
+        python_code,
+        str(pid),
+        cpus_csv,
+    ]
+
+    if dry_run:
+        log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
+        return True
+
+    proc = run_cmd(cmd)
+    if proc.returncode != 0:
+        err = cmd_error(proc)
+        if "not found" in err.lower():
+            log.error(
+                "python3 is not available in container=%s; cannot apply process affinity",
+                tuning.container,
+            )
+        else:
+            log.error(
+                "Failed python cpuset=%s for container=%s pid=%d: %s",
+                tuning.cpuset_cpus,
+                tuning.container,
+                pid,
+                err,
+            )
+        return False
+
+    log.info(
+        "Process affinity updated for container=%s pid=%d to cpuset=%s",
+        tuning.container,
+        pid,
+        tuning.cpuset_cpus,
+    )
+    return True
+
+
 def apply_process_cpuset(
     tuning: HomeAssistantProcessTuning,
     pid: int,
@@ -456,44 +524,7 @@ def apply_process_cpuset(
         )
         return
 
-    cmd = [
-        "docker",
-        "exec",
-        tuning.container,
-        "taskset",
-        "-apc",
-        tuning.cpuset_cpus,
-        str(pid),
-    ]
-
-    if dry_run:
-        log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
-        return
-
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        err = cmd_error(proc)
-        if "not found" in err.lower():
-            log.error(
-                "taskset is not available in container=%s; cannot set process affinity",
-                tuning.container,
-            )
-        else:
-            log.error(
-                "Failed setting cpuset=%s for container=%s pid=%d: %s",
-                tuning.cpuset_cpus,
-                tuning.container,
-                pid,
-                err,
-            )
-        return
-
-    log.info(
-        "Process affinity updated for container=%s pid=%d to cpuset=%s",
-        tuning.container,
-        pid,
-        tuning.cpuset_cpus,
-    )
+    _ = apply_process_cpuset_python(tuning, pid, dry_run, log)
 
 
 def apply_homeassistant_process_tuning(
