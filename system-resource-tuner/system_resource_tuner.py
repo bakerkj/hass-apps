@@ -246,6 +246,35 @@ def docker_inspect_limits(
         return None
 
 
+def docker_container_init_pid(container: str, log: logging.Logger) -> Optional[int]:
+    cmd = ["docker", "inspect", "-f", "{{.State.Pid}}", container]
+    proc = run_cmd(cmd)
+    if proc.returncode != 0:
+        log.warning(
+            "docker inspect (State.Pid) failed for %s: %s",
+            container,
+            cmd_error(proc),
+        )
+        return None
+
+    raw = (proc.stdout or "").strip()
+    try:
+        pid = int(raw)
+    except Exception:
+        log.warning(
+            "Unexpected State.Pid value for container=%s: '%s'",
+            container,
+            raw,
+        )
+        return None
+
+    if pid <= 0:
+        log.warning("Container=%s is not running (State.Pid=%d)", container, pid)
+        return None
+
+    return pid
+
+
 def desired_update_args(target: Target, current: dict[str, Any]) -> list[str]:
     args: list[str] = []
 
@@ -398,6 +427,29 @@ def read_process_cpuset(container: str, pid: int, log: logging.Logger) -> Option
     return (proc.stdout or "").strip()
 
 
+def build_nsenter_python_cmd(
+    container: str,
+    python_code: str,
+    args: list[str],
+    log: logging.Logger,
+) -> Optional[list[str]]:
+    init_pid = docker_container_init_pid(container, log)
+    if init_pid is None:
+        return None
+
+    return [
+        "nsenter",
+        "--target",
+        str(init_pid),
+        "--pid",
+        "--",
+        "python3",
+        "-c",
+        python_code,
+        *args,
+    ]
+
+
 def apply_process_nice(
     tuning: ProcessTuning,
     pid: int,
@@ -415,16 +467,20 @@ def apply_process_nice(
         )
         return
 
-    cmd = [
-        "docker",
-        "exec",
+    python_code = (
+        "import os,sys;"
+        "pid=int(sys.argv[1]);"
+        "nice=int(sys.argv[2]);"
+        "os.setpriority(os.PRIO_PROCESS, pid, nice)"
+    )
+    cmd = build_nsenter_python_cmd(
         tuning.container,
-        "renice",
-        "-n",
-        str(tuning.nice),
-        "-p",
-        str(pid),
-    ]
+        python_code,
+        [str(pid), str(tuning.nice)],
+        log,
+    )
+    if cmd is None:
+        return
 
     if dry_run:
         log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
@@ -433,7 +489,7 @@ def apply_process_nice(
     proc = run_cmd(cmd)
     if proc.returncode != 0:
         log.error(
-            "Failed setting nice=%d for container=%s pid=%d: %s",
+            "Failed setting nice=%d for container=%s pid=%d via nsenter: %s",
             tuning.nice,
             tuning.container,
             pid,
@@ -474,17 +530,14 @@ def apply_process_cpuset_python(
         "cpus={int(x) for x in sys.argv[2].split(',') if x};"
         "os.sched_setaffinity(pid, cpus)"
     )
-
-    cmd = [
-        "docker",
-        "exec",
+    cmd = build_nsenter_python_cmd(
         tuning.container,
-        "python3",
-        "-c",
         python_code,
-        str(pid),
-        cpus_csv,
-    ]
+        [str(pid), cpus_csv],
+        log,
+    )
+    if cmd is None:
+        return False
 
     if dry_run:
         log.info("DRY RUN: %s", " ".join(shlex.quote(x) for x in cmd))
@@ -492,20 +545,13 @@ def apply_process_cpuset_python(
 
     proc = run_cmd(cmd)
     if proc.returncode != 0:
-        err = cmd_error(proc)
-        if "not found" in err.lower():
-            log.error(
-                "python3 is not available in container=%s; cannot apply process affinity",
-                tuning.container,
-            )
-        else:
-            log.error(
-                "Failed python cpuset=%s for container=%s pid=%d: %s",
-                tuning.cpuset_cpus,
-                tuning.container,
-                pid,
-                err,
-            )
+        log.error(
+            "Failed python cpuset=%s for container=%s pid=%d via nsenter: %s",
+            tuning.cpuset_cpus,
+            tuning.container,
+            pid,
+            cmd_error(proc),
+        )
         return False
 
     log.info(
