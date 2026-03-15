@@ -11,7 +11,10 @@ Per configured container target, it can apply:
 - `cpu_shares` (relative CPU priority via Docker `--cpu-shares`)
 - `blkio_weight` (Docker `--blkio-weight`)
 
-It can also tune the Home Assistant process (inside a target container):
+It can also tune selected processes (inside target containers):
+
+- Home Assistant process via `homeassistant_process`
+- MariaDB process via `mariadb_process`
 
 - Process niceness (`renice`)
 - Process CPU affinity for all threads (`python3` + `os.sched_setaffinity`)
@@ -21,7 +24,7 @@ It can also tune the Home Assistant process (inside a target container):
 - Reads targets from add-on options.
 - Inspects each target container's current HostConfig limits.
 - Applies `docker update` only for values that differ.
-- Optionally finds a Home Assistant process by regex and applies process-level
+- Optionally finds configured processes by regex and applies process-level
   niceness/affinity.
 - Re-checks on a configurable interval to re-apply if containers/processes
   restart.
@@ -60,9 +63,15 @@ It can also tune the Home Assistant process (inside a target container):
     "process_match_regex": "python3 .*homeassistant|homeassistant",
     "nice": -5,
     "cpuset_cpus": "2-3"
+  },
+  "mariadb_process": {
+    "container": "addon_core_mariadb",
+    "process_match_regex": "mariadbd|mysqld",
+    "nice": 5,
+    "cpuset_cpus": "10-19"
   }
 }
 ```
 
-If `targets` is empty and no `homeassistant_process` tuning values are set, the
-add-on stays running in idle mode.
+If `targets` is empty and no `homeassistant_process` or `mariadb_process` tuning
+values are set, the add-on stays running in idle mode.

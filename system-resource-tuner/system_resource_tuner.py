@@ -14,9 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_HOMEASSISTANT_CONTAINER = "homeassistant"
-DEFAULT_HOMEASSISTANT_PROCESS_REGEX = r"python3 .*homeassistant|homeassistant"
-
 
 @dataclass(frozen=True)
 class Target:
@@ -27,9 +24,9 @@ class Target:
 
 
 @dataclass(frozen=True)
-class HomeAssistantProcessTuning:
-    container: str = DEFAULT_HOMEASSISTANT_CONTAINER
-    process_match_regex: str = DEFAULT_HOMEASSISTANT_PROCESS_REGEX
+class ProcessTuning:
+    container: str = ""
+    process_match_regex: str = ""
     nice: Optional[int] = None
     cpuset_cpus: Optional[str] = None
 
@@ -153,34 +150,29 @@ def parse_targets(raw_targets: Any, log: logging.Logger) -> list[Target]:
     return targets
 
 
-def parse_homeassistant_process_tuning(
+def parse_process_tuning(
     raw_cfg: Any,
-) -> HomeAssistantProcessTuning:
+    block_name: str,
+) -> ProcessTuning:
     if raw_cfg is None:
-        return HomeAssistantProcessTuning()
+        return ProcessTuning()
     if not isinstance(raw_cfg, dict):
-        raise ValueError("'homeassistant_process' must be an object")
+        raise ValueError(f"'{block_name}' must be an object")
 
-    container = str(raw_cfg.get("container", DEFAULT_HOMEASSISTANT_CONTAINER)).strip()
-    if not container:
-        container = DEFAULT_HOMEASSISTANT_CONTAINER
+    container = str(raw_cfg.get("container", "")).strip()
+    pattern = str(raw_cfg.get("process_match_regex", "")).strip()
 
-    pattern = str(
-        raw_cfg.get("process_match_regex", DEFAULT_HOMEASSISTANT_PROCESS_REGEX)
-    ).strip()
-    if not pattern:
-        pattern = DEFAULT_HOMEASSISTANT_PROCESS_REGEX
-
-    try:
-        _ = re.compile(pattern)
-    except re.error as e:
-        raise ValueError(f"homeassistant_process.process_match_regex is invalid: {e}")
+    if pattern:
+        try:
+            _ = re.compile(pattern)
+        except re.error as e:
+            raise ValueError(f"{block_name}.process_match_regex is invalid: {e}")
 
     nice: Optional[int] = None
     if raw_cfg.get("nice") is not None:
         nice = int(raw_cfg["nice"])
         if nice < -20 or nice > 19:
-            raise ValueError("homeassistant_process.nice must be between -20 and 19")
+            raise ValueError(f"{block_name}.nice must be between -20 and 19")
 
     cpuset_cpus: Optional[str] = None
     if raw_cfg.get("cpuset_cpus") is not None:
@@ -189,15 +181,33 @@ def parse_homeassistant_process_tuning(
             cpuset_cpus = None
         elif parse_cpuset_expression(cpuset_cpus) is None:
             raise ValueError(
-                "homeassistant_process.cpuset_cpus must be a valid CPU set expression"
+                f"{block_name}.cpuset_cpus must be a valid CPU set expression"
             )
 
-    return HomeAssistantProcessTuning(
+    is_configured = nice is not None or cpuset_cpus is not None
+    if is_configured and not container:
+        raise ValueError(
+            f"{block_name}.container is required when tuning is configured"
+        )
+    if is_configured and not pattern:
+        raise ValueError(
+            f"{block_name}.process_match_regex is required when tuning is configured"
+        )
+
+    return ProcessTuning(
         container=container,
         process_match_regex=pattern,
         nice=nice,
         cpuset_cpus=cpuset_cpus,
     )
+
+
+def parse_homeassistant_process_tuning(raw_cfg: Any) -> ProcessTuning:
+    return parse_process_tuning(raw_cfg, block_name="homeassistant_process")
+
+
+def parse_mariadb_process_tuning(raw_cfg: Any) -> ProcessTuning:
+    return parse_process_tuning(raw_cfg, block_name="mariadb_process")
 
 
 def cmd_error(proc: subprocess.CompletedProcess[str]) -> str:
@@ -389,7 +399,7 @@ def read_process_cpuset(container: str, pid: int, log: logging.Logger) -> Option
 
 
 def apply_process_nice(
-    tuning: HomeAssistantProcessTuning,
+    tuning: ProcessTuning,
     pid: int,
     dry_run: bool,
     log: logging.Logger,
@@ -440,7 +450,7 @@ def apply_process_nice(
 
 
 def apply_process_cpuset_python(
-    tuning: HomeAssistantProcessTuning,
+    tuning: ProcessTuning,
     pid: int,
     dry_run: bool,
     log: logging.Logger,
@@ -508,7 +518,7 @@ def apply_process_cpuset_python(
 
 
 def apply_process_cpuset(
-    tuning: HomeAssistantProcessTuning,
+    tuning: ProcessTuning,
     pid: int,
     dry_run: bool,
     log: logging.Logger,
@@ -527,8 +537,8 @@ def apply_process_cpuset(
     _ = apply_process_cpuset_python(tuning, pid, dry_run, log)
 
 
-def apply_homeassistant_process_tuning(
-    tuning: HomeAssistantProcessTuning,
+def apply_process_tuning(
+    tuning: ProcessTuning,
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
@@ -569,35 +579,46 @@ def main() -> int:
 
     try:
         targets = parse_targets(options.get("targets"), log)
-        process_tuning = parse_homeassistant_process_tuning(
+        homeassistant_process_tuning = parse_homeassistant_process_tuning(
             options.get("homeassistant_process")
+        )
+        mariadb_process_tuning = parse_mariadb_process_tuning(
+            options.get("mariadb_process")
         )
     except Exception as e:
         log.error("Invalid configuration: %s", e)
         return 1
 
-    if not targets and not process_tuning.is_configured:
+    if (
+        not targets
+        and not homeassistant_process_tuning.is_configured
+        and not mariadb_process_tuning.is_configured
+    ):
         log.warning(
             "No valid tuning configured; running in idle mode (no changes will be applied)."
         )
 
     log.info(
-        "Starting System Resource Tuner: container_targets=%d process_tuning=%s interval_seconds=%d dry_run=%s",
+        "Starting System Resource Tuner: container_targets=%d "
+        "homeassistant_process=%s mariadb_process=%s interval_seconds=%d dry_run=%s",
         len(targets),
-        process_tuning.is_configured,
+        homeassistant_process_tuning.is_configured,
+        mariadb_process_tuning.is_configured,
         interval_seconds,
         dry_run,
     )
 
     if apply_on_start:
         apply_all(targets, dry_run, log)
-        apply_homeassistant_process_tuning(process_tuning, dry_run, log)
+        apply_process_tuning(homeassistant_process_tuning, dry_run, log)
+        apply_process_tuning(mariadb_process_tuning, dry_run, log)
 
     try:
         while True:
             time.sleep(interval_seconds)
             apply_all(targets, dry_run, log)
-            apply_homeassistant_process_tuning(process_tuning, dry_run, log)
+            apply_process_tuning(homeassistant_process_tuning, dry_run, log)
+            apply_process_tuning(mariadb_process_tuning, dry_run, log)
     except KeyboardInterrupt:
         log.info("Shutting down")
 

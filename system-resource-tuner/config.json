@@ -3,7 +3,7 @@
   "slug": "system_resource_tuner",
   "description": "Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled.",
   "url": "https://github.com/bakerkj/hass-apps/",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "arch": ["amd64", "aarch64"],
   "startup": "services",
   "boot": "auto",
@@ -22,7 +22,8 @@
     "dry_run": false,
     "log_level": "INFO",
     "targets": [],
-    "homeassistant_process": {}
+    "homeassistant_process": {},
+    "mariadb_process": {}
   },
   "schema": {
     "interval_seconds": "int(5,86400)",
@@ -38,6 +39,12 @@
       }
     ],
     "homeassistant_process": {
+      "container": "str?",
+      "process_match_regex": "str?",
+      "nice": "int?",
+      "cpuset_cpus": "str?"
+    },
+    "mariadb_process": {
       "container": "str?",
       "process_match_regex": "str?",
       "nice": "int?",
