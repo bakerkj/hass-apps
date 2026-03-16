@@ -68,6 +68,7 @@ def friendly_name(col: str) -> str:
         "IPC": "Instructions per Cycle",
         "LLCkRPS": "CPU Last-Level Cache References",
         "LLC%hi": "CPU Last-Level Cache Hit Rate",
+        "LLC%hit": "CPU Last-Level Cache Hit Rate",
         "IRQ": "Interrupt Rate",
         "NMI": "Non-maskable Interrupt Rate",
         "SMI": "System Management Interrupt Rate",
