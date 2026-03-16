@@ -2,7 +2,7 @@
   "name": "Turbostat to MQTT",
   "slug": "turbostat_mqtt",
   "description": "Runs turbostat and publishes to MQTT.",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "arch": ["amd64"],
   "startup": "services",
   "boot": "auto",
@@ -25,7 +25,8 @@
     "log_level": "INFO",
     "publish_raw_sample": true,
     "heartbeat_interval_seconds": 10,
-    "mqtt_disconnect_timeout_seconds": 60
+    "mqtt_disconnect_timeout_seconds": 60,
+    "sample_timeout_seconds": 30
   },
   "schema": {
     "interval_seconds": "int(1,60)",
@@ -39,6 +40,7 @@
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
     "publish_raw_sample": "bool",
     "heartbeat_interval_seconds": "int(1,60)",
-    "mqtt_disconnect_timeout_seconds": "int(5,600)"
+    "mqtt_disconnect_timeout_seconds": "int(5,600)",
+    "sample_timeout_seconds": "int(5,600)"
   }
 }

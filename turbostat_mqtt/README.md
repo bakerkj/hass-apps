@@ -10,7 +10,7 @@ Home Assistant discovery.
 - Publishes:
   - a combined JSON state payload
   - per-sensor state topics
-  - per-sensor availability topics
+  - add-on availability topic
   - heartbeat topic
 - Optional raw sample payload fields (`publish_raw_sample`).
 
@@ -22,7 +22,14 @@ Default base topic: `turbostat`
 - Heartbeat: `turbostat/heartbeat`
 - Combined state JSON: `turbostat/state`
 - Per-sensor state: `turbostat/<sensor_key>/state`
-- Per-sensor availability: `turbostat/<sensor_key>/availability`
+
+## Availability and Stale Data
+
+- The add-on publishes `online`/`offline` to `turbostat/availability`.
+- MQTT Last Will marks `turbostat/availability` as `offline` on unexpected
+  disconnects.
+- Discovery entities include `expire_after` based on `sample_timeout_seconds`,
+  so entities become unavailable if updates stop.
 
 ## Notes
 

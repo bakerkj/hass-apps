@@ -122,15 +122,20 @@ class MqttPublisher:
         queue_max: int,
         disconnect_timeout_s: int,
         log_level: str,
+        will_topic: str = "",
     ) -> None:
         self.cfg = cfg
         self.retain = retain
         self.disconnect_timeout_s = max(5, int(disconnect_timeout_s))
         self.log_level = log_level
+        self._will_topic = will_topic.strip()
 
         self._client = mqtt.Client(client_id=self.cfg.client_id, clean_session=True)
         if cfg.username:
             self._client.username_pw_set(cfg.username, cfg.password)
+        if self._will_topic:
+            self._client.will_set(self._will_topic, "offline", qos=1, retain=True)
+        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         self._connected = threading.Event()
         self._stop = threading.Event()
@@ -204,6 +209,7 @@ class MqttPublisher:
         while not self._stop.is_set():
             try:
                 self._client.connect(self.cfg.host, self.cfg.port, keepalive=30)
+                backoff = 1.0
                 self._client.loop_forever(retry_first_connection=True)
             except Exception as e:
                 log(
@@ -221,25 +227,30 @@ class MqttPublisher:
             except queue.Empty:
                 continue
 
-            # Drop stale messages if we've been disconnected too long
-            if (
-                not self._connected.is_set()
-                and (time.time() - enq_ts) > self.disconnect_timeout_s
-            ):
-                continue
+            while not self._stop.is_set():
+                age = time.time() - enq_ts
+                if age > self.disconnect_timeout_s:
+                    break
 
-            if not self._connected.is_set():
-                # Requeue best-effort
-                self.publish(topic, payload, retain)
-                time.sleep(1.0)
-                continue
+                if not self._connected.is_set():
+                    time.sleep(0.2)
+                    continue
 
-            try:
-                self._client.publish(topic, payload=payload, qos=0, retain=retain)
-            except Exception as e:
-                log("WARNING", f"MQTT publish failed: {e}", self.log_level)
-                self.publish(topic, payload, retain)
-                time.sleep(1.0)
+                try:
+                    info = self._client.publish(
+                        topic, payload=payload, qos=0, retain=retain
+                    )
+                    if info.rc == mqtt.MQTT_ERR_SUCCESS:
+                        break
+                    log(
+                        "WARNING",
+                        f"MQTT publish rc={info.rc} topic={topic}",
+                        self.log_level,
+                    )
+                except Exception as e:
+                    log("WARNING", f"MQTT publish failed: {e}", self.log_level)
+
+                time.sleep(0.3)
 
 
 def build_discovery_payloads(
@@ -248,8 +259,9 @@ def build_discovery_payloads(
     device_name: str,
     state_topic: str,
     base_topic: str,
-    availability_topics: Dict[str, str],
+    availability_topic: str,
     cols: Dict[str, str],
+    sample_timeout_s: int,
 ) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
 
@@ -259,6 +271,8 @@ def build_discovery_payloads(
         "manufacturer": "turbostat",
         "model": "turbostat summary",
     }
+
+    expire_after = max(5, int(sample_timeout_s))
 
     for original_col, json_key in cols.items():
         name = friendly_name(original_col)
@@ -274,9 +288,10 @@ def build_discovery_payloads(
             "entity_category": "diagnostic",
             "state_class": "measurement",
             "suggested_display_precision": int(sdp),
-            "availability_topic": availability_topics.get(json_key, ""),
+            "availability_topic": availability_topic,
             "payload_available": "online",
             "payload_not_available": "offline",
+            "expire_after": expire_after,
         }
 
         if unit is not None:
@@ -360,10 +375,10 @@ def main() -> int:
 
     heartbeat_interval = int(opts.get("heartbeat_interval_seconds", 10))
     disconnect_timeout = int(opts.get("mqtt_disconnect_timeout_seconds", 60))
+    sample_timeout = int(opts.get("sample_timeout_seconds", max(30, int(interval * 3))))
 
     state_topic = f"{base_topic}/state"
     availability_topic = f"{base_topic}/availability"
-    availability_topics: Dict[str, str] = {}
     heartbeat_topic = f"{base_topic}/heartbeat"
 
     pub = MqttPublisher(
@@ -372,6 +387,7 @@ def main() -> int:
         queue_max=500,
         disconnect_timeout_s=disconnect_timeout,
         log_level=log_level,
+        will_topic=availability_topic,
     )
     pub.start()
 
@@ -416,9 +432,6 @@ def main() -> int:
                     "SYS%LPI",
                 }
                 cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
-                availability_topics = {
-                    k: f"{base_topic}/{k}/availability" for k in cols_map.values()
-                }
 
             payload: Dict[str, Any] = {}
             for col, val in values.items():
@@ -446,8 +459,6 @@ def main() -> int:
             if not discovered and pub.wait_connected(0.1):
                 # set availability online
                 pub.publish(availability_topic, "online", retain=True)
-                for t in availability_topics.values():
-                    pub.publish(t, "online", retain=True)
 
                 disc = build_discovery_payloads(
                     discovery_prefix=discovery_prefix,
@@ -455,11 +466,17 @@ def main() -> int:
                     device_name=device_name,
                     state_topic=state_topic,
                     base_topic=base_topic,
-                    availability_topics=availability_topics,
+                    availability_topic=availability_topic,
                     cols=cols_map,
+                    sample_timeout_s=sample_timeout,
                 )
                 for t, cfg in disc.items():
                     pub.publish(t, json.dumps(cfg, separators=(",", ":")), retain=True)
+                # Remove legacy per-sensor availability retained messages.
+                for sensor_key in cols_map.values():
+                    pub.publish(
+                        f"{base_topic}/{sensor_key}/availability", "", retain=True
+                    )
                 discovered = True
                 log("INFO", f"Published discovery for {len(disc)} sensors", log_level)
 
