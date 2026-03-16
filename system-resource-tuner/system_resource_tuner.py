@@ -203,12 +203,24 @@ def parse_process_tuning(
     )
 
 
-def parse_homeassistant_process_tuning(raw_cfg: Any) -> ProcessTuning:
-    return parse_process_tuning(raw_cfg, block_name="homeassistant_process")
+def parse_process_targets(raw_cfg: Any, log: logging.Logger) -> list[ProcessTuning]:
+    if raw_cfg is None:
+        return []
+    if not isinstance(raw_cfg, list):
+        raise ValueError("'process_targets' must be a list")
 
+    out: list[ProcessTuning] = []
+    for idx, raw in enumerate(raw_cfg):
+        tuning = parse_process_tuning(raw, block_name=f"process_targets[{idx}]")
+        if not tuning.is_configured:
+            log.warning(
+                "Skipping process_targets[%d]: no process tuning values specified",
+                idx,
+            )
+            continue
+        out.append(tuning)
 
-def parse_mariadb_process_tuning(raw_cfg: Any) -> ProcessTuning:
-    return parse_process_tuning(raw_cfg, block_name="mariadb_process")
+    return out
 
 
 def cmd_error(proc: subprocess.CompletedProcess[str]) -> str:
@@ -645,6 +657,15 @@ def apply_process_tuning(
         apply_process_cpuset(tuning, host_pid, dry_run, log)
 
 
+def apply_process_tunings(
+    tunings: list[ProcessTuning],
+    dry_run: bool,
+    log: logging.Logger,
+) -> None:
+    for tuning in tunings:
+        apply_process_tuning(tuning, dry_run, log)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--options", default="/data/options.json")
@@ -668,46 +689,34 @@ def main() -> int:
 
     try:
         targets = parse_targets(options.get("targets"), log)
-        homeassistant_process_tuning = parse_homeassistant_process_tuning(
-            options.get("homeassistant_process")
-        )
-        mariadb_process_tuning = parse_mariadb_process_tuning(
-            options.get("mariadb_process")
-        )
+        process_targets = parse_process_targets(options.get("process_targets"), log)
     except Exception as e:
         log.error("Invalid configuration: %s", e)
         return 1
 
-    if (
-        not targets
-        and not homeassistant_process_tuning.is_configured
-        and not mariadb_process_tuning.is_configured
-    ):
+    if not targets and not process_targets:
         log.warning(
             "No valid tuning configured; running in idle mode (no changes will be applied)."
         )
 
     log.info(
-        "Starting System Resource Tuner: container_targets=%d "
-        "homeassistant_process=%s mariadb_process=%s interval_seconds=%d dry_run=%s",
+        "Starting System Resource Tuner: container_targets=%d process_targets=%d "
+        "interval_seconds=%d dry_run=%s",
         len(targets),
-        homeassistant_process_tuning.is_configured,
-        mariadb_process_tuning.is_configured,
+        len(process_targets),
         interval_seconds,
         dry_run,
     )
 
     if apply_on_start:
         apply_all(targets, dry_run, log)
-        apply_process_tuning(homeassistant_process_tuning, dry_run, log)
-        apply_process_tuning(mariadb_process_tuning, dry_run, log)
+        apply_process_tunings(process_targets, dry_run, log)
 
     try:
         while True:
             time.sleep(interval_seconds)
             apply_all(targets, dry_run, log)
-            apply_process_tuning(homeassistant_process_tuning, dry_run, log)
-            apply_process_tuning(mariadb_process_tuning, dry_run, log)
+            apply_process_tunings(process_targets, dry_run, log)
     except KeyboardInterrupt:
         log.info("Shutting down")
 

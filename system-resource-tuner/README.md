@@ -13,9 +13,7 @@ Per configured container target, it can apply:
 
 It can also tune selected processes (inside target containers):
 
-- Home Assistant process via `homeassistant_process`
-- MariaDB process via `mariadb_process`
-
+- Process tuning via `process_targets`
 - Process niceness (`renice`)
 - Process CPU affinity for all threads (`add-on python3` +
   `os.sched_setaffinity`)
@@ -62,20 +60,27 @@ It can also tune selected processes (inside target containers):
       "blkio_weight": 500
     }
   ],
-  "homeassistant_process": {
-    "container": "homeassistant",
-    "process_match_regex": "python3 .*homeassistant|homeassistant",
-    "nice": -5,
-    "cpuset_cpus": "2-3"
-  },
-  "mariadb_process": {
-    "container": "addon_core_mariadb",
-    "process_match_regex": "mariadbd|mysqld",
-    "nice": 5,
-    "cpuset_cpus": "10-19"
-  }
+  "process_targets": [
+    {
+      "container": "homeassistant",
+      "process_match_regex": "python3 .*homeassistant|homeassistant",
+      "nice": -5,
+      "cpuset_cpus": "0-5"
+    },
+    {
+      "container": "addon_core_mariadb",
+      "process_match_regex": "mariadbd|mysqld",
+      "nice": -3,
+      "cpuset_cpus": "2,3,6,7"
+    },
+    {
+      "container": "addon_ccab4aaf_frigate-fa",
+      "process_match_regex": "go2rtc|ffmpeg",
+      "nice": -2
+    }
+  ]
 }
 ```
 
-If `targets` is empty and no `homeassistant_process` or `mariadb_process` tuning
-values are set, the add-on stays running in idle mode.
+If `targets` is empty and no `process_targets` tuning values are set, the add-on
+stays running in idle mode.
