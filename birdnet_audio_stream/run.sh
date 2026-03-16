@@ -83,7 +83,7 @@ esac
   echo "  birdalsa: ${INPUT_TEMPLATE}"
   echo "streams:"
   echo "  ${STREAM_NAME}: ${STREAM_SPEC}"
-} > "${CONFIG_PATH}"
+} >"${CONFIG_PATH}"
 
 bashio::log.info "Input format: ${INPUT_FORMAT}"
 bashio::log.info "Audio device: ${AUDIO_DEVICE}"
