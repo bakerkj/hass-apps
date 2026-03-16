@@ -3,13 +3,10 @@
 
 import argparse
 import json
-import queue
 import re
 import signal
 import subprocess
-import threading
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt
@@ -105,152 +102,71 @@ def guess_meta(original_col: str) -> Tuple[Optional[str], Optional[str], str, in
     return None, None, "mdi:chart-line", 2
 
 
-@dataclass
-class MqttCfg:
-    host: str
-    port: int
-    username: str
-    password: str
-    client_id: str
+class MqttHealth:
+    def __init__(self) -> None:
+        self.connected: bool = False
+        self.last_connect_ok: float = 0.0
+        self.last_disconnect: float = 0.0
+        self.last_state_publish_ok: float = 0.0
 
 
-class MqttPublisher:
-    def __init__(
-        self,
-        cfg: MqttCfg,
-        retain: bool,
-        queue_max: int,
-        disconnect_timeout_s: int,
-        log_level: str,
-        will_topic: str = "",
-    ) -> None:
-        self.cfg = cfg
-        self.retain = retain
-        self.disconnect_timeout_s = max(5, int(disconnect_timeout_s))
-        self.log_level = log_level
-        self._will_topic = will_topic.strip()
+def mqtt_publish(
+    client: mqtt.Client,
+    topic: str,
+    payload: str,
+    *,
+    qos: int,
+    retain: bool,
+    log_level: str,
+    health: MqttHealth,
+    mark_state: bool = False,
+) -> bool:
+    try:
+        info = client.publish(topic, payload=payload, qos=qos, retain=retain)
+        if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            if mark_state:
+                health.last_state_publish_ok = time.time()
+            return True
+        log("WARNING", f"MQTT publish rc={info.rc} topic={topic}", log_level)
+    except Exception as e:
+        log("WARNING", f"MQTT publish failed topic={topic}: {e}", log_level)
+    return False
 
-        self._client = mqtt.Client(client_id=self.cfg.client_id, clean_session=True)
-        if cfg.username:
-            self._client.username_pw_set(cfg.username, cfg.password)
-        if self._will_topic:
-            self._client.will_set(self._will_topic, "offline", qos=1, retain=True)
-        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
 
-        self._connected = threading.Event()
-        self._stop = threading.Event()
+def connect_mqtt_with_retry(
+    client: mqtt.Client,
+    mqtt_host: str,
+    mqtt_port: int,
+    startup_timeout_s: int,
+    log_level: str,
+) -> bool:
+    delay = 1.0
+    deadline = time.time() + float(max(5, startup_timeout_s))
+    attempt = 0
 
-        # Queue holds (topic, payload, retain, enqueued_ts)
-        self._q: "queue.Queue[Tuple[str, str, bool, float]]" = queue.Queue(
-            maxsize=max(queue_max, 1)
-        )
-
-        self._client.on_connect = self._on_connect
-        self._client.on_disconnect = self._on_disconnect
-
-        self._loop_thread = threading.Thread(target=self._loop, daemon=True)
-        self._drain_thread = threading.Thread(target=self._drain, daemon=True)
-
-    def start(self) -> None:
-        self._loop_thread.start()
-        self._drain_thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
+    while True:
+        attempt += 1
         try:
-            self._client.disconnect()
-        except Exception:
-            pass
-
-    def is_connected(self) -> bool:
-        return self._connected.is_set()
-
-    def wait_connected(self, timeout: float = 10.0) -> bool:
-        return self._connected.wait(timeout)
-
-    def publish(self, topic: str, payload: str, retain: Optional[bool] = None) -> None:
-        if retain is None:
-            retain = self.retain
-        item = (topic, payload, retain, time.time())
-        try:
-            self._q.put_nowait(item)
-        except queue.Full:
-            # Drop oldest then retry once
-            try:
-                _ = self._q.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._q.put_nowait(item)
-            except queue.Full:
-                pass
-
-    def _on_connect(
-        self, client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int
-    ) -> None:
-        if rc == 0:
-            self._connected.set()
-            log(
-                "INFO",
-                f"MQTT connected to {self.cfg.host}:{self.cfg.port}",
-                self.log_level,
-            )
-        else:
-            log("ERROR", f"MQTT connect failed rc={rc}", self.log_level)
-
-    def _on_disconnect(self, client: mqtt.Client, userdata: Any, rc: int) -> None:
-        self._connected.clear()
-        if self._stop.is_set():
-            return
-        log("WARNING", f"MQTT disconnected rc={rc}", self.log_level)
-
-    def _loop(self) -> None:
-        backoff = 1.0
-        while not self._stop.is_set():
-            try:
-                self._client.connect(self.cfg.host, self.cfg.port, keepalive=30)
-                backoff = 1.0
-                self._client.loop_forever(retry_first_connection=True)
-            except Exception as e:
+            client.connect(mqtt_host, mqtt_port, keepalive=60)
+            return True
+        except Exception as e:
+            now = time.time()
+            remaining = deadline - now
+            if remaining <= 0:
                 log(
-                    "WARNING",
-                    f"MQTT loop error: {e} (retry in {backoff:.1f}s)",
-                    self.log_level,
+                    "ERROR",
+                    f"Initial MQTT connect failed after {attempt} attempts: {e}",
+                    log_level,
                 )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
-
-    def _drain(self) -> None:
-        while not self._stop.is_set():
-            try:
-                topic, payload, retain, enq_ts = self._q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-
-            while not self._stop.is_set():
-                age = time.time() - enq_ts
-                if age > self.disconnect_timeout_s:
-                    break
-
-                if not self._connected.is_set():
-                    time.sleep(0.2)
-                    continue
-
-                try:
-                    info = self._client.publish(
-                        topic, payload=payload, qos=0, retain=retain
-                    )
-                    if info.rc == mqtt.MQTT_ERR_SUCCESS:
-                        break
-                    log(
-                        "WARNING",
-                        f"MQTT publish rc={info.rc} topic={topic}",
-                        self.log_level,
-                    )
-                except Exception as e:
-                    log("WARNING", f"MQTT publish failed: {e}", self.log_level)
-
-                time.sleep(0.3)
+                return False
+            sleep_s = min(delay, remaining)
+            log(
+                "WARNING",
+                f"Initial MQTT connect attempt {attempt} failed: {e}; retrying in {sleep_s:.1f}s",
+                log_level,
+            )
+            time.sleep(sleep_s)
+            delay = min(delay * 2, 30.0)
 
 
 def build_discovery_payloads(
@@ -357,39 +273,73 @@ def main() -> int:
 
     log_level = (opts.get("log_level") or "INFO").upper()
 
-    interval = float(opts.get("interval_seconds", 10))
+    interval = max(1.0, float(opts.get("interval_seconds", 10)))
     discovery_prefix = opts.get("mqtt_discovery_prefix", "homeassistant")
     base_topic = (opts.get("mqtt_base_topic") or "turbostat").rstrip("/")
 
+    mqtt_host = opts.get("mqtt_host", "core-mosquitto")
+    mqtt_port = int(opts.get("mqtt_port", 1883))
+    mqtt_username = opts.get("mqtt_username", "") or ""
+    mqtt_password = opts.get("mqtt_password", "") or ""
     client_id = opts.get("client_id") or "turbostat-app"
-
-    mqtt_cfg = MqttCfg(
-        host=opts.get("mqtt_host", "core-mosquitto"),
-        port=int(opts.get("mqtt_port", 1883)),
-        username=opts.get("mqtt_username", "") or "",
-        password=opts.get("mqtt_password", "") or "",
-        client_id=client_id,
-    )
 
     publish_raw = bool(opts.get("publish_raw_sample", True))
 
-    heartbeat_interval = int(opts.get("heartbeat_interval_seconds", 10))
-    disconnect_timeout = int(opts.get("mqtt_disconnect_timeout_seconds", 60))
-    sample_timeout = int(opts.get("sample_timeout_seconds", max(30, int(interval * 3))))
+    heartbeat_interval = max(1, int(opts.get("heartbeat_interval_seconds", 10)))
+    disconnect_timeout = max(5, int(opts.get("mqtt_disconnect_timeout_seconds", 300)))
+    sample_timeout = max(
+        5, int(opts.get("sample_timeout_seconds", max(180, int(interval * 3))))
+    )
 
     state_topic = f"{base_topic}/state"
     availability_topic = f"{base_topic}/availability"
     heartbeat_topic = f"{base_topic}/heartbeat"
 
-    pub = MqttPublisher(
-        cfg=mqtt_cfg,
-        retain=True,
-        queue_max=500,
-        disconnect_timeout_s=disconnect_timeout,
-        log_level=log_level,
-        will_topic=availability_topic,
-    )
-    pub.start()
+    health = MqttHealth()
+
+    client = mqtt.Client(client_id=client_id, clean_session=True)
+    if mqtt_username:
+        client.username_pw_set(mqtt_username, mqtt_password)
+
+    client.will_set(availability_topic, "offline", qos=1, retain=True)
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+    def on_connect(_client, _userdata, _flags, rc):
+        if rc == 0:
+            health.connected = True
+            health.last_connect_ok = time.time()
+            log("INFO", f"MQTT connected to {mqtt_host}:{mqtt_port}", log_level)
+            mqtt_publish(
+                _client,
+                availability_topic,
+                "online",
+                qos=1,
+                retain=True,
+                log_level=log_level,
+                health=health,
+            )
+        else:
+            health.connected = False
+            log("ERROR", f"MQTT connect failed rc={rc}", log_level)
+
+    def on_disconnect(_client, _userdata, rc):
+        health.connected = False
+        health.last_disconnect = time.time()
+        if rc == 0:
+            log("WARNING", "MQTT disconnected (clean)", log_level)
+        else:
+            log("WARNING", f"MQTT disconnected rc={rc}", log_level)
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+
+    log("INFO", f"Connecting MQTT to {mqtt_host}:{mqtt_port}", log_level)
+    if not connect_mqtt_with_retry(
+        client, mqtt_host, mqtt_port, disconnect_timeout, log_level
+    ):
+        return 10
+
+    client.loop_start()
 
     stop = {"v": False}
 
@@ -406,16 +356,59 @@ def main() -> int:
     discovered = False
     last_heartbeat = 0.0
     last_status_line = 0.0
+    last_sample_time = 0.0
+    first_sample_time = 0.0
 
-    proc = start_turbostat(interval)
-    log("INFO", f"Started turbostat: interval={interval}s", log_level)
+    proc: Optional[subprocess.Popen] = None
 
     try:
+        proc = start_turbostat(interval)
+        log("INFO", f"Started turbostat: interval={interval}s", log_level)
+
         for header, values, raw_line in iter_samples(proc):
             if stop["v"]:
                 break
 
             now = time.time()
+
+            if (
+                not health.connected
+                and health.last_disconnect > 0
+                and (now - health.last_disconnect) > disconnect_timeout
+            ):
+                log(
+                    "ERROR",
+                    f"MQTT disconnected for {now - health.last_disconnect:.1f}s (> {disconnect_timeout}s). Exiting for supervisor restart.",
+                    log_level,
+                )
+                return 11
+
+            if (
+                health.connected
+                and last_sample_time > 0
+                and (now - last_sample_time) <= max(sample_timeout, interval * 2)
+            ):
+                if (
+                    health.last_state_publish_ok > 0
+                    and (now - health.last_state_publish_ok) > sample_timeout
+                ):
+                    log(
+                        "ERROR",
+                        "Detected MQTT state publish stall while samples are active. Exiting for supervisor restart.",
+                        log_level,
+                    )
+                    return 12
+                if (
+                    health.last_state_publish_ok == 0
+                    and first_sample_time > 0
+                    and (now - first_sample_time) > sample_timeout
+                ):
+                    log(
+                        "ERROR",
+                        "No successful MQTT state publish since first sample. Exiting for supervisor restart.",
+                        log_level,
+                    )
+                    return 12
 
             if not cols_map:
                 cols_map = {col: sanitize_key(col) for col in header}
@@ -447,18 +440,26 @@ def main() -> int:
                     payload[key] = val
 
             payload["_ts_ms"] = int(now * 1000)
+            last_sample_time = now
+            if first_sample_time == 0.0:
+                first_sample_time = now
             if publish_raw:
                 payload["_raw"] = {
                     cols_map[c]: values[c] for c in values.keys() if c in cols_map
                 }
                 payload["_raw_header"] = header
-            if publish_raw:
                 payload["_raw_line"] = raw_line
 
-            # Publish discovery once connected and we have columns
-            if not discovered and pub.wait_connected(0.1):
-                # set availability online
-                pub.publish(availability_topic, "online", retain=True)
+            if not discovered and health.connected:
+                mqtt_publish(
+                    client,
+                    availability_topic,
+                    "online",
+                    qos=1,
+                    retain=True,
+                    log_level=log_level,
+                    health=health,
+                )
 
                 disc = build_discovery_payloads(
                     discovery_prefix=discovery_prefix,
@@ -471,32 +472,76 @@ def main() -> int:
                     sample_timeout_s=sample_timeout,
                 )
                 for t, cfg in disc.items():
-                    pub.publish(t, json.dumps(cfg, separators=(",", ":")), retain=True)
-                # Remove legacy per-sensor availability retained messages.
-                for sensor_key in cols_map.values():
-                    pub.publish(
-                        f"{base_topic}/{sensor_key}/availability", "", retain=True
+                    mqtt_publish(
+                        client,
+                        t,
+                        json.dumps(cfg, separators=(",", ":")),
+                        qos=1,
+                        retain=True,
+                        log_level=log_level,
+                        health=health,
                     )
+
+                for sensor_key in cols_map.values():
+                    mqtt_publish(
+                        client,
+                        f"{base_topic}/{sensor_key}/availability",
+                        "",
+                        qos=1,
+                        retain=True,
+                        log_level=log_level,
+                        health=health,
+                    )
+
                 discovered = True
                 log("INFO", f"Published discovery for {len(disc)} sensors", log_level)
 
-            pub.publish(
-                state_topic, json.dumps(payload, separators=(",", ":")), retain=True
+            mqtt_publish(
+                client,
+                state_topic,
+                json.dumps(payload, separators=(",", ":")),
+                qos=0,
+                retain=False,
+                log_level=log_level,
+                health=health,
+                mark_state=True,
             )
             for k, v in payload.items():
                 if k.startswith("_"):
                     continue
-                pub.publish(f"{base_topic}/{k}/state", str(v), retain=True)
-
-            # Heartbeat
-            if now - last_heartbeat >= heartbeat_interval:
-                last_heartbeat = now
-                hb = {"ts_ms": int(now * 1000), "connected": pub.is_connected()}
-                pub.publish(
-                    heartbeat_topic, json.dumps(hb, separators=(",", ":")), retain=True
+                mqtt_publish(
+                    client,
+                    f"{base_topic}/{k}/state",
+                    str(v),
+                    qos=0,
+                    retain=False,
+                    log_level=log_level,
+                    health=health,
+                    mark_state=True,
                 )
 
-            # CLI status (like intel_gpu_top add-on)
+            if now - last_heartbeat >= heartbeat_interval:
+                last_heartbeat = now
+                hb = {
+                    "ts_ms": int(now * 1000),
+                    "connected": health.connected,
+                    "last_sample_age_s": round(now - last_sample_time, 1)
+                    if last_sample_time
+                    else None,
+                    "state_publish_age_s": round(now - health.last_state_publish_ok, 1)
+                    if health.last_state_publish_ok
+                    else None,
+                }
+                mqtt_publish(
+                    client,
+                    heartbeat_topic,
+                    json.dumps(hb, separators=(",", ":")),
+                    qos=0,
+                    retain=False,
+                    log_level=log_level,
+                    health=health,
+                )
+
             if now - last_status_line >= 10.0:
                 last_status_line = now
                 bits = []
@@ -509,27 +554,41 @@ def main() -> int:
                     log_level,
                 )
 
-            # Stall watchdog: handled outside loop by periodic check
+        if not stop["v"] and proc.poll() is not None:
+            log("ERROR", f"turbostat exited rc={proc.poll()}", log_level)
+            return 13
 
-            # Non-blocking stall check: if turbostat stops producing output, loop will block.
-            # We'll rely on external watchdog thread to restart it.
     except Exception as e:
         log("ERROR", f"Main loop exception: {e}", log_level)
+        return 14
     finally:
         stop["v"] = True
+        try:
+            mqtt_publish(
+                client,
+                availability_topic,
+                "offline",
+                qos=1,
+                retain=True,
+                log_level=log_level,
+                health=health,
+            )
+            time.sleep(0.2)
+        except Exception:
+            pass
 
-    # Clean shutdown
-    try:
-        pub.publish(availability_topic, "offline", retain=True)
-        time.sleep(0.2)
-    except Exception:
-        pass
-    try:
-        if proc.poll() is None:
-            proc.terminate()
-    except Exception:
-        pass
-    pub.stop()
+        try:
+            client.loop_stop()
+            client.disconnect()
+        except Exception:
+            pass
+
+        try:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+        except Exception:
+            pass
+
     return 0
 
 

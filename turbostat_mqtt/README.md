@@ -30,6 +30,11 @@ Default base topic: `turbostat`
   disconnects.
 - Discovery entities include `expire_after` based on `sample_timeout_seconds`,
   so entities become unavailable if updates stop.
+- Uses the same direct MQTT publish + fail-fast disconnect watchdog model as
+  `intel_gpu_top_mqtt` (exits for supervisor restart on prolonged
+  publish/disconnect failure).
+- Default cutoffs are significantly longer: `sample_timeout_seconds=180` and
+  `mqtt_disconnect_timeout_seconds=300`.
 
 ## Notes
 
