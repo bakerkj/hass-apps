@@ -11,7 +11,7 @@ Default base topic: `intel_gpu_top`
 - Heartbeat: `intel_gpu_top/heartbeat`
 - Optional raw sample: `intel_gpu_top/raw_sample`
 - Per-sensor state: `intel_gpu_top/<sensor_key>/state`
-- Per-sensor attributes: `intel_gpu_top/<sensor_key>/attributes`
+- Per-sensor attributes topics are not published (state-only sensors).
 
 Published sensor keys:
 
@@ -37,6 +37,9 @@ Notes:
 - Auto-selects a render node using `intel_gpu_top -L`.
 - Optional `preferred_device_regex` allows selecting a specific GPU.
 - Publishes MQTT discovery once the first valid sample is parsed.
+- Discovery entities use a shared `expire_after` timeout derived from
+  `sample_timeout_seconds`.
+
 - Includes watchdogs for:
   - sample timeout
   - render node disappearance

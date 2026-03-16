@@ -143,10 +143,9 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     - attrs (dict)
     - name (human name)
     """
-    ts = time.time()
-    common_attrs: Dict[str, Any] = {"ts": ts}
+    common_attrs: Dict[str, Any] = {}
 
-    for k in ["pci_id", "device", "driver", "card", "gt", "timestamp"]:
+    for k in ["pci_id", "device", "driver", "card", "gt"]:
         v = raw.get(k)
         if v is not None and isinstance(v, (str, int, float)):
             common_attrs[k] = v
@@ -239,6 +238,7 @@ def publish_discovery(
     device_id: str,
     device_name: str,
     metrics: Dict[str, Dict[str, Any]],
+    sample_timeout_s: int,
     log: logging.Logger,
 ) -> None:
     device = {
@@ -257,10 +257,10 @@ def publish_discovery(
         "Blitter": "mdi:image-move",
     }
 
+    expire_after = max(5, int(sample_timeout_s))
+
     for key, m in metrics.items():
         state_topic = f"{base_topic}/{key}/state"
-        attr_topic = f"{base_topic}/{key}/attributes"
-
         payload: Dict[str, Any] = {
             "name": m["name"],
             "unique_id": f"{device_id}_{key}",
@@ -269,8 +269,8 @@ def publish_discovery(
             "availability_topic": availability_topic,
             "payload_available": "online",
             "payload_not_available": "offline",
+            "expire_after": expire_after,
             "unit_of_measurement": m["unit"],
-            "json_attributes_topic": attr_topic,
             "device": device,
         }
 
@@ -633,6 +633,7 @@ def main() -> int:
                         device_id,
                         device_name,
                         metrics,
+                        args.sample_timeout_seconds,
                         log,
                     )
                     discovery_published = True
@@ -651,19 +652,9 @@ def main() -> int:
                         samples_since_intel_start,
                     )
 
-                # Publish each sensor to its own state topic, plus attributes topic
+                # Publish each sensor to its own state topic
                 for key, m in metrics.items():
                     val = m["value"]
-
-                    # Always update attributes (ts, etc.)
-                    attr_topic = f"{base_topic}/{key}/attributes"
-                    ainfo = client.publish(
-                        attr_topic, json.dumps(m["attrs"]), qos=0, retain=False
-                    )
-                    log.debug(
-                        "MQTT attrs %s mid=%s rc=%s", attr_topic, ainfo.mid, ainfo.rc
-                    )
-
                     if warmup_sample or val is None:
                         continue
 
