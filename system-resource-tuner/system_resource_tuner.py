@@ -36,6 +36,9 @@ class ProcessTuning:
         return self.nice is not None or self.cpuset_cpus is not None
 
 
+HOST_PROCESS_SENTINEL = "__host__"
+
+
 def parse_bool(v: Any, default: bool = False) -> bool:
     if v is None:
         return default
@@ -223,6 +226,38 @@ def parse_process_targets(raw_cfg: Any, log: logging.Logger) -> list[ProcessTuni
     return out
 
 
+def parse_host_process_targets(
+    raw_cfg: Any,
+    log: logging.Logger,
+) -> list[ProcessTuning]:
+    if raw_cfg is None:
+        return []
+    if not isinstance(raw_cfg, list):
+        raise ValueError("'host_process_targets' must be a list")
+
+    out: list[ProcessTuning] = []
+    for idx, raw in enumerate(raw_cfg):
+        if not isinstance(raw, dict):
+            raise ValueError(f"host_process_targets[{idx}] must be an object")
+
+        raw_with_container = dict(raw)
+        raw_with_container["container"] = HOST_PROCESS_SENTINEL
+
+        tuning = parse_process_tuning(
+            raw_with_container,
+            block_name=f"host_process_targets[{idx}]",
+        )
+        if not tuning.is_configured:
+            log.warning(
+                "Skipping host_process_targets[%d]: no process tuning values specified",
+                idx,
+            )
+            continue
+        out.append(tuning)
+
+    return out
+
+
 def cmd_error(proc: subprocess.CompletedProcess[str]) -> str:
     return (proc.stderr or proc.stdout or "").strip()
 
@@ -342,6 +377,46 @@ def docker_top_processes(
         rows.append((int(parts[0]), parts[1]))
 
     return rows
+
+
+def host_top_processes(log: logging.Logger) -> list[tuple[int, str]]:
+    cmd = ["ps", "-eo", "pid,args"]
+    proc = run_cmd(cmd)
+    if proc.returncode != 0:
+        log.warning("Failed to list host processes: %s", cmd_error(proc))
+        return []
+
+    rows: list[tuple[int, str]] = []
+    for line in proc.stdout.splitlines():
+        row = line.strip()
+        if not row:
+            continue
+
+        parts = row.split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+
+        rows.append((int(parts[0]), parts[1]))
+
+    return rows
+
+
+def find_matching_host_pids(
+    process_match_regex: str,
+    log: logging.Logger,
+) -> list[int]:
+    try:
+        matcher = re.compile(process_match_regex)
+    except re.error as e:
+        log.error("Invalid process_match_regex '%s': %s", process_match_regex, e)
+        return []
+
+    out: list[int] = []
+    for host_pid, cmdline in host_top_processes(log):
+        if matcher.search(cmdline):
+            out.append(host_pid)
+
+    return out
 
 
 def find_matching_pid(
@@ -638,6 +713,19 @@ def apply_process_cpuset(
     )
 
 
+def apply_tuning_to_pid(
+    tuning: ProcessTuning,
+    host_pid: int,
+    dry_run: bool,
+    log: logging.Logger,
+) -> None:
+    if tuning.nice is not None:
+        apply_process_nice(tuning, host_pid, dry_run, log)
+
+    if tuning.cpuset_cpus is not None:
+        apply_process_cpuset(tuning, host_pid, dry_run, log)
+
+
 def apply_process_tuning(
     tuning: ProcessTuning,
     dry_run: bool,
@@ -646,15 +734,30 @@ def apply_process_tuning(
     if not tuning.is_configured:
         return
 
+    if tuning.container == HOST_PROCESS_SENTINEL:
+        host_pids = find_matching_host_pids(tuning.process_match_regex, log)
+        if not host_pids:
+            log.warning(
+                "No host process matched regex '%s'",
+                tuning.process_match_regex,
+            )
+            return
+
+        host_tuning = ProcessTuning(
+            container="host",
+            process_match_regex=tuning.process_match_regex,
+            nice=tuning.nice,
+            cpuset_cpus=tuning.cpuset_cpus,
+        )
+        for host_pid in host_pids:
+            apply_tuning_to_pid(host_tuning, host_pid, dry_run, log)
+        return
+
     host_pid = find_matching_pid(tuning.container, tuning.process_match_regex, log)
     if host_pid is None:
         return
 
-    if tuning.nice is not None:
-        apply_process_nice(tuning, host_pid, dry_run, log)
-
-    if tuning.cpuset_cpus is not None:
-        apply_process_cpuset(tuning, host_pid, dry_run, log)
+    apply_tuning_to_pid(tuning, host_pid, dry_run, log)
 
 
 def apply_process_tunings(
@@ -690,20 +793,25 @@ def main() -> int:
     try:
         targets = parse_targets(options.get("targets"), log)
         process_targets = parse_process_targets(options.get("process_targets"), log)
+        host_process_targets = parse_host_process_targets(
+            options.get("host_process_targets"),
+            log,
+        )
     except Exception as e:
         log.error("Invalid configuration: %s", e)
         return 1
 
-    if not targets and not process_targets:
+    if not targets and not process_targets and not host_process_targets:
         log.warning(
             "No valid tuning configured; running in idle mode (no changes will be applied)."
         )
 
     log.info(
         "Starting System Resource Tuner: container_targets=%d process_targets=%d "
-        "interval_seconds=%d dry_run=%s",
+        "host_process_targets=%d interval_seconds=%d dry_run=%s",
         len(targets),
         len(process_targets),
+        len(host_process_targets),
         interval_seconds,
         dry_run,
     )
@@ -711,12 +819,14 @@ def main() -> int:
     if apply_on_start:
         apply_all(targets, dry_run, log)
         apply_process_tunings(process_targets, dry_run, log)
+        apply_process_tunings(host_process_targets, dry_run, log)
 
     try:
         while True:
             time.sleep(interval_seconds)
             apply_all(targets, dry_run, log)
             apply_process_tunings(process_targets, dry_run, log)
+            apply_process_tunings(host_process_targets, dry_run, log)
     except KeyboardInterrupt:
         log.info("Shutting down")
 

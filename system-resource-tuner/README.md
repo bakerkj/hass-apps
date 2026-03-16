@@ -11,9 +11,10 @@ Per configured container target, it can apply:
 - `cpu_shares` (relative CPU priority via Docker `--cpu-shares`)
 - `blkio_weight` (Docker `--blkio-weight`)
 
-It can also tune selected processes (inside target containers):
+It can also tune selected processes:
 
-- Process tuning via `process_targets`
+- Container process tuning via `process_targets`
+- Host process tuning via `host_process_targets`
 - Process niceness (`renice`)
 - Process CPU affinity for all threads (`add-on python3` +
   `os.sched_setaffinity`)
@@ -23,8 +24,8 @@ It can also tune selected processes (inside target containers):
 - Reads targets from add-on options.
 - Inspects each target container's current HostConfig limits.
 - Applies `docker update` only for values that differ.
-- Optionally finds configured processes by regex and applies process-level
-  niceness/affinity.
+- Optionally finds configured container and host processes by regex and applies
+  process-level niceness/affinity.
 - Re-checks on a configurable interval to re-apply if containers/processes
   restart.
 
@@ -43,6 +44,7 @@ It can also tune selected processes (inside target containers):
 - Protection mode must be OFF for write operations (container resource changes).
 - Container names/IDs in `targets` must exist on the host.
 - Target containers do not need `python3` or `taskset` for process tuning.
+- `host_process_targets` applies to all host processes that match each regex.
 
 ## Example Options
 
@@ -78,9 +80,25 @@ It can also tune selected processes (inside target containers):
       "process_match_regex": "go2rtc|ffmpeg",
       "nice": -2
     }
+  ],
+  "host_process_targets": [
+    {
+      "process_match_regex": "dockerd",
+      "nice": -4,
+      "cpuset_cpus": "0-1"
+    },
+    {
+      "process_match_regex": "containerd",
+      "nice": -4,
+      "cpuset_cpus": "0-1"
+    },
+    {
+      "process_match_regex": "containerd-shim-runc-v2",
+      "nice": -2
+    }
   ]
 }
 ```
 
-If `targets` is empty and no `process_targets` tuning values are set, the add-on
-stays running in idle mode.
+If `targets` is empty and no `process_targets` or `host_process_targets` tuning
+values are set, the add-on stays running in idle mode.

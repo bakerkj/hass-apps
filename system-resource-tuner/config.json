@@ -3,7 +3,7 @@
   "slug": "system_resource_tuner",
   "description": "Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled.",
   "url": "https://github.com/bakerkj/hass-apps/",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "arch": ["amd64", "aarch64"],
   "startup": "services",
   "boot": "auto",
@@ -23,7 +23,8 @@
     "dry_run": false,
     "log_level": "INFO",
     "targets": [],
-    "process_targets": []
+    "process_targets": [],
+    "host_process_targets": []
   },
   "schema": {
     "interval_seconds": "int(5,86400)",
@@ -41,6 +42,13 @@
     "process_targets": [
       {
         "container": "str?",
+        "process_match_regex": "str?",
+        "nice": "int?",
+        "cpuset_cpus": "str?"
+      }
+    ],
+    "host_process_targets": [
+      {
         "process_match_regex": "str?",
         "nice": "int?",
         "cpuset_cpus": "str?"
