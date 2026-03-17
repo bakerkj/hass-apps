@@ -241,7 +241,7 @@ def start_turbostat(interval_s: float) -> subprocess.Popen:
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
         universal_newlines=True,
