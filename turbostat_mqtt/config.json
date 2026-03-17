@@ -2,7 +2,7 @@
   "name": "Turbostat to MQTT",
   "slug": "turbostat_mqtt",
   "description": "Runs turbostat and publishes to MQTT.",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "arch": ["amd64"],
   "startup": "services",
   "boot": "auto",
@@ -12,7 +12,7 @@
   "host_network": false,
   "ingress": false,
   "full_access": false,
-  "privileged": ["PERFMON"],
+  "privileged": ["PERFMON", "SYS_RAWIO"],
   "options": {
     "interval_seconds": 10,
     "mqtt_host": "core-mosquitto",

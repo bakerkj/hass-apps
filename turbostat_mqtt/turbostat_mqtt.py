@@ -40,11 +40,14 @@ def friendly_name(col: str) -> str:
         "Busy%": "CPU Busy",
         "CPU%": "CPU Busy",
         "GFX%": "CPU iGPU Busy",
-        "CorTmp": "CPU Cores Temperature",
+        "CoreTmp": "CPU Core Temperature",
         "Bzy_MHz": "CPU Busy Frequency",
         "Avg_MHz": "CPU Average Frequency",
         "TSC_MHz": "CPU Time Stamp Counter Frequency",
         "Totl%C0": "CPU Total C0 (Active)",
+        "Any%C0": "CPU Any Core C0 (Active)",
+        "GFX%C0": "GPU C0 (Active)",
+        "CPUGFX%": "CPU+GPU C0 (Active)",
         "Pkg%pc2": "CPU Package C2 Residency",
         "Pkg%pc3": "CPU Package C3 Residency",
         "Pkg%pc6": "CPU Package C6 Residency",
@@ -226,7 +229,15 @@ def build_discovery_payloads(
 
 
 def start_turbostat(interval_s: float) -> subprocess.Popen:
-    cmd = ["turbostat", "--Summary", "--quiet", "--interval", str(interval_s)]
+    cmd = [
+        "turbostat",
+        "--Summary",
+        "--quiet",
+        "--enable",
+        "all",
+        "--interval",
+        str(interval_s),
+    ]
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -361,8 +372,8 @@ def main() -> int:
 
     device_id = "turbostat"
     device_name = "Turbostat"
-
     cols_map: Dict[str, str] = {}
+    filtered_out_sensor_keys: set[str] = set()
     discovered = False
     last_heartbeat = 0.0
     last_status_line = 0.0
@@ -539,7 +550,7 @@ def main() -> int:
                 first_sample_time = now
 
             if not cols_map:
-                cols_map = {col: sanitize_key(col) for col in header}
+                all_cols_map = {col: sanitize_key(col) for col in header}
                 skip_cols = {
                     "IRQ",
                     "NMI",
@@ -552,7 +563,16 @@ def main() -> int:
                     "CPU%LPI",
                     "SYS%LPI",
                 }
-                cols_map = {c: k for c, k in cols_map.items() if c not in skip_cols}
+                cols_map = {
+                    c: k
+                    for c, k in all_cols_map.items()
+                    if c not in skip_cols and friendly_name(c) != f"Turbostat {c}"
+                }
+                filtered_out_sensor_keys = {
+                    k
+                    for c, k in all_cols_map.items()
+                    if c not in skip_cols and c not in cols_map
+                }
 
             payload: Dict[str, Any] = {}
             for col, val in values.items():
@@ -585,6 +605,23 @@ def main() -> int:
                     log_level=log_level,
                     health=health,
                 )
+                for stale_sensor_key in sorted(filtered_out_sensor_keys):
+                    mqtt_publish(
+                        client,
+                        f"{discovery_prefix}/sensor/{device_id}/{stale_sensor_key}/config",
+                        "",
+                        qos=1,
+                        retain=True,
+                        log_level=log_level,
+                        health=health,
+                    )
+
+                if filtered_out_sensor_keys:
+                    log(
+                        "INFO",
+                        f"Removed discovery for {len(filtered_out_sensor_keys)} unmapped columns",
+                        log_level,
+                    )
 
                 disc = build_discovery_payloads(
                     discovery_prefix=discovery_prefix,
