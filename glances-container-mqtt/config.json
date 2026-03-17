@@ -3,7 +3,7 @@
   "slug": "glances_container_mqtt",
   "description": "Polls Glances container stats and publishes Home Assistant MQTT Discovery sensors with one device per container.",
   "url": "https://github.com/bakerkj/hass-apps/",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "arch": ["amd64", "aarch64"],
   "startup": "services",
   "boot": "auto",

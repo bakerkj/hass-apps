@@ -706,7 +706,26 @@ def main() -> int:
                 )
                 container_online[container_slug] = True
 
+            has_network_rx_total = (
+                metric_value(container, "network_rx_total") is not None
+            )
+            has_network_tx_total = (
+                metric_value(container, "network_tx_total") is not None
+            )
+
+            def network_metric_enabled(metric_key: str) -> bool:
+                if metric_key in {"network_rx_total", "network_rx_rate"}:
+                    return has_network_rx_total
+                if metric_key in {"network_tx_total", "network_tx_rate"}:
+                    return has_network_tx_total
+                return True
+
             stale_for_container = discovered[container_slug] - selected_metric_set
+            stale_for_container |= {
+                metric_key
+                for metric_key in discovered[container_slug]
+                if not network_metric_enabled(metric_key)
+            }
             for stale_metric in stale_for_container:
                 clear_discovery(
                     client,
@@ -722,6 +741,8 @@ def main() -> int:
 
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
+                if not network_metric_enabled(metric_key):
+                    continue
 
                 if metric_key not in discovered[container_slug]:
                     publish_discovery(
