@@ -14,16 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 
-DEPRECATED_METRIC_KEYS: tuple[str, ...] = (
-    "engine_blitter_semaphore_percent",
-    "engine_blitter_wait_percent",
-    "engine_render_3d_semaphore_percent",
-    "engine_render_3d_wait_percent",
-    "engine_video_semaphore_percent",
-    "engine_video_wait_percent",
-    "engine_videoenhance_semaphore_percent",
-    "engine_videoenhance_wait_percent",
-)
+DEPRECATED_METRIC_KEYS: tuple[str, ...] = ()
 
 
 def extract_latest_json_object(buf: str) -> Tuple[Optional[dict], str]:
@@ -202,6 +193,20 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "Render/3D", "field": "busy"},
         ),
+        "engine_render_3d_semaphore_percent": metric(
+            "engine_render_3d_semaphore_percent",
+            "Intel GPU Engine Render/3D Semaphore",
+            find_engine_field(raw, "Render/3D", "sema"),
+            "%",
+            {"engine": "Render/3D", "field": "sema"},
+        ),
+        "engine_render_3d_wait_percent": metric(
+            "engine_render_3d_wait_percent",
+            "Intel GPU Engine Render/3D Wait",
+            find_engine_field(raw, "Render/3D", "wait"),
+            "%",
+            {"engine": "Render/3D", "field": "wait"},
+        ),
         # Video
         "engine_video_busy_percent": metric(
             "engine_video_busy_percent",
@@ -209,6 +214,20 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             find_engine_field(raw, "Video", "busy"),
             "%",
             {"engine": "Video", "field": "busy"},
+        ),
+        "engine_video_semaphore_percent": metric(
+            "engine_video_semaphore_percent",
+            "Intel GPU Engine Video Semaphore",
+            find_engine_field(raw, "Video", "sema"),
+            "%",
+            {"engine": "Video", "field": "sema"},
+        ),
+        "engine_video_wait_percent": metric(
+            "engine_video_wait_percent",
+            "Intel GPU Engine Video Wait",
+            find_engine_field(raw, "Video", "wait"),
+            "%",
+            {"engine": "Video", "field": "wait"},
         ),
         # VideoEnhance
         "engine_videoenhance_busy_percent": metric(
@@ -218,6 +237,20 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "%",
             {"engine": "VideoEnhance", "field": "busy"},
         ),
+        "engine_videoenhance_semaphore_percent": metric(
+            "engine_videoenhance_semaphore_percent",
+            "Intel GPU Engine VideoEnhance Semaphore",
+            find_engine_field(raw, "VideoEnhance", "sema"),
+            "%",
+            {"engine": "VideoEnhance", "field": "sema"},
+        ),
+        "engine_videoenhance_wait_percent": metric(
+            "engine_videoenhance_wait_percent",
+            "Intel GPU Engine VideoEnhance Wait",
+            find_engine_field(raw, "VideoEnhance", "wait"),
+            "%",
+            {"engine": "VideoEnhance", "field": "wait"},
+        ),
         # Blitter
         "engine_blitter_busy_percent": metric(
             "engine_blitter_busy_percent",
@@ -225,6 +258,20 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             find_engine_field(raw, "Blitter", "busy"),
             "%",
             {"engine": "Blitter", "field": "busy"},
+        ),
+        "engine_blitter_semaphore_percent": metric(
+            "engine_blitter_semaphore_percent",
+            "Intel GPU Engine Blitter Semaphore",
+            find_engine_field(raw, "Blitter", "sema"),
+            "%",
+            {"engine": "Blitter", "field": "sema"},
+        ),
+        "engine_blitter_wait_percent": metric(
+            "engine_blitter_wait_percent",
+            "Intel GPU Engine Blitter Wait",
+            find_engine_field(raw, "Blitter", "wait"),
+            "%",
+            {"engine": "Blitter", "field": "wait"},
         ),
     }
 
