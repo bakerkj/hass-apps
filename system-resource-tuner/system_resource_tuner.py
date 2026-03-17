@@ -753,11 +753,13 @@ def apply_process_tuning(
             apply_tuning_to_pid(host_tuning, host_pid, dry_run, log)
         return
 
-    host_pid = find_matching_pid(tuning.container, tuning.process_match_regex, log)
-    if host_pid is None:
+    container_host_pid = find_matching_pid(
+        tuning.container, tuning.process_match_regex, log
+    )
+    if container_host_pid is None:
         return
 
-    apply_tuning_to_pid(tuning, host_pid, dry_run, log)
+    apply_tuning_to_pid(tuning, container_host_pid, dry_run, log)
 
 
 def apply_process_tunings(

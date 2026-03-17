@@ -223,11 +223,13 @@ def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
     for path in metric_def["paths"]:
         raw_value = deep_get(container, path)
         if value_type == "string":
-            value = safe_text(raw_value)
+            text_value = safe_text(raw_value)
+            if text_value is not None:
+                return text_value
         else:
-            value = safe_float(raw_value)
-        if value is not None:
-            return value
+            number_value = safe_float(raw_value)
+            if number_value is not None:
+                return number_value
     return None
 
 
