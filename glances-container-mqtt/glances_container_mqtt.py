@@ -394,6 +394,7 @@ def publish_discovery(
     container_display_name: str,
     metric_key: str,
     metric_def: dict[str, Any],
+    expire_after_s: int,
 ) -> None:
     sensor_id = f"{container_slug}_{metric_key}"
     config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
@@ -406,9 +407,10 @@ def publish_discovery(
         "unique_id": f"{device_id}_{sensor_id}",
         "default_entity_id": f"sensor.container_{container_slug}_{metric_key}",
         "state_topic": state_topic,
-        "availability_topic": f"{base_topic}/availability",
+        "availability_topic": f"{base_topic}/{container_slug}/availability",
         "payload_available": "online",
         "payload_not_available": "offline",
+        "expire_after": max(5, int(expire_after_s)),
         "device": {
             "identifiers": [f"{device_id}_{container_slug}"],
             "name": friendly_container_name,
@@ -592,16 +594,41 @@ def main() -> int:
         client.username_pw_set(args.mqtt_username, args.mqtt_password)
 
     base_topic = args.mqtt_base_topic
+    container_online: dict[str, bool] = {}
+
+    def on_connect(_client, _userdata, _flags, rc):
+        if rc == 0:
+            log.info("MQTT connected to %s:%d", args.mqtt_host, args.mqtt_port)
+            _client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
+            for slug, is_online in container_online.items():
+                _client.publish(
+                    f"{base_topic}/{slug}/availability",
+                    "online" if is_online else "offline",
+                    qos=1,
+                    retain=True,
+                )
+        else:
+            log.error("MQTT connect failed rc=%s", rc)
+
+    def on_disconnect(_client, _userdata, rc):
+        if rc == 0:
+            log.warning("MQTT disconnected (clean)")
+        else:
+            log.warning("MQTT disconnected rc=%s", rc)
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.will_set(f"{base_topic}/availability", "offline", qos=1, retain=True)
     client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
     client.loop_start()
-    client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
 
     discovered: dict[str, set[str]] = {}
     last_totals_by_container: dict[str, dict[str, float]] = {}
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
+    expire_after_seconds = max(5, int(interval_seconds * 3))
 
     def sleep_to_interval(start_monotonic: float) -> None:
         remaining = interval_seconds - (time.monotonic() - start_monotonic)
@@ -670,6 +697,15 @@ def main() -> int:
             if container_slug not in discovered:
                 discovered[container_slug] = set()
 
+            if container_online.get(container_slug) is not True:
+                client.publish(
+                    f"{base_topic}/{container_slug}/availability",
+                    "online",
+                    qos=1,
+                    retain=True,
+                )
+                container_online[container_slug] = True
+
             stale_for_container = discovered[container_slug] - selected_metric_set
             for stale_metric in stale_for_container:
                 clear_discovery(
@@ -697,6 +733,7 @@ def main() -> int:
                         display_name,
                         metric_key,
                         metric_def,
+                        expire_after_seconds,
                     )
                     discovered[container_slug].add(metric_key)
 
@@ -719,18 +756,16 @@ def main() -> int:
                         numeric_value = round(numeric_value, round_digits)
                     state_payload = repr(numeric_value)
                 client.publish(state_topic, state_payload, qos=0, retain=False)
-
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
-            for metric_key in discovered[stale_slug]:
-                clear_discovery(
-                    client,
-                    args.mqtt_discovery_prefix,
-                    args.client_id,
-                    stale_slug,
-                    metric_key,
+            if container_online.get(stale_slug) is not False:
+                client.publish(
+                    f"{base_topic}/{stale_slug}/availability",
+                    "offline",
+                    qos=1,
+                    retain=True,
                 )
-            del discovered[stale_slug]
+                container_online[stale_slug] = False
             last_totals_by_container.pop(stale_slug, None)
 
         sleep_to_interval(loop_start_monotonic)
