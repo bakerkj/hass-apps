@@ -4,7 +4,6 @@
 import argparse
 import json
 import re
-import select
 import signal
 import subprocess
 import time
@@ -517,26 +516,14 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            try:
-                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-            except Exception as e:
-                log("WARNING", f"select() failed: {e}", log_level)
-                restart_turbostat("select_failed")
-                continue
-
-            if not ready:
-                rc = proc.poll()
-                if rc is not None:
-                    log("ERROR", f"turbostat exited rc={rc}", log_level)
-                    restart_turbostat("process_exited")
-                continue
-
             line = proc.stdout.readline()
             if not line:
                 rc = proc.poll()
                 if rc is not None:
                     log("ERROR", f"turbostat exited rc={rc}", log_level)
                     restart_turbostat("process_eof")
+                else:
+                    time.sleep(0.05)
                 continue
 
             parsed = parser.parse_line(line)
@@ -632,7 +619,11 @@ def main() -> int:
                     )
 
                 discovered = True
-                log("INFO", f"Published discovery for {len(disc)} sensors", log_level)
+                log(
+                    "INFO",
+                    f"Published discovery for {len(disc)} sensors",
+                    log_level,
+                )
 
             mqtt_publish(
                 client,
