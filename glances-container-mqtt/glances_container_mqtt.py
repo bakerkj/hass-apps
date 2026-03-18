@@ -437,6 +437,44 @@ def publish_discovery(
     client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
 
+def publish_summary_discovery(
+    client: mqtt.Client,
+    discovery_prefix: str,
+    device_id: str,
+    base_topic: str,
+    container_slug: str,
+    container_display_name: str,
+    expire_after_s: int,
+) -> None:
+    sensor_id = f"{container_slug}_summary"
+    config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
+    state_topic = f"{base_topic}/{container_slug}/summary/state"
+    attributes_topic = f"{base_topic}/{container_slug}/summary/attributes"
+    friendly_container_name = f"Container {container_display_name}"
+
+    payload: dict[str, Any] = {
+        "name": "Summary",
+        "has_entity_name": True,
+        "unique_id": f"{device_id}_{sensor_id}",
+        "default_entity_id": f"sensor.container_{container_slug}_summary",
+        "state_topic": state_topic,
+        "json_attributes_topic": attributes_topic,
+        "availability_topic": f"{base_topic}/{container_slug}/availability",
+        "payload_available": "online",
+        "payload_not_available": "offline",
+        "expire_after": max(5, int(expire_after_s)),
+        "icon": "mdi:table",
+        "device": {
+            "identifiers": [f"{device_id}_{container_slug}"],
+            "name": friendly_container_name,
+            "manufacturer": "Glances",
+            "model": "Container",
+        },
+    }
+
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+
+
 def clear_discovery(
     client: mqtt.Client,
     discovery_prefix: str,
@@ -626,6 +664,7 @@ def main() -> int:
     client.loop_start()
 
     discovered: dict[str, set[str]] = {}
+    summary_discovered: set[str] = set()
     last_totals_by_container: dict[str, dict[str, float]] = {}
     last_heartbeat = 0.0
 
@@ -708,6 +747,18 @@ def main() -> int:
                 )
                 container_online[container_slug] = True
 
+            if container_slug not in summary_discovered:
+                publish_summary_discovery(
+                    client,
+                    args.mqtt_discovery_prefix,
+                    args.client_id,
+                    base_topic,
+                    container_slug,
+                    display_name,
+                    expire_after_seconds,
+                )
+                summary_discovered.add(container_slug)
+
             has_network_rx_total = (
                 metric_value(container, "network_rx_total") is not None
             )
@@ -741,6 +792,8 @@ def main() -> int:
                 container_slug, container, now, last_totals_by_container
             )
 
+            summary_attributes: dict[str, Any] = {}
+
             for metric_key in selected_metrics:
                 metric_def = METRIC_DEFS[metric_key]
                 if not network_metric_enabled(metric_key):
@@ -770,15 +823,33 @@ def main() -> int:
 
                 state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
 
+                summary_value: Any
                 if metric_def.get("value_type") == "string":
-                    state_payload = str(value)
+                    summary_value = str(value)
+                    state_payload = summary_value
                 else:
                     numeric_value = float(value)
                     round_digits = metric_def.get("round_digits")
                     if isinstance(round_digits, int):
                         numeric_value = round(numeric_value, round_digits)
+                    summary_value = numeric_value
                     state_payload = repr(numeric_value)
+
+                summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
+
+            summary_state = str(summary_attributes.get("status", "online"))
+            summary_state_topic = f"{base_topic}/{container_slug}/summary/state"
+            summary_attributes_topic = (
+                f"{base_topic}/{container_slug}/summary/attributes"
+            )
+            client.publish(summary_state_topic, summary_state, qos=0, retain=False)
+            client.publish(
+                summary_attributes_topic,
+                json.dumps(summary_attributes, sort_keys=True),
+                qos=0,
+                retain=False,
+            )
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
             if container_online.get(stale_slug) is not False:
