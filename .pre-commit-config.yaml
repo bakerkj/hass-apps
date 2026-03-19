@@ -37,6 +37,7 @@ repos:
       - id: prettier
         types_or: [yaml, json, markdown]
         args: ["--prose-wrap", "always"]
+        language_version: system
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
