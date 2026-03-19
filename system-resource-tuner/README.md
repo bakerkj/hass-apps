@@ -36,8 +36,7 @@ It can also tune selected processes:
   directly.
 - Because `host_pid: true` is incompatible with S6 overlay startup, this add-on
   bypasses `/init` and starts directly via `/run.sh`.
-- Add-on requests privileged capabilities: `NET_ADMIN`, `SYS_ADMIN`,
-  `SYS_RAWIO`, `SYS_TIME`, `SYS_NICE`.
+- Add-on requests privileged capabilities: `SYS_ADMIN`, `SYS_NICE`.
 - Add-on runs with `full_access: true`.
 - AppArmor is disabled (`apparmor: false`) to match elevated-control addons like
   Advanced SSH.
@@ -45,6 +44,27 @@ It can also tune selected processes:
 - Container names/IDs in `targets` must exist on the host.
 - Target containers do not need `python3` or `taskset` for process tuning.
 - `host_process_targets` applies to all host processes that match each regex.
+
+## Security Considerations
+
+This add-on requires a broad set of elevated privileges. The table below
+explains why each is needed and what it allows.
+
+| Privilege           | Why it is needed                                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full_access: true` | Required by Home Assistant when `host_pid: true` is set. Grants the container access to all host devices and removes many default cgroup/namespace restrictions.                                     |
+| `host_pid: true`    | Needed to enumerate and tune processes running on the host or inside other containers. Without this, `/proc/<pid>` entries for host-side PIDs are not visible.                                       |
+| `docker_api: true`  | Needed to call `docker inspect`, `docker top`, and `docker update` to read and apply container resource limits (`cpuset_cpus`, `cpu_shares`, `blkio_weight`).                                        |
+| `SYS_NICE`          | Required to call `os.setpriority` and `os.sched_setaffinity` on processes outside the add-on's own cgroup.                                                                                           |
+| `SYS_ADMIN`         | Required for `docker update` to propagate cgroup resource limit changes to running containers.                                                                                                       |
+| `apparmor: false`   | The default Home Assistant AppArmor profile blocks several `/proc` and cgroup paths that this add-on must access. Disabling it is consistent with other high-privilege add-ons (e.g., Advanced SSH). |
+
+**Recommendation:** only install this add-on on a trusted, private Home
+Assistant instance. Because `full_access: true` and `host_pid: true` together
+give the add-on visibility into all host processes and devices, a compromised
+configuration (e.g., a malicious regex in `process_targets`) could affect the
+broader host. Use `dry_run: true` to validate a new configuration before
+applying it for real.
 
 ## Example Options
 

@@ -15,7 +15,7 @@
   "host_pid": true,
   "ingress": false,
   "full_access": true,
-  "privileged": ["NET_ADMIN", "SYS_ADMIN", "SYS_RAWIO", "SYS_TIME", "SYS_NICE"],
+  "privileged": ["SYS_ADMIN", "SYS_NICE"],
   "apparmor": false,
   "options": {
     "interval_seconds": 60,
