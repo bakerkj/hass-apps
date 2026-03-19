@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import http.client
 import json
@@ -335,7 +336,7 @@ def fetch_ps_containers(
     docker_timeout_seconds: int,
     log: logging.Logger,
 ) -> list[dict[str, str]]:
-    cmd = ["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"]
+    cmd = ["docker", "ps", "--no-trunc", "--format", "{{json .}}"]
     proc = run_cmd(cmd, docker_timeout_seconds)
     if proc.returncode != 0:
         raise RuntimeError(f"docker ps failed: {cmd_error(proc)}")
@@ -518,27 +519,30 @@ def sum_blkio_totals(
     return (read_total if saw_read else None, write_total if saw_write else None)
 
 
-def fetch_stats_by_id(
-    container_ids: list[str],
+async def _fetch_stats_for_container(
+    container_id: str,
     docker_timeout_seconds: int,
+    sem: asyncio.Semaphore,
     log: logging.Logger,
-) -> dict[str, dict[str, float]]:
-    stats_by_id: dict[str, dict[str, float]] = {}
-
-    for container_id in container_ids:
+) -> Optional[tuple[str, dict[str, float]]]:
+    async with sem:
         endpoint = f"/containers/{quote(container_id, safe='')}/stats?stream=false"
         try:
-            payload = docker_api_get_json(endpoint, docker_timeout_seconds)
+            payload = await asyncio.to_thread(
+                docker_api_get_json,
+                endpoint,
+                docker_timeout_seconds,
+            )
         except Exception as exc:
             log.warning("Skipping docker stats for %s: %s", container_id[:12], exc)
-            continue
+            return None
 
         if not isinstance(payload, dict):
             log.warning(
                 "Skipping docker stats for %s: unexpected payload type",
                 container_id[:12],
             )
-            continue
+            return None
 
         container_stats: dict[str, float] = {}
 
@@ -564,9 +568,54 @@ def fetch_stats_by_id(
         if io_write_total is not None:
             container_stats["io_write_total"] = io_write_total
 
-        stats_by_id[container_id] = container_stats
+        return container_id, container_stats
+
+
+async def _fetch_stats_by_id_async(
+    container_ids: list[str],
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> dict[str, dict[str, float]]:
+    if not container_ids:
+        return {}
+
+    max_concurrency = min(12, max(4, len(container_ids)))
+    sem = asyncio.Semaphore(max_concurrency)
+
+    tasks = [
+        asyncio.create_task(
+            _fetch_stats_for_container(
+                container_id,
+                docker_timeout_seconds,
+                sem,
+                log,
+            )
+        )
+        for container_id in container_ids
+    ]
+
+    stats_by_id: dict[str, dict[str, float]] = {}
+    for result in await asyncio.gather(*tasks):
+        if result is None:
+            continue
+        cid, stats = result
+        stats_by_id[cid] = stats
 
     return stats_by_id
+
+
+def fetch_stats_by_id(
+    container_ids: list[str],
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> dict[str, dict[str, float]]:
+    return asyncio.run(
+        _fetch_stats_by_id_async(
+            container_ids,
+            docker_timeout_seconds,
+            log,
+        )
+    )
 
 
 def fetch_inspect_by_id(
@@ -1020,12 +1069,14 @@ def main() -> int:
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
-    expire_after_seconds = max(5, int(interval_seconds * 3))
+    expire_after_seconds = max(60, int(interval_seconds))
 
     def sleep_to_interval(start_monotonic: float) -> None:
         remaining = interval_seconds - (time.monotonic() - start_monotonic)
         if remaining > 0:
             time.sleep(remaining)
+        elif remaining < -1:
+            log.warning("Collection loop overran interval by %.2fs", -remaining)
 
     while True:
         loop_start_monotonic = time.monotonic()

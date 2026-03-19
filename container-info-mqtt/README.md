@@ -18,7 +18,7 @@ sensors for each container.
 
 ## Data Sources
 
-- `docker ps -a` for container inventory
+- `docker ps` for running container inventory
 - Docker Engine API `/containers/<id>/stats?stream=false` for raw
   CPU/memory/network/disk counters
 - `docker inspect` for status and host config limits

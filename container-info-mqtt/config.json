@@ -3,7 +3,7 @@
   "slug": "container_info_mqtt",
   "description": "Publishes Docker container metrics and limits (cpuset, CPU shares, blkio weight) as Home Assistant MQTT Discovery sensors.",
   "url": "https://github.com/bakerkj/hass-apps/tree/main/container-info-mqtt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "arch": ["amd64", "aarch64"],
   "startup": "services",
   "boot": "auto",
@@ -15,7 +15,7 @@
   "ingress": false,
   "full_access": false,
   "options": {
-    "interval_seconds": 10,
+    "interval_seconds": 30,
     "docker_timeout_seconds": 10,
     "include_metrics": "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total,network_rx_rate,network_tx_rate,io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight",
     "container_include_regex": "",
