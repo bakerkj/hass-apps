@@ -26,17 +26,22 @@ class Target:
 
 @dataclass(frozen=True)
 class ProcessTuning:
-    container: str = ""
+    container: Optional[str] = None
     process_match_regex: str = ""
     nice: Optional[int] = None
     cpuset_cpus: Optional[str] = None
 
     @property
+    def is_host(self) -> bool:
+        return self.container is None
+
+    @property
+    def container_label(self) -> str:
+        return self.container if self.container is not None else "host"
+
+    @property
     def is_configured(self) -> bool:
         return self.nice is not None or self.cpuset_cpus is not None
-
-
-HOST_PROCESS_SENTINEL = "__host__"
 
 
 def parse_bool(v: Any, default: bool = False) -> bool:
@@ -157,13 +162,14 @@ def parse_targets(raw_targets: Any, log: logging.Logger) -> list[Target]:
 def parse_process_tuning(
     raw_cfg: Any,
     block_name: str,
+    require_container: bool = True,
 ) -> ProcessTuning:
     if raw_cfg is None:
         return ProcessTuning()
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"'{block_name}' must be an object")
 
-    container = str(raw_cfg.get("container", "")).strip()
+    container: Optional[str] = str(raw_cfg.get("container", "")).strip() or None
     pattern = str(raw_cfg.get("process_match_regex", "")).strip()
 
     if pattern:
@@ -189,7 +195,7 @@ def parse_process_tuning(
             )
 
     is_configured = nice is not None or cpuset_cpus is not None
-    if is_configured and not container:
+    if is_configured and require_container and not container:
         raise ValueError(
             f"{block_name}.container is required when tuning is configured"
         )
@@ -240,12 +246,10 @@ def parse_host_process_targets(
         if not isinstance(raw, dict):
             raise ValueError(f"host_process_targets[{idx}] must be an object")
 
-        raw_with_container = dict(raw)
-        raw_with_container["container"] = HOST_PROCESS_SENTINEL
-
         tuning = parse_process_tuning(
-            raw_with_container,
+            raw,
             block_name=f"host_process_targets[{idx}]",
+            require_container=False,
         )
         if not tuning.is_configured:
             log.warning(
@@ -444,7 +448,7 @@ def find_matching_pid(
 
 def read_process_nice(
     host_pid: int,
-    container: str,
+    container_label: str,
     log: logging.Logger,
 ) -> Optional[int]:
     try:
@@ -452,14 +456,14 @@ def read_process_nice(
     except ProcessLookupError:
         log.warning(
             "Cannot read nice for container=%s host_pid=%d: process no longer exists",
-            container,
+            container_label,
             host_pid,
         )
         return None
     except PermissionError as e:
         log.warning(
             "Cannot read nice for container=%s host_pid=%d: %s",
-            container,
+            container_label,
             host_pid,
             e,
         )
@@ -467,7 +471,7 @@ def read_process_nice(
     except OSError as e:
         log.warning(
             "Cannot read nice for container=%s host_pid=%d: %s",
-            container,
+            container_label,
             host_pid,
             e,
         )
@@ -476,7 +480,7 @@ def read_process_nice(
 
 def read_task_cpuset(
     task_pid: int,
-    container: str,
+    container_label: str,
     root_pid: int,
     log: logging.Logger,
 ) -> Optional[set[int]]:
@@ -485,7 +489,7 @@ def read_task_cpuset(
     except ProcessLookupError:
         log.debug(
             "Task disappeared while reading affinity: container=%s host_pid=%d task_pid=%d",
-            container,
+            container_label,
             root_pid,
             task_pid,
         )
@@ -493,7 +497,7 @@ def read_task_cpuset(
     except PermissionError as e:
         log.warning(
             "Cannot read affinity for container=%s host_pid=%d task_pid=%d: %s",
-            container,
+            container_label,
             root_pid,
             task_pid,
             e,
@@ -502,7 +506,7 @@ def read_task_cpuset(
     except OSError as e:
         log.warning(
             "Cannot read affinity for container=%s host_pid=%d task_pid=%d: %s",
-            container,
+            container_label,
             root_pid,
             task_pid,
             e,
@@ -512,7 +516,7 @@ def read_task_cpuset(
 
 def list_process_threads(
     host_pid: int,
-    container: str,
+    container_label: str,
     log: logging.Logger,
 ) -> Optional[list[int]]:
     task_dir = Path(f"/proc/{host_pid}/task")
@@ -523,14 +527,14 @@ def list_process_threads(
     except FileNotFoundError:
         log.warning(
             "Cannot list threads for container=%s host_pid=%d: process no longer exists",
-            container,
+            container_label,
             host_pid,
         )
         return None
     except PermissionError as e:
         log.warning(
             "Cannot list threads for container=%s host_pid=%d: %s",
-            container,
+            container_label,
             host_pid,
             e,
         )
@@ -538,7 +542,7 @@ def list_process_threads(
     except OSError as e:
         log.warning(
             "Cannot list threads for container=%s host_pid=%d: %s",
-            container,
+            container_label,
             host_pid,
             e,
         )
@@ -547,7 +551,7 @@ def list_process_threads(
     if not tids:
         log.warning(
             "No threads found for container=%s host_pid=%d",
-            container,
+            container_label,
             host_pid,
         )
         return None
@@ -563,11 +567,11 @@ def apply_process_nice(
 ) -> None:
     assert tuning.nice is not None
 
-    current_nice = read_process_nice(host_pid, tuning.container, log)
+    current_nice = read_process_nice(host_pid, tuning.container_label, log)
     if current_nice is not None and current_nice == tuning.nice:
         log.debug(
             "No process nice change needed for container=%s host_pid=%d",
-            tuning.container,
+            tuning.container_label,
             host_pid,
         )
         return
@@ -575,7 +579,7 @@ def apply_process_nice(
     if dry_run:
         log.info(
             "DRY RUN: setpriority container=%s host_pid=%d nice=%d",
-            tuning.container,
+            tuning.container_label,
             host_pid,
             tuning.nice,
         )
@@ -587,7 +591,7 @@ def apply_process_nice(
         log.error(
             "Failed setting nice=%d for container=%s host_pid=%d: process no longer exists",
             tuning.nice,
-            tuning.container,
+            tuning.container_label,
             host_pid,
         )
         return
@@ -595,7 +599,7 @@ def apply_process_nice(
         log.error(
             "Failed setting nice=%d for container=%s host_pid=%d: %s",
             tuning.nice,
-            tuning.container,
+            tuning.container_label,
             host_pid,
             e,
         )
@@ -604,7 +608,7 @@ def apply_process_nice(
         log.error(
             "Failed setting nice=%d for container=%s host_pid=%d: %s",
             tuning.nice,
-            tuning.container,
+            tuning.container_label,
             host_pid,
             e,
         )
@@ -612,7 +616,7 @@ def apply_process_nice(
 
     log.info(
         "Process nice updated for container=%s host_pid=%d to nice=%d",
-        tuning.container,
+        tuning.container_label,
         host_pid,
         tuning.nice,
     )
@@ -630,19 +634,19 @@ def apply_process_cpuset(
     if not desired_cpus:
         log.error(
             "Cannot apply process affinity for container=%s host_pid=%d: invalid cpuset '%s'",
-            tuning.container,
+            tuning.container_label,
             host_pid,
             tuning.cpuset_cpus,
         )
         return
 
-    thread_ids = list_process_threads(host_pid, tuning.container, log)
+    thread_ids = list_process_threads(host_pid, tuning.container_label, log)
     if not thread_ids:
         return
 
     all_match = True
     for tid in thread_ids:
-        current = read_task_cpuset(tid, tuning.container, host_pid, log)
+        current = read_task_cpuset(tid, tuning.container_label, host_pid, log)
         if current is None or current != desired_cpus:
             all_match = False
             break
@@ -650,7 +654,7 @@ def apply_process_cpuset(
     if all_match:
         log.debug(
             "No process affinity change needed for container=%s host_pid=%d",
-            tuning.container,
+            tuning.container_label,
             host_pid,
         )
         return
@@ -658,7 +662,7 @@ def apply_process_cpuset(
     if dry_run:
         log.info(
             "DRY RUN: sched_setaffinity container=%s host_pid=%d threads=%d cpuset=%s",
-            tuning.container,
+            tuning.container_label,
             host_pid,
             len(thread_ids),
             tuning.cpuset_cpus,
@@ -674,7 +678,7 @@ def apply_process_cpuset(
         except ProcessLookupError:
             log.debug(
                 "Task disappeared while setting affinity: container=%s host_pid=%d task_pid=%d",
-                tuning.container,
+                tuning.container_label,
                 host_pid,
                 tid,
             )
@@ -690,7 +694,7 @@ def apply_process_cpuset(
         log.error(
             "Failed applying affinity cpuset=%s for container=%s host_pid=%d: %s",
             tuning.cpuset_cpus,
-            tuning.container,
+            tuning.container_label,
             host_pid,
             preview,
         )
@@ -699,14 +703,14 @@ def apply_process_cpuset(
     if changed == 0:
         log.warning(
             "No threads were updated for container=%s host_pid=%d",
-            tuning.container,
+            tuning.container_label,
             host_pid,
         )
         return
 
     log.info(
         "Process affinity updated for container=%s host_pid=%d to cpuset=%s across %d thread(s)",
-        tuning.container,
+        tuning.container_label,
         host_pid,
         tuning.cpuset_cpus,
         changed,
@@ -734,7 +738,7 @@ def apply_process_tuning(
     if not tuning.is_configured:
         return
 
-    if tuning.container == HOST_PROCESS_SENTINEL:
+    if tuning.is_host:
         host_pids = find_matching_host_pids(tuning.process_match_regex, log)
         if not host_pids:
             log.warning(
@@ -743,18 +747,14 @@ def apply_process_tuning(
             )
             return
 
-        host_tuning = ProcessTuning(
-            container="host",
-            process_match_regex=tuning.process_match_regex,
-            nice=tuning.nice,
-            cpuset_cpus=tuning.cpuset_cpus,
-        )
         for host_pid in host_pids:
-            apply_tuning_to_pid(host_tuning, host_pid, dry_run, log)
+            apply_tuning_to_pid(tuning, host_pid, dry_run, log)
         return
 
     container_host_pid = find_matching_pid(
-        tuning.container, tuning.process_match_regex, log
+        tuning.container,  # type: ignore[arg-type]  # str: is_host was False
+        tuning.process_match_regex,
+        log,
     )
     if container_host_pid is None:
         return
