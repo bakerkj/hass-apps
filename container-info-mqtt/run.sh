@@ -8,4 +8,4 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /glances_container_mqtt.py --options "$OPTIONS"
+exec python3 /container_info_mqtt.py --options "$OPTIONS"

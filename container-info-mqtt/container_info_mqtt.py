@@ -5,20 +5,22 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import logging
 import re
+import socket
+import subprocess
 import time
+from urllib.parse import quote
 from typing import Any, Optional
-from urllib.parse import urlsplit, urlunsplit
 
 import paho.mqtt.client as mqtt
-import requests
 
 
 METRIC_DEFS: dict[str, dict[str, Any]] = {
     "cpu_percent": {
-        "paths": [("cpu_percent",), ("cpu", "total")],
+        "paths": [("cpu_percent",)],
         "name": "CPU Usage",
         "unit": "%",
         "icon": "mdi:chip",
@@ -27,7 +29,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "round_digits": 3,
     },
     "memory_usage": {
-        "paths": [("memory_usage",), ("memory", "usage")],
+        "paths": [("memory_usage",)],
         "name": "Memory Used",
         "unit": "B",
         "icon": "mdi:memory",
@@ -35,7 +37,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "state_class": "measurement",
     },
     "network_rx_total": {
-        "paths": [("network", "cumulative_rx"), ("cumulative_rx",)],
+        "paths": [("network", "cumulative_rx"), ("network_rx_total",)],
         "name": "Network RX Total",
         "unit": "B",
         "icon": "mdi:download",
@@ -43,7 +45,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "state_class": "total_increasing",
     },
     "network_tx_total": {
-        "paths": [("network", "cumulative_tx"), ("cumulative_tx",)],
+        "paths": [("network", "cumulative_tx"), ("network_tx_total",)],
         "name": "Network TX Total",
         "unit": "B",
         "icon": "mdi:upload",
@@ -51,7 +53,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "state_class": "total_increasing",
     },
     "io_read_total": {
-        "paths": [("io", "cumulative_ior"), ("cumulative_ior",)],
+        "paths": [("io", "cumulative_ior"), ("io_read_total",)],
         "name": "Disk Read Total",
         "unit": "B",
         "icon": "mdi:harddisk",
@@ -59,7 +61,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "state_class": "total_increasing",
     },
     "io_write_total": {
-        "paths": [("io", "cumulative_iow"), ("cumulative_iow",)],
+        "paths": [("io", "cumulative_iow"), ("io_write_total",)],
         "name": "Disk Write Total",
         "unit": "B",
         "icon": "mdi:harddisk",
@@ -103,10 +105,28 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "round_digits": 3,
     },
     "status": {
-        "paths": [("status",), ("Status",), ("state",), ("State",)],
+        "paths": [("status",), ("state",)],
         "name": "Status",
         "icon": "mdi:information-outline",
         "value_type": "string",
+    },
+    "cpuset_cpus": {
+        "paths": [("cpuset_cpus",)],
+        "name": "CPU Set",
+        "icon": "mdi:cpu-64-bit",
+        "value_type": "string",
+    },
+    "cpu_shares": {
+        "paths": [("cpu_shares",)],
+        "name": "CPU Shares",
+        "icon": "mdi:scale-balance",
+        "value_type": "integer",
+    },
+    "blkio_weight": {
+        "paths": [("blkio_weight",)],
+        "name": "Block I/O Weight",
+        "icon": "mdi:harddisk-plus",
+        "value_type": "integer",
     },
 }
 
@@ -121,11 +141,7 @@ RATE_METRICS: tuple[str, ...] = tuple(RATE_SOURCE_METRICS.keys())
 
 OPTION_KEYS: set[str] = {
     "interval_seconds",
-    "glances_url",
-    "glances_endpoint",
-    "glances_username",
-    "glances_password",
-    "glances_timeout_seconds",
+    "docker_timeout_seconds",
     "include_metrics",
     "container_include_regex",
     "container_exclude_regex",
@@ -140,7 +156,9 @@ OPTION_KEYS: set[str] = {
     "heartbeat_interval_seconds",
 }
 
-SENSITIVE_OPTION_KEYS: set[str] = {"glances_password", "mqtt_password"}
+SENSITIVE_OPTION_KEYS: set[str] = {"mqtt_password"}
+
+DOCKER_SOCKET_PATH = "/var/run/docker.sock"
 
 
 def slugify(value: str) -> str:
@@ -169,11 +187,31 @@ def container_display_name(value: str) -> str:
 
 
 def safe_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
         try:
             return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def safe_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
         except ValueError:
             return None
     return None
@@ -197,23 +235,6 @@ def deep_get(container: dict[str, Any], path: tuple[str, ...]) -> Any:
     return cur
 
 
-def first_nonempty(container: dict[str, Any], keys: list[str]) -> Optional[str]:
-    for key in keys:
-        value = container.get(key)
-        if value is None:
-            continue
-        if isinstance(value, list):
-            if not value:
-                continue
-            value = value[0]
-        if isinstance(value, dict):
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return None
-
-
 def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
     metric_def = METRIC_DEFS.get(metric_key)
     if metric_def is None:
@@ -226,6 +247,10 @@ def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
             text_value = safe_text(raw_value)
             if text_value is not None:
                 return text_value
+        elif value_type == "integer":
+            int_value = safe_int(raw_value)
+            if int_value is not None:
+                return int_value
         else:
             number_value = safe_float(raw_value)
             if number_value is not None:
@@ -285,65 +310,401 @@ def parse_include_metrics(raw: str, log: logging.Logger) -> list[str]:
     return selected
 
 
-def fetch_containers(
-    base_url: str,
-    endpoint: str,
-    timeout_seconds: int,
-    auth: Optional[tuple[str, str]],
-) -> list[dict[str, Any]]:
-    raw_base = (base_url or "").strip()
-    parsed = urlsplit(raw_base)
+def cmd_error(proc: subprocess.CompletedProcess[str]) -> str:
+    return (proc.stderr or proc.stdout or "").strip()
 
-    if parsed.scheme and parsed.netloc:
-        base_root = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
-        base_path = parsed.path.rstrip("/")
-        if not base_path:
-            base_path = ""
-    else:
-        base_root = raw_base.rstrip("/")
-        base_path = ""
 
-    normalized_endpoint = "/" + (endpoint or "").strip().lstrip("/")
-    if normalized_endpoint == "/":
-        normalized_endpoint = "/api/3/containers"
-
-    if base_path and normalized_endpoint.lstrip("/").startswith(
-        base_path.lstrip("/") + "/"
-    ):
-        request_path = normalized_endpoint
-    elif base_path.endswith("/containers"):
-        request_path = base_path
-    elif base_path and normalized_endpoint.startswith("/api/"):
-        request_path = normalized_endpoint
-    elif base_path:
-        request_path = f"{base_path}/{normalized_endpoint.lstrip('/')}"
-    else:
-        request_path = normalized_endpoint
-
-    url = f"{base_root}/{request_path.lstrip('/')}"
+def run_cmd(cmd: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
     try:
-        res = requests.get(url, timeout=timeout_seconds, auth=auth)
-        res.raise_for_status()
-        payload = res.json()
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(1, timeout_seconds),
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"command not found: {cmd[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"command timed out after {timeout_seconds}s: {' '.join(cmd)}"
+        ) from exc
 
-        if isinstance(payload, list):
-            return [x for x in payload if isinstance(x, dict)]
 
-        if isinstance(payload, dict):
-            if isinstance(payload.get("containers"), list):
-                return [x for x in payload["containers"] if isinstance(x, dict)]
-            if isinstance(payload.get("containers"), dict):
-                return [
-                    x for x in payload["containers"].values() if isinstance(x, dict)
-                ]
-            if isinstance(payload.get("container"), list):
-                return [x for x in payload["container"] if isinstance(x, dict)]
-            if isinstance(payload.get("container"), dict):
-                return [x for x in payload["container"].values() if isinstance(x, dict)]
+def fetch_ps_containers(
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> list[dict[str, str]]:
+    cmd = ["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"]
+    proc = run_cmd(cmd, docker_timeout_seconds)
+    if proc.returncode != 0:
+        raise RuntimeError(f"docker ps failed: {cmd_error(proc)}")
 
-        raise RuntimeError(f"Unexpected payload shape from {url}")
-    except Exception as exc:
-        raise RuntimeError(f"Unable to fetch Glances containers: {url}: {exc}") from exc
+    containers: list[dict[str, str]] = []
+    for line in proc.stdout.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            log.warning("Skipping unparsable docker ps line: %s", text)
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        container_id = safe_text(payload.get("ID") or payload.get("Id"))
+        name = safe_text(payload.get("Names") or payload.get("Name"))
+        if container_id is None or name is None:
+            continue
+
+        status_text = safe_text(payload.get("Status")) or ""
+        state = safe_text(payload.get("State")) or ""
+        containers.append(
+            {
+                "id": container_id,
+                "name": name,
+                "status_text": status_text,
+                "state": state,
+            }
+        )
+
+    return containers
+
+
+class UnixSocketHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, unix_socket_path: str, timeout_seconds: int):
+        super().__init__("localhost", timeout=max(1, timeout_seconds))
+        self.unix_socket_path = unix_socket_path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.unix_socket_path)
+        self.sock = sock
+
+
+def docker_api_get_json(path: str, docker_timeout_seconds: int) -> Any:
+    conn = UnixSocketHTTPConnection(DOCKER_SOCKET_PATH, docker_timeout_seconds)
+    try:
+        conn.request("GET", path, headers={"Host": "localhost"})
+        response = conn.getresponse()
+        body = response.read()
+    except OSError as exc:
+        raise RuntimeError(
+            f"docker engine API request failed for {path}: {exc}"
+        ) from exc
+    finally:
+        conn.close()
+
+    if response.status >= 400:
+        error_text = body.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"docker engine API {path} failed: HTTP {response.status} "
+            f"{response.reason}: {error_text}"
+        )
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"docker engine API {path} returned invalid JSON: {exc}"
+        ) from exc
+
+
+def cpu_percent_from_stats(payload: dict[str, Any]) -> Optional[float]:
+    cpu_stats = payload.get("cpu_stats")
+    pre_cpu_stats = payload.get("precpu_stats")
+    if not isinstance(cpu_stats, dict) or not isinstance(pre_cpu_stats, dict):
+        return None
+
+    cpu_usage = cpu_stats.get("cpu_usage")
+    pre_cpu_usage = pre_cpu_stats.get("cpu_usage")
+    if not isinstance(cpu_usage, dict) or not isinstance(pre_cpu_usage, dict):
+        return None
+
+    total_usage = safe_float(cpu_usage.get("total_usage"))
+    pre_total_usage = safe_float(pre_cpu_usage.get("total_usage"))
+    system_usage = safe_float(cpu_stats.get("system_cpu_usage"))
+    pre_system_usage = safe_float(pre_cpu_stats.get("system_cpu_usage"))
+    if (
+        total_usage is None
+        or pre_total_usage is None
+        or system_usage is None
+        or pre_system_usage is None
+    ):
+        return None
+
+    cpu_delta = total_usage - pre_total_usage
+    system_delta = system_usage - pre_system_usage
+    if cpu_delta <= 0 or system_delta <= 0:
+        return None
+
+    online_cpus = safe_int(cpu_stats.get("online_cpus"))
+    if online_cpus is None or online_cpus <= 0:
+        per_cpu = cpu_usage.get("percpu_usage")
+        if isinstance(per_cpu, list) and per_cpu:
+            online_cpus = len(per_cpu)
+        else:
+            online_cpus = 1
+
+    return (cpu_delta / system_delta) * float(online_cpus) * 100.0
+
+
+def sum_network_totals(
+    payload: dict[str, Any],
+) -> tuple[Optional[float], Optional[float]]:
+    networks = payload.get("networks")
+    if not isinstance(networks, dict):
+        return None, None
+
+    rx_total = 0.0
+    tx_total = 0.0
+    saw_rx = False
+    saw_tx = False
+
+    for iface_data in networks.values():
+        if not isinstance(iface_data, dict):
+            continue
+
+        rx_value = safe_float(iface_data.get("rx_bytes"))
+        if rx_value is not None:
+            saw_rx = True
+            rx_total += max(0.0, rx_value)
+
+        tx_value = safe_float(iface_data.get("tx_bytes"))
+        if tx_value is not None:
+            saw_tx = True
+            tx_total += max(0.0, tx_value)
+
+    return (rx_total if saw_rx else None, tx_total if saw_tx else None)
+
+
+def sum_blkio_totals(
+    payload: dict[str, Any],
+) -> tuple[Optional[float], Optional[float]]:
+    blkio_stats = payload.get("blkio_stats")
+    if not isinstance(blkio_stats, dict):
+        return None, None
+
+    records = blkio_stats.get("io_service_bytes_recursive")
+    if not isinstance(records, list):
+        return None, None
+
+    read_total = 0.0
+    write_total = 0.0
+    saw_read = False
+    saw_write = False
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+
+        op = safe_text(record.get("op"))
+        value = safe_float(record.get("value"))
+        if op is None or value is None:
+            continue
+
+        op_norm = op.lower()
+        if op_norm == "read":
+            saw_read = True
+            read_total += max(0.0, value)
+        elif op_norm == "write":
+            saw_write = True
+            write_total += max(0.0, value)
+
+    return (read_total if saw_read else None, write_total if saw_write else None)
+
+
+def fetch_stats_by_id(
+    container_ids: list[str],
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> dict[str, dict[str, float]]:
+    stats_by_id: dict[str, dict[str, float]] = {}
+
+    for container_id in container_ids:
+        endpoint = f"/containers/{quote(container_id, safe='')}/stats?stream=false"
+        try:
+            payload = docker_api_get_json(endpoint, docker_timeout_seconds)
+        except Exception as exc:
+            log.warning("Skipping docker stats for %s: %s", container_id[:12], exc)
+            continue
+
+        if not isinstance(payload, dict):
+            log.warning(
+                "Skipping docker stats for %s: unexpected payload type",
+                container_id[:12],
+            )
+            continue
+
+        container_stats: dict[str, float] = {}
+
+        cpu_percent = cpu_percent_from_stats(payload)
+        if cpu_percent is not None:
+            container_stats["cpu_percent"] = cpu_percent
+
+        memory_stats = payload.get("memory_stats")
+        if isinstance(memory_stats, dict):
+            memory_usage = safe_float(memory_stats.get("usage"))
+            if memory_usage is not None:
+                container_stats["memory_usage"] = memory_usage
+
+        network_rx_total, network_tx_total = sum_network_totals(payload)
+        if network_rx_total is not None:
+            container_stats["network_rx_total"] = network_rx_total
+        if network_tx_total is not None:
+            container_stats["network_tx_total"] = network_tx_total
+
+        io_read_total, io_write_total = sum_blkio_totals(payload)
+        if io_read_total is not None:
+            container_stats["io_read_total"] = io_read_total
+        if io_write_total is not None:
+            container_stats["io_write_total"] = io_write_total
+
+        stats_by_id[container_id] = container_stats
+
+    return stats_by_id
+
+
+def fetch_inspect_by_id(
+    container_ids: list[str],
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> dict[str, dict[str, Any]]:
+    if not container_ids:
+        return {}
+
+    cmd = ["docker", "inspect", *container_ids]
+    proc = run_cmd(cmd, docker_timeout_seconds)
+    if proc.returncode != 0:
+        raise RuntimeError(f"docker inspect failed: {cmd_error(proc)}")
+
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"docker inspect returned invalid JSON: {exc}") from exc
+
+    if not isinstance(payload, list):
+        raise RuntimeError("docker inspect returned an unexpected payload")
+
+    inspect_by_id: dict[str, dict[str, Any]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+
+        container_id = safe_text(item.get("Id") or item.get("ID"))
+        if container_id is None:
+            continue
+
+        state_obj = item.get("State")
+        host_cfg = item.get("HostConfig")
+
+        status = None
+        if isinstance(state_obj, dict):
+            status = safe_text(state_obj.get("Status"))
+
+        cpuset_cpus = None
+        cpu_shares = None
+        blkio_weight = None
+        if isinstance(host_cfg, dict):
+            cpuset_cpus = safe_text(host_cfg.get("CpusetCpus"))
+            cpu_shares = safe_int(host_cfg.get("CpuShares"))
+            blkio_weight = safe_int(host_cfg.get("BlkioWeight"))
+
+        inspect_by_id[container_id] = {
+            "status": status,
+            "cpuset_cpus": cpuset_cpus,
+            "cpu_shares": cpu_shares,
+            "blkio_weight": blkio_weight,
+        }
+
+    if len(inspect_by_id) != len(container_ids):
+        log.debug(
+            "docker inspect returned %d records for %d IDs",
+            len(inspect_by_id),
+            len(container_ids),
+        )
+
+    return inspect_by_id
+
+
+def fetch_containers(
+    docker_timeout_seconds: int,
+    log: logging.Logger,
+) -> list[dict[str, Any]]:
+    ps_containers = fetch_ps_containers(docker_timeout_seconds, log)
+    if not ps_containers:
+        return []
+
+    container_ids = [entry["id"] for entry in ps_containers]
+    inspect_by_id = fetch_inspect_by_id(container_ids, docker_timeout_seconds, log)
+    stats_by_id = fetch_stats_by_id(container_ids, docker_timeout_seconds, log)
+
+    containers: list[dict[str, Any]] = []
+    for entry in ps_containers:
+        container_id = entry["id"]
+        name = entry["name"]
+        inspect_info = inspect_by_id.get(container_id, {})
+        stats_info = stats_by_id.get(container_id, {})
+
+        status = (
+            safe_text(inspect_info.get("status"))
+            or safe_text(entry.get("state"))
+            or safe_text(entry.get("status_text"))
+            or "unknown"
+        )
+
+        cpuset_cpus = safe_text(inspect_info.get("cpuset_cpus")) or "all"
+        cpu_shares = safe_int(inspect_info.get("cpu_shares"))
+        blkio_weight = safe_int(inspect_info.get("blkio_weight"))
+
+        container: dict[str, Any] = {
+            "id": container_id,
+            "name": name,
+            "status": status.lower(),
+            "cpuset_cpus": cpuset_cpus,
+            "cpu_shares": cpu_shares if cpu_shares is not None else 0,
+            "blkio_weight": blkio_weight if blkio_weight is not None else 0,
+        }
+
+        cpu_percent = safe_float(stats_info.get("cpu_percent"))
+        memory_usage = safe_float(stats_info.get("memory_usage"))
+        network_rx_total = safe_float(stats_info.get("network_rx_total"))
+        network_tx_total = safe_float(stats_info.get("network_tx_total"))
+        io_read_total = safe_float(stats_info.get("io_read_total"))
+        io_write_total = safe_float(stats_info.get("io_write_total"))
+
+        if cpu_percent is not None:
+            container["cpu_percent"] = cpu_percent
+        if memory_usage is not None:
+            container["memory_usage"] = memory_usage
+
+        network: dict[str, float] = {}
+        if network_rx_total is not None:
+            network["cumulative_rx"] = network_rx_total
+            container["network_rx_total"] = network_rx_total
+        if network_tx_total is not None:
+            network["cumulative_tx"] = network_tx_total
+            container["network_tx_total"] = network_tx_total
+        if network:
+            container["network"] = network
+
+        io: dict[str, float] = {}
+        if io_read_total is not None:
+            io["cumulative_ior"] = io_read_total
+            container["io_read_total"] = io_read_total
+        if io_write_total is not None:
+            io["cumulative_iow"] = io_write_total
+            container["io_write_total"] = io_write_total
+        if io:
+            container["io"] = io
+
+        containers.append(container)
+
+    return containers
 
 
 def load_options_file(path: str, ap: argparse.ArgumentParser) -> dict[str, Any]:
@@ -393,7 +754,7 @@ def publish_discovery(
     device_id: str,
     base_topic: str,
     container_slug: str,
-    container_display_name: str,
+    container_display_name_text: str,
     metric_key: str,
     metric_def: dict[str, Any],
     expire_after_s: int,
@@ -401,7 +762,7 @@ def publish_discovery(
     sensor_id = f"{container_slug}_{metric_key}"
     config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
     state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
-    friendly_container_name = f"Container {container_display_name}"
+    friendly_container_name = f"Container {container_display_name_text}"
 
     payload: dict[str, Any] = {
         "name": metric_def["name"],
@@ -416,7 +777,7 @@ def publish_discovery(
         "device": {
             "identifiers": [f"{device_id}_{container_slug}"],
             "name": friendly_container_name,
-            "manufacturer": "Glances",
+            "manufacturer": "Docker",
             "model": "Container",
         },
     }
@@ -443,14 +804,14 @@ def publish_summary_discovery(
     device_id: str,
     base_topic: str,
     container_slug: str,
-    container_display_name: str,
+    container_display_name_text: str,
     expire_after_s: int,
 ) -> None:
     sensor_id = f"{container_slug}_summary"
     config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
     state_topic = f"{base_topic}/{container_slug}/summary/state"
     attributes_topic = f"{base_topic}/{container_slug}/summary/attributes"
-    friendly_container_name = f"Container {container_display_name}"
+    friendly_container_name = f"Container {container_display_name_text}"
 
     payload: dict[str, Any] = {
         "name": "Summary",
@@ -467,7 +828,7 @@ def publish_summary_discovery(
         "device": {
             "identifiers": [f"{device_id}_{container_slug}"],
             "name": friendly_container_name,
-            "manufacturer": "Glances",
+            "manufacturer": "Docker",
             "model": "Container",
         },
     }
@@ -491,11 +852,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--options", default="/data/options.json")
     ap.add_argument("--interval-seconds", type=int, default=None)
-    ap.add_argument("--glances-url", default=None)
-    ap.add_argument("--glances-endpoint", default=None)
-    ap.add_argument("--glances-username", default=None)
-    ap.add_argument("--glances-password", default=None)
-    ap.add_argument("--glances-timeout-seconds", type=int, default=None)
+    ap.add_argument("--docker-timeout-seconds", type=int, default=None)
     ap.add_argument("--include-metrics", default=None)
     ap.add_argument("--container-include-regex", default=None)
     ap.add_argument("--container-exclude-regex", default=None)
@@ -523,21 +880,18 @@ def main() -> int:
         return value
 
     args.interval_seconds = resolve(args.interval_seconds, "interval_seconds", 10, int)
-    args.glances_url = resolve(
-        args.glances_url, "glances_url", "http://localhost:61209", str
-    )
-    args.glances_endpoint = resolve(
-        args.glances_endpoint, "glances_endpoint", "/api/3/containers", str
-    )
-    args.glances_username = resolve(args.glances_username, "glances_username", "", str)
-    args.glances_password = resolve(args.glances_password, "glances_password", "", str)
-    args.glances_timeout_seconds = resolve(
-        args.glances_timeout_seconds, "glances_timeout_seconds", 10, int
+    args.docker_timeout_seconds = resolve(
+        args.docker_timeout_seconds,
+        "docker_timeout_seconds",
+        10,
+        int,
     )
     args.include_metrics = resolve(
         args.include_metrics,
         "include_metrics",
-        "cpu_percent,memory_usage,network_rx_total,network_tx_total,io_read_total,io_write_total,network_rx_rate,network_tx_rate,io_read_rate,io_write_rate,status",
+        "cpu_percent,memory_usage,network_rx_total,network_tx_total,"
+        "io_read_total,io_write_total,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight",
         str,
     )
     args.container_include_regex = resolve(
@@ -555,19 +909,17 @@ def main() -> int:
         args.mqtt_discovery_prefix, "mqtt_discovery_prefix", "homeassistant", str
     )
     args.mqtt_base_topic = resolve(
-        args.mqtt_base_topic, "mqtt_base_topic", "glances_containers", str
+        args.mqtt_base_topic,
+        "mqtt_base_topic",
+        "container_info",
+        str,
     )
-    args.client_id = resolve(args.client_id, "client_id", "glances-container-mqtt", str)
+    args.client_id = resolve(args.client_id, "client_id", "container-info-mqtt", str)
     args.log_level = resolve(args.log_level, "log_level", "INFO", str)
     args.heartbeat_interval_seconds = resolve(
         args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 30, int
     )
 
-    args.glances_url = args.glances_url.strip()
-    args.glances_endpoint = "/" + args.glances_endpoint.strip().lstrip("/")
-
-    if not args.glances_url:
-        ap.error("glances_url is required (via --glances-url or --options)")
     if not args.mqtt_host:
         ap.error("mqtt_host is required (via --mqtt-host or --options)")
 
@@ -575,7 +927,7 @@ def main() -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    log = logging.getLogger("glances_container_mqtt")
+    log = logging.getLogger("container_info_mqtt")
     unknown_option_keys = sorted(key for key in opts.keys() if key not in OPTION_KEYS)
     if unknown_option_keys:
         log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
@@ -589,11 +941,7 @@ def main() -> int:
             {
                 "options_file": args.options,
                 "interval_seconds": args.interval_seconds,
-                "glances_url": args.glances_url,
-                "glances_endpoint": args.glances_endpoint,
-                "glances_username": args.glances_username,
-                "glances_password": "***" if args.glances_password else "",
-                "glances_timeout_seconds": args.glances_timeout_seconds,
+                "docker_timeout_seconds": args.docker_timeout_seconds,
                 "include_metrics": args.include_metrics,
                 "container_include_regex": args.container_include_regex,
                 "container_exclude_regex": args.container_exclude_regex,
@@ -611,23 +959,26 @@ def main() -> int:
         ),
     )
 
-    include_rx = (
-        re.compile(args.container_include_regex, re.IGNORECASE)
-        if args.container_include_regex
-        else None
-    )
-    exclude_rx = (
-        re.compile(args.container_exclude_regex, re.IGNORECASE)
-        if args.container_exclude_regex
-        else None
-    )
+    try:
+        include_rx = (
+            re.compile(args.container_include_regex, re.IGNORECASE)
+            if args.container_include_regex
+            else None
+        )
+    except re.error as exc:
+        ap.error(f"invalid container_include_regex: {exc}")
+
+    try:
+        exclude_rx = (
+            re.compile(args.container_exclude_regex, re.IGNORECASE)
+            if args.container_exclude_regex
+            else None
+        )
+    except re.error as exc:
+        ap.error(f"invalid container_exclude_regex: {exc}")
 
     selected_metrics = parse_include_metrics(args.include_metrics, log)
     selected_metric_set = set(selected_metrics)
-
-    auth = None
-    if args.glances_username:
-        auth = (args.glances_username, args.glances_password)
 
     client = mqtt.Client(client_id=args.client_id, clean_session=True)
     if args.mqtt_username:
@@ -684,30 +1035,27 @@ def main() -> int:
             last_heartbeat = now
             hb = {
                 "ts": now,
-                "source": args.glances_url,
-                "endpoint": args.glances_endpoint,
+                "source": "docker_engine_api",
                 "selected_metrics": selected_metrics,
             }
             client.publish(
-                f"{base_topic}/heartbeat", json.dumps(hb), qos=0, retain=False
+                f"{base_topic}/heartbeat",
+                json.dumps(hb, sort_keys=True),
+                qos=0,
+                retain=False,
             )
 
         try:
-            containers = fetch_containers(
-                args.glances_url,
-                args.glances_endpoint,
-                args.glances_timeout_seconds,
-                auth,
-            )
+            containers = fetch_containers(args.docker_timeout_seconds, log)
         except Exception as exc:
-            log.error("Failed to fetch Glances containers: %s", exc)
+            log.error("Failed to collect Docker container info: %s", exc)
             sleep_to_interval(loop_start_monotonic)
             continue
 
         seen_slugs: set[str] = set()
         for container in containers:
-            container_name = first_nonempty(
-                container, ["name", "container_name", "Name", "id", "Id"]
+            container_name = safe_text(container.get("name")) or safe_text(
+                container.get("id")
             )
             if not container_name:
                 continue
@@ -788,8 +1136,12 @@ def main() -> int:
                     stale_metric,
                 )
                 discovered[container_slug].discard(stale_metric)
+
             rate_values = compute_rate_metrics(
-                container_slug, container, now, last_totals_by_container
+                container_slug,
+                container,
+                now,
+                last_totals_by_container,
             )
 
             summary_attributes: dict[str, Any] = {}
@@ -823,10 +1175,14 @@ def main() -> int:
 
                 state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
 
-                summary_value: Any
-                if metric_def.get("value_type") == "string":
-                    summary_value = str(value)
+                value_type = metric_def.get("value_type", "number")
+                if value_type == "string":
+                    summary_value: Any = str(value)
                     state_payload = summary_value
+                elif value_type == "integer":
+                    int_value = int(value)
+                    summary_value = int_value
+                    state_payload = str(int_value)
                 else:
                     numeric_value = float(value)
                     round_digits = metric_def.get("round_digits")
@@ -838,7 +1194,7 @@ def main() -> int:
                 summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
 
-            summary_state = str(summary_attributes.get("status", "online"))
+            summary_state = str(summary_attributes.get("status", "unknown"))
             summary_state_topic = f"{base_topic}/{container_slug}/summary/state"
             summary_attributes_topic = (
                 f"{base_topic}/{container_slug}/summary/attributes"
@@ -850,6 +1206,7 @@ def main() -> int:
                 qos=0,
                 retain=False,
             )
+
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
             if container_online.get(stale_slug) is not False:

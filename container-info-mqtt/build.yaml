@@ -2,9 +2,9 @@ build_from:
   amd64: ghcr.io/home-assistant/amd64-base:3.23
   aarch64: ghcr.io/home-assistant/aarch64-base:3.23
 labels:
-  org.opencontainers.image.title: "Glances Container Stats MQTT"
+  org.opencontainers.image.title: "Container Info MQTT"
   org.opencontainers.image.description:
-    "Polls Glances container stats and publishes Home Assistant MQTT Discovery
-    sensors with one device per container."
+    "Collects Docker container stats and config limits (cpuset, CPU shares,
+    blkio weight) and publishes Home Assistant MQTT Discovery sensors."
   org.opencontainers.image.source: "https://github.com/bakerkj/hass-apps"
   org.opencontainers.image.licenses: "MIT"

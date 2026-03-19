@@ -4,11 +4,11 @@ FROM ${BUILD_FROM}
 RUN apk add --no-cache \
   python3 \
   py3-paho-mqtt \
-  py3-requests \
+  docker-cli \
   bash
 
 COPY run.sh /run.sh
-COPY glances_container_mqtt.py /glances_container_mqtt.py
+COPY container_info_mqtt.py /container_info_mqtt.py
 
 RUN chmod +x /run.sh
 
