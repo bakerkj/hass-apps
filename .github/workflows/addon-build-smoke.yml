@@ -1,0 +1,38 @@
+name: addon-build-smoke
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - addon: birdnet_audio_stream
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+          - addon: system-resource-tuner
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+          - addon: ffmpeg_snapshotter
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+          - addon: container-info-mqtt
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+          - addon: intel-gpu-top-mqtt
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+          - addon: turbostat_mqtt
+            build_from: ghcr.io/home-assistant/amd64-base:3.23
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build add-on image
+        run: |
+          docker build \
+            --build-arg BUILD_FROM=${{ matrix.build_from }} \
+            --file ${{ matrix.addon }}/Dockerfile \
+            ${{ matrix.addon }}
