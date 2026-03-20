@@ -85,16 +85,24 @@ esac
   echo "  ${STREAM_NAME}: '${STREAM_SPEC}'"
 } >"${CONFIG_PATH}"
 
-bashio::log.info "Input format: ${INPUT_FORMAT}"
-bashio::log.info "Audio device: ${AUDIO_DEVICE}"
-bashio::log.info "Stream name: ${STREAM_NAME}"
-bashio::log.info "Codec: ${CODEC}"
-bashio::log.info "Sample rate: ${SAMPLE_RATE} Hz"
-bashio::log.info "Channels (input/output): ${CHANNELS}"
-bashio::log.info "go2rtc log level: ${GO2RTC_LOG_LEVEL}"
-bashio::log.info "ffmpeg log level: ${FFMPEG_LOG_LEVEL}"
-bashio::log.info "ffmpeg volume: ${FFMPEG_VOLUME}"
-bashio::log.info "RTSP URL: rtsp://<host>:${RTSP_PORT}/${STREAM_NAME}"
+bashio::log.info "Configuration:
+  alsa_device:         ${AUDIO_DEVICE}
+  api_port:            ${API_PORT}
+  bitrate:             ${BITRATE:-(none)}
+  channels:            ${CHANNELS}
+  codec:               ${CODEC}
+  ffmpeg_log_level:    ${FFMPEG_LOG_LEVEL}
+  ffmpeg_volume:       ${FFMPEG_VOLUME}
+  go2rtc_log_level:    ${GO2RTC_LOG_LEVEL}
+  input_format:        ${INPUT_FORMAT}
+  mixer_control:       ${MIXER_CONTROL:-(none)}
+  mixer_volume:        ${MIXER_VOLUME:-(none)}
+  password:            $([ -n "${PASSWORD}" ] && echo '(set)' || echo '(none)')
+  rtsp_port:           ${RTSP_PORT}
+  rtsp_url:            rtsp://<host>:${RTSP_PORT}/${STREAM_NAME}
+  sample_rate:         ${SAMPLE_RATE} Hz
+  stream_name:         ${STREAM_NAME}
+  username:            ${USERNAME:-(none)}"
 bashio::log.info "Generated go2rtc config:"
 sed 's/password: .*/password: [redacted]/' "${CONFIG_PATH}" >&2
 bashio::log.info "Starting go2rtc"
