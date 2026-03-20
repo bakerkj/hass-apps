@@ -24,10 +24,10 @@ _REPO_ROOT = Path(__file__).parent.parent
 
 for _subdir in (
     "turbostat_mqtt",
-    "intel-gpu-top-mqtt",
+    "intel_gpu_top_mqtt",
     "ffmpeg_snapshotter",
-    "container-info-mqtt",
-    "system-resource-tuner",
+    "container_info_mqtt",
+    "system_resource_tuner",
 ):
     _p = str(_REPO_ROOT / _subdir)
     if _p not in sys.path:
