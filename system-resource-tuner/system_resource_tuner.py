@@ -816,15 +816,49 @@ def main() -> int:
             "No valid tuning configured; running in idle mode (no changes will be applied)."
         )
 
-    log.info(
-        "Starting System Resource Tuner: container_targets=%d process_targets=%d "
-        "host_process_targets=%d interval_seconds=%d dry_run=%s",
-        len(targets),
-        len(process_targets),
-        len(host_process_targets),
-        interval_seconds,
-        dry_run,
-    )
+    _cfg_lines = [
+        "Configuration:",
+        f"  apply_on_start:       {apply_on_start}",
+        f"  dry_run:              {dry_run}",
+        f"  interval:             {interval_seconds}s",
+        f"  log_level:            {log_level}",
+    ]
+    if targets:
+        _cfg_lines.append(f"  container_targets ({len(targets)}):")
+        for _t in targets:
+            _parts = []
+            if _t.cpuset_cpus is not None:
+                _parts.append(f"cpuset_cpus={_t.cpuset_cpus}")
+            if _t.cpu_shares is not None:
+                _parts.append(f"cpu_shares={_t.cpu_shares}")
+            if _t.blkio_weight is not None:
+                _parts.append(f"blkio_weight={_t.blkio_weight}")
+            _cfg_lines.append(
+                f"    [{_t.container}] {' '.join(_parts) or '(no params)'}"
+            )
+    if process_targets:
+        _cfg_lines.append(f"  process_targets ({len(process_targets)}):")
+        for _pt in process_targets:
+            _parts = []
+            if _pt.nice is not None:
+                _parts.append(f"nice={_pt.nice}")
+            if _pt.cpuset_cpus is not None:
+                _parts.append(f"cpuset_cpus={_pt.cpuset_cpus}")
+            _cfg_lines.append(
+                f"    [{_pt.container or 'any'} | {_pt.process_match_regex or '(any)'}] {' '.join(_parts) or '(no params)'}"
+            )
+    if host_process_targets:
+        _cfg_lines.append(f"  host_process_targets ({len(host_process_targets)}):")
+        for _pt in host_process_targets:
+            _parts = []
+            if _pt.nice is not None:
+                _parts.append(f"nice={_pt.nice}")
+            if _pt.cpuset_cpus is not None:
+                _parts.append(f"cpuset_cpus={_pt.cpuset_cpus}")
+            _cfg_lines.append(
+                f"    [{_pt.process_match_regex or '(any)'}] {' '.join(_parts) or '(no params)'}"
+            )
+    log.info("\n".join(_cfg_lines))
 
     if apply_on_start:
         apply_all(targets, dry_run, log)

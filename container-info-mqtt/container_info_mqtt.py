@@ -1003,33 +1003,36 @@ def main() -> int:
     if unknown_option_keys:
         log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
     log.info(
-        "Raw options file values: %s",
-        json.dumps(redact_options_for_log(opts), sort_keys=True),
-    )
-    log.info(
-        "Effective configuration: %s",
-        json.dumps(
-            {
-                "options_file": args.options,
-                "interval_seconds": args.interval_seconds,
-                "docker_timeout_seconds": args.docker_timeout_seconds,
-                "include_metrics": args.include_metrics,
-                "container_include_regex": args.container_include_regex,
-                "container_exclude_regex": args.container_exclude_regex,
-                "mqtt_host": args.mqtt_host,
-                "mqtt_port": args.mqtt_port,
-                "mqtt_username": args.mqtt_username,
-                "mqtt_password": "***" if args.mqtt_password else "",
-                "mqtt_discovery_prefix": args.mqtt_discovery_prefix,
-                "mqtt_base_topic": args.mqtt_base_topic,
-                "client_id": args.client_id,
-                "log_level": args.log_level,
-                "heartbeat_interval_seconds": args.heartbeat_interval_seconds,
-                "mqtt_disconnect_timeout_seconds": args.mqtt_disconnect_timeout_seconds,
-                "sample_timeout_seconds": args.sample_timeout_seconds,
-            },
-            sort_keys=True,
-        ),
+        "Configuration:\n"
+        "  base_topic:         %s\n"
+        "  client_id:          %s\n"
+        "  container_exclude:  %s\n"
+        "  container_include:  %s\n"
+        "  disconnect_timeout: %ds\n"
+        "  discovery_prefix:   %s\n"
+        "  docker_timeout:     %ds\n"
+        "  heartbeat:          %ds\n"
+        "  include_metrics:    %s\n"
+        "  interval:           %ds\n"
+        "  log_level:          %s\n"
+        "  mqtt_host:          %s:%d\n"
+        "  mqtt_username:      %s\n"
+        "  sample_timeout:     %ds",
+        args.mqtt_base_topic,
+        args.client_id,
+        args.container_exclude_regex or "(none)",
+        args.container_include_regex or "(all)",
+        args.mqtt_disconnect_timeout_seconds,
+        args.mqtt_discovery_prefix,
+        args.docker_timeout_seconds,
+        args.heartbeat_interval_seconds,
+        args.include_metrics,
+        args.interval_seconds,
+        args.log_level,
+        args.mqtt_host,
+        args.mqtt_port,
+        args.mqtt_username or "(none)",
+        args.sample_timeout_seconds,
     )
 
     try:

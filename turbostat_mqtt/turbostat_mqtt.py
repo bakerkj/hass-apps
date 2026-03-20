@@ -301,6 +301,27 @@ def main() -> int:
     availability_topic = f"{base_topic}/availability"
     heartbeat_topic = f"{base_topic}/heartbeat"
 
+    log(
+        "INFO",
+        "\n".join(
+            [
+                "Configuration:",
+                f"  base_topic:         {base_topic}",
+                f"  client_id:          {client_id}",
+                f"  disconnect_timeout: {disconnect_timeout}s",
+                f"  discovery_prefix:   {discovery_prefix}",
+                f"  heartbeat:          {heartbeat_interval}s",
+                f"  interval:           {interval}s",
+                f"  log_level:          {log_level}",
+                f"  mqtt_host:          {mqtt_host}:{mqtt_port}",
+                f"  mqtt_username:      {mqtt_username or '(none)'}",
+                f"  publish_raw:        {publish_raw}",
+                f"  sample_timeout:     {sample_timeout}s",
+            ]
+        ),
+        log_level,
+    )
+
     health = MqttHealth()
 
     client = mqtt.Client(client_id=client_id, clean_session=True)

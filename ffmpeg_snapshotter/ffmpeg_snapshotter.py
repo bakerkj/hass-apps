@@ -379,6 +379,31 @@ def main() -> int:
             start_offset_seconds=offsets.get(name, 0.0),
         )
 
+    _cfg_lines = [
+        "Configuration:",
+        f"  global_hwaccel_args: {ffmpeg_cfg['global_hwaccel_args'] or '(none)'}",
+        f"  global_input_args:   {ffmpeg_cfg['global_input_args'] or '(none)'}",
+        f"  global_output_args:  {ffmpeg_cfg['global_output_args'] or '(none)'}",
+        f"  log_level:           {log_level}",
+        f"  retention_interval:  {retention_interval}s",
+        f"  streams:             {len(cfgs)}",
+    ]
+    for _cfg in cfgs.values():
+        _cfg_lines += [
+            f"  stream [{_cfg.name}]:",
+            f"    date_dir_format: {_cfg.date_dir_format}",
+            f"    extra_input:     {_cfg.extra_input_args or '(none)'}",
+            f"    extra_output:    {_cfg.extra_output_args or '(none)'}",
+            f"    filename_format: {_cfg.filename_format}",
+            f"    interval:        {_cfg.interval_seconds}s",
+            f"    latest_name:     {_cfg.latest_name}",
+            f"    output_dir:      {_cfg.output_dir}",
+            f"    retain_count:    {_cfg.retain_count or '(none)'}",
+            f"    retain_days:     {_cfg.retain_days or '(none)'}",
+            f"    url:             {redact_url(str(_cfg.url))}",
+        ]
+    log("INFO", "\n".join(_cfg_lines))
+
     stopping = False
 
     def handle_sig(sig, frame):

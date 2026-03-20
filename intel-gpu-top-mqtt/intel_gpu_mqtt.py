@@ -451,7 +451,10 @@ def main() -> int:
         args.sample_timeout_seconds, "sample_timeout_seconds", 25, int
     )
     args.mqtt_disconnect_timeout_seconds = resolve(
-        args.mqtt_disconnect_timeout_seconds, "mqtt_disconnect_timeout_seconds", 60, int
+        args.mqtt_disconnect_timeout_seconds,
+        "mqtt_disconnect_timeout_seconds",
+        300,
+        int,
     )
     args.intel_restart_grace_seconds = resolve(
         args.intel_restart_grace_seconds, "intel_restart_grace_seconds", 10, int
@@ -478,6 +481,37 @@ def main() -> int:
     log.info("Selected device arg: %s", dev_arg or "(none)")
     if dev_path:
         log.info("Selected render node: %s", dev_path)
+
+    log.info(
+        "Configuration:\n"
+        "  base_topic:         %s\n"
+        "  client_id:          %s\n"
+        "  disconnect_timeout: %ds\n"
+        "  discovery_prefix:   %s\n"
+        "  heartbeat:          %ds\n"
+        "  interval:           %ds\n"
+        "  log_level:          %s\n"
+        "  mqtt_host:          %s:%d\n"
+        "  mqtt_username:      %s\n"
+        "  preferred_device:   %s\n"
+        "  publish_raw:        %s\n"
+        "  restart_grace:      %ds\n"
+        "  sample_timeout:     %ds",
+        args.mqtt_base_topic,
+        args.client_id,
+        args.mqtt_disconnect_timeout_seconds,
+        args.mqtt_discovery_prefix,
+        args.heartbeat_interval_seconds,
+        interval_s,
+        args.log_level,
+        args.mqtt_host,
+        args.mqtt_port,
+        args.mqtt_username or "(none)",
+        args.preferred_device_regex or "(auto)",
+        args.publish_raw_sample,
+        args.intel_restart_grace_seconds,
+        args.sample_timeout_seconds,
+    )
 
     # MQTT setup with reconnect logic
     health = MqttHealth()
