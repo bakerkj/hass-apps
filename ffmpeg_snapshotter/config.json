@@ -3,7 +3,7 @@
   "slug": "ffmpeg_snapshotter",
   "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "arch": ["aarch64", "amd64"],
   "startup": "services",
   "init": false,

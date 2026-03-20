@@ -1,6 +1,6 @@
 {
   "name": "BirdNET Audio Stream",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "slug": "birdnet_audio_stream",
   "description": "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc",
   "url": "https://github.com/bakerkj/hass-apps",
