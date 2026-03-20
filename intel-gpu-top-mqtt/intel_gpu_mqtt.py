@@ -8,13 +8,12 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import time
 from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt
-
-DEPRECATED_METRIC_KEYS: tuple[str, ...] = ()
 
 
 def extract_latest_json_object(buf: str) -> Tuple[Optional[dict], str]:
@@ -349,21 +348,6 @@ def publish_discovery(
         )
 
 
-def clear_deprecated_discovery(
-    client: mqtt.Client,
-    discovery_prefix: str,
-    device_id: str,
-    log: logging.Logger,
-) -> None:
-    """Clear retained discovery configs for sensors we no longer publish."""
-    for key in DEPRECATED_METRIC_KEYS:
-        config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
-        info = client.publish(config_topic, "", qos=1, retain=True)
-        log.debug(
-            "MQTT discovery remove %s mid=%s rc=%s", config_topic, info.mid, info.rc
-        )
-
-
 class MqttHealth:
     def __init__(self) -> None:
         self.connected: bool = False
@@ -464,7 +448,7 @@ def main() -> int:
         args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 10, int
     )
     args.sample_timeout_seconds = resolve(
-        args.sample_timeout_seconds, "sample_timeout_seconds", 20, int
+        args.sample_timeout_seconds, "sample_timeout_seconds", 25, int
     )
     args.mqtt_disconnect_timeout_seconds = resolve(
         args.mqtt_disconnect_timeout_seconds, "mqtt_disconnect_timeout_seconds", 60, int
@@ -541,6 +525,11 @@ def main() -> int:
 
     client.loop_start()
 
+    def _handle_sigterm(_sig: int, _frame: object) -> None:
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     # Start intel_gpu_top
     try:
         proc = start_intel_gpu_top(interval_ms, dev_arg, log)
@@ -594,7 +583,9 @@ def main() -> int:
         proc = start_intel_gpu_top(interval_ms, dev_arg, log)
 
     try:
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            log.error("intel_gpu_top stdout is None")
+            return 2
 
         while True:
             # ----- Watchdogs -----
@@ -669,9 +660,6 @@ def main() -> int:
 
                 # Publish discovery once we have our first sample (retained)
                 if not discovery_published:
-                    clear_deprecated_discovery(
-                        client, args.mqtt_discovery_prefix, device_id, log
-                    )
                     log.info("Publishing MQTT discovery for %d sensors", len(metrics))
                     publish_discovery(
                         client,
@@ -707,7 +695,7 @@ def main() -> int:
 
                     state_topic = f"{base_topic}/{key}/state"
                     # Publish full-precision numeric value; HA can format display using suggested_display_precision.
-                    payload = repr(float(val))
+                    payload = str(float(val))
                     sinfo = client.publish(state_topic, payload, qos=0, retain=False)
                     log.debug(
                         "MQTT state %s=%s mid=%s rc=%s",
@@ -741,8 +729,8 @@ def main() -> int:
                     # Still running but no line available; small sleep
                     time.sleep(0.05)
 
-    except KeyboardInterrupt:
-        log.info("Shutting down (SIGINT)")
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Shutting down")
     finally:
         try:
             client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)

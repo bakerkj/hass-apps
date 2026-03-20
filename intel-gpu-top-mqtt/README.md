@@ -22,15 +22,17 @@ Published sensor keys:
 - `power_gpu_w`
 - `power_pkg_w`
 - `engine_render_3d_busy_percent`
+- `engine_render_3d_semaphore_percent`
+- `engine_render_3d_wait_percent`
 - `engine_video_busy_percent`
+- `engine_video_semaphore_percent`
+- `engine_video_wait_percent`
 - `engine_videoenhance_busy_percent`
+- `engine_videoenhance_semaphore_percent`
+- `engine_videoenhance_wait_percent`
 - `engine_blitter_busy_percent`
-
-Notes:
-
-- Wait/semaphore engine metrics are intentionally not published.
-- Deprecated discovery entries for old wait/semaphore sensors are cleared
-  automatically.
+- `engine_blitter_semaphore_percent`
+- `engine_blitter_wait_percent`
 
 ## Runtime Behavior
 
