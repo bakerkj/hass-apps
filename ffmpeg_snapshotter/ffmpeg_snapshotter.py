@@ -40,14 +40,14 @@ def set_latest_symlink(target: Path, latest_path: Path) -> None:
         log("WARNING", f"Failed to update symlink {latest_path} -> {target}: {e}")
 
 
-def apply_retention_days(dir_path: Path, retain_days: int) -> None:
+def apply_retention_days(dir_path: Path, retain_days: int, latest_name: str) -> None:
     if retain_days <= 0:
         return
     if not dir_path.exists():
         return
     # Use find for efficiency (no Python directory walks needed)
     # -mtime +N matches strictly greater than N days. We want older than retain_days, so +retain_days.
-    # Exclude latest.jpg.
+    # Exclude the latest symlink by name.
     try:
         subprocess.run(
             [
@@ -59,7 +59,7 @@ def apply_retention_days(dir_path: Path, retain_days: int) -> None:
                 "*.jpg",
                 "!",
                 "-name",
-                "latest.jpg",
+                latest_name,
                 "-mtime",
                 f"+{retain_days}",
                 "-delete",
@@ -72,7 +72,7 @@ def apply_retention_days(dir_path: Path, retain_days: int) -> None:
         log("WARNING", f"Retention (days) failed for {dir_path}: {e}")
 
 
-def apply_retention_count(dir_path: Path, retain_count: int) -> None:
+def apply_retention_count(dir_path: Path, retain_count: int, latest_name: str) -> None:
     if retain_count <= 0:
         return
     if not dir_path.exists():
@@ -86,7 +86,7 @@ def apply_retention_count(dir_path: Path, retain_count: int) -> None:
                 continue
             if p.suffix.lower() != ".jpg":
                 continue
-            if p.name == "latest.jpg":
+            if p.name == latest_name:
                 continue
             try:
                 files.append((p.stat().st_mtime, p))
@@ -388,8 +388,12 @@ def main() -> int:
             last_retention = now
             for cfg in cfgs.values():
                 try:
-                    apply_retention_days(cfg.output_dir, cfg.retain_days)
-                    apply_retention_count(cfg.output_dir, cfg.retain_count)
+                    apply_retention_days(
+                        cfg.output_dir, cfg.retain_days, cfg.latest_name
+                    )
+                    apply_retention_count(
+                        cfg.output_dir, cfg.retain_count, cfg.latest_name
+                    )
                 except Exception as e:
                     log("WARNING", f"[{cfg.name}] retention error: {e}")
 
