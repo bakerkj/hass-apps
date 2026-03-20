@@ -1,13 +1,15 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
+from __future__ import annotations
+
 import argparse
 import json
 import re
 import signal
 import subprocess
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import paho.mqtt.client as mqtt
 
@@ -79,7 +81,7 @@ def friendly_name(col: str) -> str:
     return replacements.get(col, f"Turbostat {col}")
 
 
-def guess_meta(original_col: str) -> Tuple[Optional[str], Optional[str], str, int]:
+def guess_meta(original_col: str) -> tuple[str | None, str | None, str, int]:
     col = original_col.strip()
 
     if "%" in col or col in ("CPU%", "GFX%"):
@@ -168,10 +170,10 @@ def build_discovery_payloads(
     state_topic: str,
     base_topic: str,
     availability_topic: str,
-    cols: Dict[str, str],
+    cols: dict[str, str],
     sample_timeout_s: int,
-) -> Dict[str, Dict[str, Any]]:
-    out: Dict[str, Dict[str, Any]] = {}
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
 
     device = {
         "identifiers": [device_id],
@@ -186,7 +188,7 @@ def build_discovery_payloads(
         name = friendly_name(original_col)
         unit, device_class, icon, sdp = guess_meta(original_col)
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "name": name,
             "unique_id": f"{device_id}_{json_key}",
             "state_topic": f"{base_topic}/{json_key}/state",
@@ -235,15 +237,13 @@ def start_turbostat(interval_s: float) -> subprocess.Popen:
 
 class TurbostatParser:
     def __init__(self) -> None:
-        self.header: Optional[list[str]] = None
+        self.header: list[str] | None = None
         self.num_re = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
 
     def reset(self) -> None:
         self.header = None
 
-    def parse_line(
-        self, raw_line: str
-    ) -> Optional[tuple[list[str], dict[str, str], str]]:
+    def parse_line(self, raw_line: str) -> tuple[list[str], dict[str, str], str] | None:
         line = raw_line.rstrip("\n")
         if not line.strip():
             return None
@@ -354,7 +354,7 @@ def main() -> int:
 
     device_id = "turbostat"
     device_name = "Turbostat"
-    cols_map: Dict[str, str] = {}
+    cols_map: dict[str, str] = {}
     filtered_out_sensor_keys: set[str] = set()
     discovered = False
     last_heartbeat = 0.0
@@ -362,7 +362,7 @@ def main() -> int:
     last_sample_time = 0.0
     first_sample_time = 0.0
 
-    proc: Optional[subprocess.Popen] = None
+    proc: subprocess.Popen | None = None
 
     try:
         parser = TurbostatParser()
@@ -564,7 +564,7 @@ def main() -> int:
                     if c not in skip_cols and c not in cols_map
                 }
 
-            payload: Dict[str, Any] = {}
+            payload: dict[str, Any] = {}
             for col, val in values.items():
                 if col not in cols_map:
                     continue

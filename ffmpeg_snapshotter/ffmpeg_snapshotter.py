@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -12,7 +14,6 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 
 def log(level: str, msg: str) -> None:
@@ -83,7 +84,7 @@ def apply_retention_count(dir_path: Path, retain_count: int, latest_name: str) -
         return
 
     # Count retention requires listing/sorting. Do it only on the retention interval.
-    files: List[Tuple[float, Path]] = []
+    files: list[tuple[float, Path]] = []
     try:
         for p in dir_path.iterdir():
             if not p.is_file():
@@ -125,13 +126,13 @@ class Worker:
     def __init__(
         self,
         cfg: StreamCfg,
-        ffmpeg_cfg: Dict[str, str],
+        ffmpeg_cfg: dict[str, str],
         log_level: str,
         start_offset_seconds: float = 0.0,
     ):
         self.cfg = cfg
         self.ffmpeg_cfg = ffmpeg_cfg
-        self.thread: Optional[threading.Thread] = None
+        self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.backoff = 1.0
         self.log_level = log_level
@@ -163,7 +164,7 @@ class Worker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
-    def poll(self) -> Optional[int]:
+    def poll(self) -> int | None:
         if not self.thread:
             return None
         return None if self.thread.is_alive() else 0
@@ -195,8 +196,8 @@ class Worker:
         filename = time.strftime(self.cfg.filename_format, time.localtime(now_ts))
         return out_dir / filename
 
-    def _build_ffmpeg_cmd(self, out_path: Path) -> List[str]:
-        cmd: List[str] = ["ffmpeg", "-nostdin"]
+    def _build_ffmpeg_cmd(self, out_path: Path) -> list[str]:
+        cmd: list[str] = ["ffmpeg", "-nostdin"]
 
         def extend_args(arg_str: str) -> None:
             if arg_str:
@@ -229,7 +230,7 @@ class Worker:
             redacted = " ".join(shlex.quote(redact_url(x)) for x in cmd)
             log("DEBUG", f"[{self.cfg.name}] cmd: {redacted}")
 
-        proc: Optional[subprocess.Popen] = None
+        proc: subprocess.Popen | None = None
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -321,7 +322,7 @@ def main() -> int:
         return 0
 
     ff = opts.get("ffmpeg") or {}
-    ffmpeg_cfg: Dict[str, str] = {
+    ffmpeg_cfg: dict[str, str] = {
         "global_input_args": ff.get("global_input_args", "") or "",
         "global_hwaccel_args": ff.get("global_hwaccel_args", "") or "",
         "global_output_args": ff.get("global_output_args", "") or "",
@@ -332,8 +333,8 @@ def main() -> int:
     retention_interval = max(5, min(3600, retention_interval))
     last_retention = 0.0
 
-    workers: Dict[str, Worker] = {}
-    cfgs: Dict[str, StreamCfg] = {}
+    workers: dict[str, Worker] = {}
+    cfgs: dict[str, StreamCfg] = {}
 
     for s in streams:
         cfg = StreamCfg(
@@ -359,8 +360,8 @@ def main() -> int:
 
     # Evenly distribute start offsets for streams that share the same interval.
     # For example, if 6 streams have interval 60, they will start at 0,10,20,30,40,50 seconds.
-    offsets: Dict[str, float] = {}
-    groups: Dict[int, list] = {}
+    offsets: dict[str, float] = {}
+    groups: dict[int, list] = {}
     for s in streams:
         interval = int(s["interval_seconds"])
         groups.setdefault(interval, []).append(s["name"])
