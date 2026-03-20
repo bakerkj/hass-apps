@@ -11,7 +11,6 @@
   "audio": true,
   "usb": true,
   "full_access": false,
-  "map": ["addon_config:rw"],
   "options": {
     "stream_name": "birdnet",
     "alsa_device": "default",
