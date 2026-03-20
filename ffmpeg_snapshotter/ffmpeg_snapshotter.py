@@ -347,6 +347,12 @@ def main() -> int:
             extra_input_args=s.get("extra_input_args") or "",
             extra_output_args=s.get("extra_output_args") or "",
         )
+        if cfg.name in cfgs:
+            log(
+                "WARNING",
+                f"Duplicate stream name '{cfg.name}' — skipping second definition",
+            )
+            continue
         cfgs[cfg.name] = cfg
 
     # Evenly distribute start offsets for streams that share the same interval.
