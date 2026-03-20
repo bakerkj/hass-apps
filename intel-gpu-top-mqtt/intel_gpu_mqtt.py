@@ -11,12 +11,12 @@ import re
 import signal
 import subprocess
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import paho.mqtt.client as mqtt
 
 
-def extract_latest_json_object(buf: str) -> Tuple[Optional[dict], str]:
+def extract_latest_json_object(buf: str) -> tuple[dict | None, str]:
     """Parse the latest complete dict object from intel_gpu_top -J streaming output."""
     s = buf.lstrip()
     if s.startswith("["):
@@ -50,13 +50,13 @@ def extract_latest_json_object(buf: str) -> Tuple[Optional[dict], str]:
     return last, remaining[-200_000:]
 
 
-def safe_float(x: Any) -> Optional[float]:
+def safe_float(x: Any) -> float | None:
     if isinstance(x, (int, float)):
         return float(x)
     return None
 
 
-def dig(d: Dict[str, Any], path: list[str]) -> Any:
+def dig(d: dict[str, Any], path: list[str]) -> Any:
     cur: Any = d
     for p in path:
         if not isinstance(cur, dict):
@@ -68,8 +68,8 @@ def dig(d: Dict[str, Any], path: list[str]) -> Any:
 
 
 def find_engine_field(
-    raw: Dict[str, Any], engine_name: str, field: str
-) -> Optional[float]:
+    raw: dict[str, Any], engine_name: str, field: str
+) -> float | None:
     engines = raw.get("engines")
     if isinstance(engines, dict):
         for k, v in engines.items():
@@ -92,7 +92,7 @@ def list_intel_gpu_top_devices(log: logging.Logger) -> str:
 
 def auto_select_device_arg(
     device_listing: str, preferred_regex: str, log: logging.Logger
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """Pick a -d argument for intel_gpu_top based on `intel_gpu_top -L` output.
 
     Returns:
@@ -126,14 +126,14 @@ def auto_select_device_arg(
     return f"drm:{path}", path
 
 
-def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return metrics dict keyed by sensor key with fields:
     - value (numeric or None)
     - unit
     - attrs (dict)
     - name (human name)
     """
-    common_attrs: Dict[str, Any] = {}
+    common_attrs: dict[str, Any] = {}
 
     for k in ["pci_id", "device", "driver", "card", "gt"]:
         v = raw.get(k)
@@ -143,10 +143,10 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     def metric(
         key: str,
         name: str,
-        value: Optional[float],
+        value: float | None,
         unit: str,
-        extra_attrs: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        extra_attrs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         attrs = dict(common_attrs)
         if extra_attrs:
             attrs.update(extra_attrs)
@@ -168,7 +168,7 @@ def build_metrics(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     if p_pkg is None:
         p_pkg = safe_float(dig(raw, ["power", "package"]))
 
-    metrics: Dict[str, Dict[str, Any]] = {
+    metrics: dict[str, dict[str, Any]] = {
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
         "freq_mhz": metric(
             "freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"
@@ -283,7 +283,7 @@ def publish_discovery(
     base_topic: str,
     device_id: str,
     device_name: str,
-    metrics: Dict[str, Dict[str, Any]],
+    metrics: dict[str, dict[str, Any]],
     sample_timeout_s: int,
     log: logging.Logger,
 ) -> None:
@@ -307,7 +307,7 @@ def publish_discovery(
 
     for key, m in metrics.items():
         state_topic = f"{base_topic}/{key}/state"
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "name": m["name"],
             "unique_id": f"{device_id}_{key}",
             "default_entity_id": f"sensor.intel_gpu_{key}",
@@ -357,7 +357,7 @@ class MqttHealth:
 
 def start_intel_gpu_top(
     interval_ms: int,
-    dev_arg: Optional[str],
+    dev_arg: str | None,
     log: logging.Logger,
 ) -> subprocess.Popen:
     cmd = ["intel_gpu_top", "-J", "-s", str(interval_ms), "-o", "-"]
