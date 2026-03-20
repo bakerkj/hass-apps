@@ -1060,7 +1060,21 @@ def main() -> int:
     client.on_disconnect = on_disconnect
     client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.will_set(f"{base_topic}/availability", "offline", qos=1, retain=True)
-    client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+    _retry_delay = 5
+    while True:
+        try:
+            client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+            break
+        except Exception as exc:
+            log.warning(
+                "Cannot connect to MQTT broker %s:%s: %s — retrying in %ds",
+                args.mqtt_host,
+                args.mqtt_port,
+                exc,
+                _retry_delay,
+            )
+            time.sleep(_retry_delay)
+            _retry_delay = min(_retry_delay * 2, 60)
     client.loop_start()
 
     discovered: dict[str, set[str]] = {}
@@ -1069,7 +1083,7 @@ def main() -> int:
     last_heartbeat = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
-    expire_after_seconds = max(60, int(interval_seconds))
+    expire_after_seconds = max(60, int(interval_seconds) * 3)
 
     def sleep_to_interval(start_monotonic: float) -> None:
         remaining = interval_seconds - (time.monotonic() - start_monotonic)
@@ -1240,7 +1254,7 @@ def main() -> int:
                     if isinstance(round_digits, int):
                         numeric_value = round(numeric_value, round_digits)
                     summary_value = numeric_value
-                    state_payload = repr(numeric_value)
+                    state_payload = str(numeric_value)
 
                 summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
