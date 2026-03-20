@@ -10,6 +10,7 @@ import http.client
 import json
 import logging
 import re
+import signal
 import socket
 import subprocess
 import time
@@ -1077,6 +1078,14 @@ def main() -> int:
             _retry_delay = min(_retry_delay * 2, 60)
     client.loop_start()
 
+    stop = {"v": False}
+
+    def _handle_sig(_sig: int, _frame: object) -> None:
+        stop["v"] = True
+
+    signal.signal(signal.SIGTERM, _handle_sig)
+    signal.signal(signal.SIGINT, _handle_sig)
+
     discovered: dict[str, set[str]] = {}
     summary_discovered: set[str] = set()
     last_totals_by_container: dict[str, dict[str, float]] = {}
@@ -1092,7 +1101,7 @@ def main() -> int:
         elif remaining < -1:
             log.warning("Collection loop overran interval by %.2fs", -remaining)
 
-    while True:
+    while not stop["v"]:
         loop_start_monotonic = time.monotonic()
         now = time.time()
 
@@ -1285,6 +1294,14 @@ def main() -> int:
             last_totals_by_container.pop(stale_slug, None)
 
         sleep_to_interval(loop_start_monotonic)
+
+    log.info("Shutting down")
+    try:
+        client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
+    except Exception:
+        pass
+    client.loop_stop()
+    return 0
 
 
 if __name__ == "__main__":

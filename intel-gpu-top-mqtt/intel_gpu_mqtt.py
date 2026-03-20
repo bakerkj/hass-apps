@@ -534,10 +534,13 @@ def main() -> int:
 
     client.loop_start()
 
-    def _handle_sigterm(_sig: int, _frame: object) -> None:
-        raise SystemExit(0)
+    stop = {"v": False}
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    def _handle_sig(_sig: int, _frame: object) -> None:
+        stop["v"] = True
+
+    signal.signal(signal.SIGTERM, _handle_sig)
+    signal.signal(signal.SIGINT, _handle_sig)
 
     # Start intel_gpu_top
     try:
@@ -596,7 +599,7 @@ def main() -> int:
             log.error("intel_gpu_top stdout is None")
             return 2
 
-        while True:
+        while not stop["v"]:
             # ----- Watchdogs -----
 
             now = time.time()
@@ -738,8 +741,6 @@ def main() -> int:
                     # Still running but no line available; small sleep
                     time.sleep(0.05)
 
-    except (KeyboardInterrupt, SystemExit):
-        log.info("Shutting down")
     finally:
         try:
             client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
