@@ -20,6 +20,10 @@ def log(level: str, msg: str) -> None:
     print(f"{ts} [{level}] {msg}", flush=True)
 
 
+def redact_url(url: str) -> str:
+    return re.sub(r"(?<=://)[^@]+@", "***:***@", url)
+
+
 def ensure_media_path(output_dir: str) -> Path:
     p = Path(output_dir)
     if not str(p).startswith("/media/"):
@@ -222,10 +226,8 @@ class Worker:
         cmd = self._build_ffmpeg_cmd(tmp_path)
 
         if self.log_level == "DEBUG":
-            log(
-                "DEBUG",
-                f"[{self.cfg.name}] cmd: {' '.join(shlex.quote(x) for x in cmd)}",
-            )
+            redacted = " ".join(shlex.quote(redact_url(x)) for x in cmd)
+            log("DEBUG", f"[{self.cfg.name}] cmd: {redacted}")
 
         proc: Optional[subprocess.Popen] = None
         try:
