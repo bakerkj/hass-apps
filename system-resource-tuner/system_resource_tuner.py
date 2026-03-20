@@ -424,27 +424,29 @@ def find_matching_host_pids(
     return out
 
 
-def find_matching_pid(
+def find_matching_pids(
     container: str,
     process_match_regex: str,
     log: logging.Logger,
-) -> Optional[int]:
+) -> list[int]:
     try:
         matcher = re.compile(process_match_regex)
     except re.error as e:
         log.error("Invalid process_match_regex '%s': %s", process_match_regex, e)
-        return None
+        return []
 
+    out: list[int] = []
     for host_pid, cmdline in docker_top_processes(container, log):
         if matcher.search(cmdline):
-            return host_pid
+            out.append(host_pid)
 
-    log.warning(
-        "No process matched regex '%s' in container=%s",
-        process_match_regex,
-        container,
-    )
-    return None
+    if not out:
+        log.warning(
+            "No process matched regex '%s' in container=%s",
+            process_match_regex,
+            container,
+        )
+    return out
 
 
 def read_process_nice(
@@ -748,19 +750,16 @@ def apply_process_tuning(
             )
             return
 
-        for host_pid in host_pids:
-            apply_tuning_to_pid(tuning, host_pid, dry_run, log)
+        for pid in host_pids:
+            apply_tuning_to_pid(tuning, pid, dry_run, log)
         return
 
-    container_host_pid = find_matching_pid(
+    for pid in find_matching_pids(
         tuning.container,  # type: ignore[arg-type]  # str: is_host was False
         tuning.process_match_regex,
         log,
-    )
-    if container_host_pid is None:
-        return
-
-    apply_tuning_to_pid(tuning, container_host_pid, dry_run, log)
+    ):
+        apply_tuning_to_pid(tuning, pid, dry_run, log)
 
 
 def apply_process_tunings(
