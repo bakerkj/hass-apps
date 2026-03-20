@@ -15,7 +15,7 @@ import socket
 import subprocess
 import time
 from urllib.parse import quote
-from typing import Any, Optional
+from typing import Any
 
 import paho.mqtt.client as mqtt
 
@@ -188,7 +188,7 @@ def container_display_name(value: str) -> str:
     return " ".join(part.capitalize() for part in display.split(" "))
 
 
-def safe_float(value: Any) -> Optional[float]:
+def safe_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -201,7 +201,7 @@ def safe_float(value: Any) -> Optional[float]:
     return None
 
 
-def safe_int(value: Any) -> Optional[int]:
+def safe_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -219,7 +219,7 @@ def safe_int(value: Any) -> Optional[int]:
     return None
 
 
-def safe_text(value: Any) -> Optional[str]:
+def safe_text(value: Any) -> str | None:
     if value is None or isinstance(value, (dict, list)):
         return None
     text = str(value).strip()
@@ -237,7 +237,7 @@ def deep_get(container: dict[str, Any], path: tuple[str, ...]) -> Any:
     return cur
 
 
-def metric_value(container: dict[str, Any], metric_key: str) -> Optional[Any]:
+def metric_value(container: dict[str, Any], metric_key: str) -> Any:
     metric_def = METRIC_DEFS.get(metric_key)
     if metric_def is None:
         return None
@@ -416,7 +416,7 @@ def docker_api_get_json(path: str, docker_timeout_seconds: int) -> Any:
         ) from exc
 
 
-def cpu_percent_from_stats(payload: dict[str, Any]) -> Optional[float]:
+def cpu_percent_from_stats(payload: dict[str, Any]) -> float | None:
     cpu_stats = payload.get("cpu_stats")
     pre_cpu_stats = payload.get("precpu_stats")
     if not isinstance(cpu_stats, dict) or not isinstance(pre_cpu_stats, dict):
@@ -457,7 +457,7 @@ def cpu_percent_from_stats(payload: dict[str, Any]) -> Optional[float]:
 
 def sum_network_totals(
     payload: dict[str, Any],
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     networks = payload.get("networks")
     if not isinstance(networks, dict):
         return None, None
@@ -486,7 +486,7 @@ def sum_network_totals(
 
 def sum_blkio_totals(
     payload: dict[str, Any],
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     blkio_stats = payload.get("blkio_stats")
     if not isinstance(blkio_stats, dict):
         return None, None
@@ -525,7 +525,7 @@ async def _fetch_stats_for_container(
     docker_timeout_seconds: int,
     sem: asyncio.Semaphore,
     log: logging.Logger,
-) -> Optional[tuple[str, dict[str, float]]]:
+) -> tuple[str, dict[str, float]] | None:
     async with sem:
         endpoint = f"/containers/{quote(container_id, safe='')}/stats?stream=false"
         try:

@@ -14,23 +14,23 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
 class Target:
     container: str
-    cpuset_cpus: Optional[str] = None
-    cpu_shares: Optional[int] = None
-    blkio_weight: Optional[int] = None
+    cpuset_cpus: str | None = None
+    cpu_shares: int | None = None
+    blkio_weight: int | None = None
 
 
 @dataclass(frozen=True)
 class ProcessTuning:
-    container: Optional[str] = None
+    container: str | None = None
     process_match_regex: str = ""
-    nice: Optional[int] = None
-    cpuset_cpus: Optional[str] = None
+    nice: int | None = None
+    cpuset_cpus: str | None = None
 
     @property
     def is_host(self) -> bool:
@@ -68,7 +68,7 @@ def load_options(path: str) -> dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def parse_cpuset_expression(cpus: str) -> Optional[set[int]]:
+def parse_cpuset_expression(cpus: str) -> set[int] | None:
     value = cpus.strip()
     if not value:
         return set()
@@ -170,7 +170,7 @@ def parse_process_tuning(
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"'{block_name}' must be an object")
 
-    container: Optional[str] = str(raw_cfg.get("container", "")).strip() or None
+    container: str | None = str(raw_cfg.get("container", "")).strip() or None
     pattern = str(raw_cfg.get("process_match_regex", "")).strip()
 
     if pattern:
@@ -179,13 +179,13 @@ def parse_process_tuning(
         except re.error as e:
             raise ValueError(f"{block_name}.process_match_regex is invalid: {e}")
 
-    nice: Optional[int] = None
+    nice: int | None = None
     if raw_cfg.get("nice") is not None:
         nice = int(raw_cfg["nice"])
         if nice < -20 or nice > 19:
             raise ValueError(f"{block_name}.nice must be between -20 and 19")
 
-    cpuset_cpus: Optional[str] = None
+    cpuset_cpus: str | None = None
     if raw_cfg.get("cpuset_cpus") is not None:
         cpuset_cpus = str(raw_cfg["cpuset_cpus"]).strip()
         if not cpuset_cpus:
@@ -274,7 +274,7 @@ def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def docker_inspect_limits(
     container: str,
     log: logging.Logger,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     cmd = ["docker", "inspect", container]
     proc = run_cmd(cmd)
     if proc.returncode != 0:
@@ -453,7 +453,7 @@ def read_process_nice(
     host_pid: int,
     container_label: str,
     log: logging.Logger,
-) -> Optional[int]:
+) -> int | None:
     try:
         return os.getpriority(os.PRIO_PROCESS, host_pid)
     except ProcessLookupError:
@@ -486,7 +486,7 @@ def read_task_cpuset(
     container_label: str,
     root_pid: int,
     log: logging.Logger,
-) -> Optional[set[int]]:
+) -> set[int] | None:
     try:
         return set(os.sched_getaffinity(task_pid))
     except ProcessLookupError:
@@ -521,7 +521,7 @@ def list_process_threads(
     host_pid: int,
     container_label: str,
     log: logging.Logger,
-) -> Optional[list[int]]:
+) -> list[int] | None:
     task_dir = Path(f"/proc/{host_pid}/task")
     try:
         tids = sorted(
