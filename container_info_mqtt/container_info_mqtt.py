@@ -1056,6 +1056,24 @@ def main() -> int:
     selected_metrics = parse_include_metrics(args.include_metrics, log)
     selected_metric_set = set(selected_metrics)
 
+    proc = run_cmd(["docker", "info"], args.docker_timeout_seconds)
+    if proc.returncode != 0:
+        err = cmd_error(proc).lower()
+        if (
+            "docker.sock" in err
+            or "connect" in err
+            or "permission denied" in err
+            or "no such file" in err
+        ):
+            log.error(
+                "Cannot connect to the Docker API at unix:///var/run/docker.sock. "
+                "Disable Protection Mode for this addon in the Home Assistant UI "
+                "(Addon → Info → Protection mode) and restart."
+            )
+        else:
+            log.error("Docker API check failed: %s", cmd_error(proc))
+        return 1
+
     client = mqtt.Client(client_id=args.client_id, clean_session=True)
     if args.mqtt_username:
         client.username_pw_set(args.mqtt_username, args.mqtt_password)
