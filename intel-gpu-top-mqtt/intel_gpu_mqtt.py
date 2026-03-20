@@ -516,12 +516,21 @@ def main() -> int:
     client.on_disconnect = on_disconnect
 
     log.info("Connecting MQTT to %s:%d", args.mqtt_host, args.mqtt_port)
-    try:
-        client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
-    except Exception as e:
-        log.error("Initial MQTT connect failed: %s", e)
-        # Let supervisor restart us
-        return 10
+    _retry_delay = 5
+    while True:
+        try:
+            client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+            break
+        except Exception as e:
+            log.warning(
+                "Cannot connect to MQTT broker %s:%d: %s — retrying in %ds",
+                args.mqtt_host,
+                args.mqtt_port,
+                e,
+                _retry_delay,
+            )
+            time.sleep(_retry_delay)
+            _retry_delay = min(_retry_delay * 2, 60)
 
     client.loop_start()
 
