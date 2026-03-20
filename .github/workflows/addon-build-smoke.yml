@@ -28,7 +28,7 @@ jobs:
             build_from: ghcr.io/home-assistant/amd64-base:3.23
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build add-on image
         run: |
