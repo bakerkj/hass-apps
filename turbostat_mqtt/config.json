@@ -2,6 +2,7 @@
   "name": "Turbostat to MQTT",
   "slug": "turbostat_mqtt",
   "description": "Runs turbostat and publishes to MQTT.",
+  "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.23",
   "arch": ["amd64"],
   "startup": "services",

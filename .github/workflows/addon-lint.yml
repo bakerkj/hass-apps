@@ -15,10 +15,10 @@ jobs:
       matrix:
         addon:
           - birdnet_audio_stream
-          - system-resource-tuner
+          - system_resource_tuner
           - ffmpeg_snapshotter
-          - container-info-mqtt
-          - intel-gpu-top-mqtt
+          - container_info_mqtt
+          - intel_gpu_top_mqtt
           - turbostat_mqtt
     steps:
       - name: Checkout

@@ -16,13 +16,13 @@ jobs:
         include:
           - addon: birdnet_audio_stream
             build_from: ghcr.io/home-assistant/amd64-base:3.23
-          - addon: system-resource-tuner
+          - addon: system_resource_tuner
             build_from: ghcr.io/home-assistant/amd64-base:3.23
           - addon: ffmpeg_snapshotter
             build_from: ghcr.io/home-assistant/amd64-base:3.23
-          - addon: container-info-mqtt
+          - addon: container_info_mqtt
             build_from: ghcr.io/home-assistant/amd64-base:3.23
-          - addon: intel-gpu-top-mqtt
+          - addon: intel_gpu_top_mqtt
             build_from: ghcr.io/home-assistant/amd64-base:3.23
           - addon: turbostat_mqtt
             build_from: ghcr.io/home-assistant/amd64-base:3.23
