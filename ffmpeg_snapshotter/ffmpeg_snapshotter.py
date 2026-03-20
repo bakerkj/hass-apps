@@ -138,6 +138,13 @@ class Worker:
         if self.thread and self.thread.is_alive():
             return
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = self.cfg.output_dir / ".tmp"
+        if tmp_dir.exists():
+            for f in tmp_dir.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
         log("INFO", f"[{self.cfg.name}] Starting worker")
         self.stop_event.clear()
         self.backoff = 1.0
