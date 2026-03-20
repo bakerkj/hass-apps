@@ -9,6 +9,7 @@ import os
 import logging
 import re
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -771,7 +772,13 @@ def apply_process_tunings(
         apply_process_tuning(tuning, dry_run, log)
 
 
+def _sigterm_handler(signum: int, frame: object) -> None:
+    raise SystemExit(0)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--options", default="/data/options.json")
     args = parser.parse_args()
@@ -829,7 +836,7 @@ def main() -> int:
             apply_all(targets, dry_run, log)
             apply_process_tunings(process_targets, dry_run, log)
             apply_process_tunings(host_process_targets, dry_run, log)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         log.info("Shutting down")
 
     return 0
