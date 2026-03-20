@@ -5,16 +5,10 @@
   "version": "0.8.4",
   "arch": ["aarch64", "amd64"],
   "startup": "services",
-  "boot": "auto",
   "init": false,
-  "hassio_api": false,
-  "homeassistant_api": false,
-  "host_network": false,
-  "ingress": false,
-  "full_access": false,
   "video": true,
-  "devices": ["/dev/dri:/dev/dri:rwm"],
-  "map": ["media:rw", "config:rw", "share:rw"],
+  "devices": ["/dev/dri"],
+  "map": ["media:rw"],
   "options": {
     "log_level": "INFO",
     "ffmpeg": {

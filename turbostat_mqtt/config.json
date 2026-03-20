@@ -5,13 +5,7 @@
   "version": "0.0.22",
   "arch": ["amd64"],
   "startup": "services",
-  "boot": "auto",
   "init": false,
-  "hassio_api": false,
-  "homeassistant_api": false,
-  "host_network": false,
-  "ingress": false,
-  "full_access": false,
   "privileged": ["PERFMON", "SYS_RAWIO"],
   "options": {
     "interval_seconds": 10,

@@ -7,10 +7,8 @@
   "arch": ["amd64", "aarch64"],
   "init": false,
   "startup": "services",
-  "boot": "auto",
   "audio": true,
   "usb": true,
-  "full_access": false,
   "options": {
     "stream_name": "birdnet",
     "alsa_device": "default",
