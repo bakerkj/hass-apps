@@ -214,7 +214,11 @@ class Worker:
         final_path = self._final_snapshot_path(now_ts)
         cmd = self._build_ffmpeg_cmd(tmp_path)
 
-        log("INFO", f"[{self.cfg.name}] cmd: {' '.join(shlex.quote(x) for x in cmd)}")
+        if self.log_level == "DEBUG":
+            log(
+                "DEBUG",
+                f"[{self.cfg.name}] cmd: {' '.join(shlex.quote(x) for x in cmd)}",
+            )
 
         proc: Optional[subprocess.Popen] = None
         try:
@@ -228,14 +232,16 @@ class Worker:
                 timeout=max(5, min(120, int(self.cfg.interval_seconds)))
             )
             rc = int(proc.returncode or 0)
-            if out:
-                for line in out.splitlines():
-                    if line:
-                        log("INFO", f"[{self.cfg.name}] [stdout] {line}")
-            if err:
-                for line in err.splitlines():
-                    if line:
-                        log("INFO", f"[{self.cfg.name}] [stderr] {line}")
+            out_level = "WARNING" if rc != 0 else "DEBUG"
+            if self.log_level == "DEBUG" or rc != 0:
+                if out:
+                    for line in out.splitlines():
+                        if line:
+                            log(out_level, f"[{self.cfg.name}] [stdout] {line}")
+                if err:
+                    for line in err.splitlines():
+                        if line:
+                            log(out_level, f"[{self.cfg.name}] [stderr] {line}")
             if rc != 0:
                 return rc
 
