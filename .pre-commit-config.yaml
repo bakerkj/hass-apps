@@ -10,6 +10,7 @@ repos:
       - id: detect-private-key
       - id: check-executables-have-shebangs
       - id: check-shebang-scripts-are-executable
+      - id: check-json
       - id: mixed-line-ending
         args: ["--fix=lf"]
 
@@ -74,6 +75,11 @@ repos:
           - "#"
           - --detect-license-in-X-top-lines=8
 
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.11
+    hooks:
+      - id: actionlint
+
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: 0.37.0
     hooks:
@@ -83,6 +89,8 @@ repos:
         args:
           - --schemafile
           - https://json.schemastore.org/pre-commit-config.json
+      - id: check-github-workflows
+      - id: check-dependabot
       - id: check-jsonschema
         name: Validate Home Assistant add-on config schema
         files: ^[^/]+/config\.json$
