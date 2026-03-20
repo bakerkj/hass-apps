@@ -144,36 +144,21 @@ def connect_mqtt_with_retry(
     client: mqtt.Client,
     mqtt_host: str,
     mqtt_port: int,
-    startup_timeout_s: int,
     log_level: str,
-) -> bool:
-    delay = 1.0
-    deadline = time.time() + float(max(5, startup_timeout_s))
-    attempt = 0
-
+) -> None:
+    delay = 5
     while True:
-        attempt += 1
         try:
             client.connect(mqtt_host, mqtt_port, keepalive=60)
-            return True
+            return
         except Exception as e:
-            now = time.time()
-            remaining = deadline - now
-            if remaining <= 0:
-                log(
-                    "ERROR",
-                    f"Initial MQTT connect failed after {attempt} attempts: {e}",
-                    log_level,
-                )
-                return False
-            sleep_s = min(delay, remaining)
             log(
                 "WARNING",
-                f"Initial MQTT connect attempt {attempt} failed: {e}; retrying in {sleep_s:.1f}s",
+                f"Cannot connect to MQTT broker {mqtt_host}:{mqtt_port}: {e} — retrying in {delay}s",
                 log_level,
             )
-            time.sleep(sleep_s)
-            delay = min(delay * 2, 30.0)
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
 
 
 def build_discovery_payloads(
@@ -355,10 +340,7 @@ def main() -> int:
     client.on_disconnect = on_disconnect
 
     log("INFO", f"Connecting MQTT to {mqtt_host}:{mqtt_port}", log_level)
-    if not connect_mqtt_with_retry(
-        client, mqtt_host, mqtt_port, disconnect_timeout, log_level
-    ):
-        return 10
+    connect_mqtt_with_retry(client, mqtt_host, mqtt_port, log_level)
 
     client.loop_start()
 
@@ -424,7 +406,15 @@ def main() -> int:
             samples_since_turbostat_start = 0
             health.last_state_publish_ok = 0.0
 
-            proc = start_turbostat(interval)
+            try:
+                proc = start_turbostat(interval)
+            except FileNotFoundError:
+                log(
+                    "ERROR",
+                    "turbostat not found in container; check package install.",
+                    log_level,
+                )
+                raise
             turbostat_started_at = time.time()
             log(
                 "INFO",
