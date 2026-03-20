@@ -25,8 +25,8 @@
     "go2rtc_log_level": "info",
     "ffmpeg_log_level": "warning",
     "ffmpeg_volume": 1.5,
-    "mixer_control": "Capture",
-    "mixer_volume": "100%"
+    "mixer_control": "",
+    "mixer_volume": ""
   },
   "schema": {
     "stream_name": "str",
@@ -40,9 +40,9 @@
     "input_format": "list(alsa|pulse)",
     "go2rtc_log_level": "list(trace|debug|info|warn|error|fatal)",
     "ffmpeg_log_level": "list(quiet|panic|fatal|error|warning|info|verbose|debug|trace)",
-    "ffmpeg_volume": "float",
-    "mixer_control": "str",
-    "mixer_volume": "str"
+    "ffmpeg_volume": "float(0.0,5.0)",
+    "mixer_control": "str?",
+    "mixer_volume": "str?"
   },
   "ports": {
     "8554/tcp": 8554,
