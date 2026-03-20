@@ -11,7 +11,7 @@
     "interval_seconds": 10,
     "mqtt_host": "core-mosquitto",
     "mqtt_port": 1883,
-    "mqtt_username": "frigate-write",
+    "mqtt_username": "turbostat-write",
     "mqtt_password": "changeme",
     "mqtt_discovery_prefix": "homeassistant",
     "mqtt_base_topic": "turbostat",

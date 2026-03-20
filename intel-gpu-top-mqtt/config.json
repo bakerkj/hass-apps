@@ -12,7 +12,7 @@
     "interval_seconds": 5,
     "mqtt_host": "core-mosquitto",
     "mqtt_port": 1883,
-    "mqtt_username": "frigate-write",
+    "mqtt_username": "intel-gpu-top-write",
     "mqtt_password": "changeme",
     "mqtt_discovery_prefix": "homeassistant",
     "mqtt_base_topic": "intel_gpu_top",
@@ -23,7 +23,7 @@
 
     "heartbeat_interval_seconds": 10,
     "sample_timeout_seconds": 25,
-    "mqtt_disconnect_timeout_seconds": 60,
+    "mqtt_disconnect_timeout_seconds": 300,
     "intel_restart_grace_seconds": 10
   },
   "schema": {

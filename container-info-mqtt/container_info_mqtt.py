@@ -156,7 +156,17 @@ OPTION_KEYS: set[str] = {
     "client_id",
     "log_level",
     "heartbeat_interval_seconds",
+    "mqtt_disconnect_timeout_seconds",
+    "sample_timeout_seconds",
 }
+
+
+class MqttHealth:
+    def __init__(self) -> None:
+        self.connected: bool = False
+        self.last_connect_ok: float = 0.0
+        self.last_disconnect: float = 0.0
+
 
 SENSITIVE_OPTION_KEYS: set[str] = {"mqtt_password"}
 
@@ -916,6 +926,8 @@ def main() -> int:
     ap.add_argument("--client-id", default=None)
     ap.add_argument("--log-level", default=None)
     ap.add_argument("--heartbeat-interval-seconds", type=int, default=None)
+    ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=None)
+    ap.add_argument("--sample-timeout-seconds", type=int, default=None)
 
     args = ap.parse_args()
 
@@ -967,7 +979,16 @@ def main() -> int:
     args.client_id = resolve(args.client_id, "client_id", "container-info-mqtt", str)
     args.log_level = resolve(args.log_level, "log_level", "INFO", str)
     args.heartbeat_interval_seconds = resolve(
-        args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 30, int
+        args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 10, int
+    )
+    args.mqtt_disconnect_timeout_seconds = resolve(
+        args.mqtt_disconnect_timeout_seconds,
+        "mqtt_disconnect_timeout_seconds",
+        300,
+        int,
+    )
+    args.sample_timeout_seconds = resolve(
+        args.sample_timeout_seconds, "sample_timeout_seconds", 180, int
     )
 
     if not args.mqtt_host:
@@ -1004,6 +1025,8 @@ def main() -> int:
                 "client_id": args.client_id,
                 "log_level": args.log_level,
                 "heartbeat_interval_seconds": args.heartbeat_interval_seconds,
+                "mqtt_disconnect_timeout_seconds": args.mqtt_disconnect_timeout_seconds,
+                "sample_timeout_seconds": args.sample_timeout_seconds,
             },
             sort_keys=True,
         ),
@@ -1036,10 +1059,13 @@ def main() -> int:
 
     base_topic = args.mqtt_base_topic
     container_online: dict[str, bool] = {}
+    health = MqttHealth()
 
     def on_connect(_client, _userdata, _flags, rc):
         if rc == 0:
             log.info("MQTT connected to %s:%d", args.mqtt_host, args.mqtt_port)
+            health.connected = True
+            health.last_connect_ok = time.time()
             _client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
             for slug, is_online in container_online.items():
                 _client.publish(
@@ -1052,6 +1078,8 @@ def main() -> int:
             log.error("MQTT connect failed rc=%s", rc)
 
     def on_disconnect(_client, _userdata, rc):
+        health.connected = False
+        health.last_disconnect = time.time()
         if rc == 0:
             log.warning("MQTT disconnected (clean)")
         else:
@@ -1090,6 +1118,7 @@ def main() -> int:
     summary_discovered: set[str] = set()
     last_totals_by_container: dict[str, dict[str, float]] = {}
     last_heartbeat = 0.0
+    last_sample_time = 0.0
 
     interval_seconds = max(1, args.interval_seconds)
     expire_after_seconds = max(60, int(interval_seconds) * 3)
@@ -1104,6 +1133,28 @@ def main() -> int:
     while not stop["v"]:
         loop_start_monotonic = time.monotonic()
         now = time.time()
+
+        # MQTT disconnect watchdog
+        if not health.connected and health.last_disconnect > 0:
+            if (now - health.last_disconnect) > args.mqtt_disconnect_timeout_seconds:
+                log.error(
+                    "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
+                    now - health.last_disconnect,
+                    args.mqtt_disconnect_timeout_seconds,
+                )
+                return 11
+
+        # Sample stall watchdog
+        if (
+            last_sample_time > 0
+            and (now - last_sample_time) > args.sample_timeout_seconds
+        ):
+            log.error(
+                "No Docker samples published for %.1fs (> %ss). Exiting for supervisor restart.",
+                now - last_sample_time,
+                args.sample_timeout_seconds,
+            )
+            return 12
 
         if now - last_heartbeat >= args.heartbeat_interval_seconds:
             last_heartbeat = now
@@ -1280,6 +1331,8 @@ def main() -> int:
                 qos=0,
                 retain=False,
             )
+
+        last_sample_time = now
 
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:

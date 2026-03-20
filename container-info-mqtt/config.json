@@ -16,13 +16,15 @@
     "container_exclude_regex": "",
     "mqtt_host": "core-mosquitto",
     "mqtt_port": 1883,
-    "mqtt_username": "",
-    "mqtt_password": "",
+    "mqtt_username": "container-info-write",
+    "mqtt_password": "changeme",
     "mqtt_discovery_prefix": "homeassistant",
     "mqtt_base_topic": "container_info",
     "client_id": "container-info-mqtt",
     "log_level": "INFO",
-    "heartbeat_interval_seconds": 30
+    "heartbeat_interval_seconds": 10,
+    "mqtt_disconnect_timeout_seconds": 300,
+    "sample_timeout_seconds": 180
   },
   "schema": {
     "interval_seconds": "int(1,300)",
@@ -38,6 +40,8 @@
     "mqtt_base_topic": "str",
     "client_id": "str",
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
-    "heartbeat_interval_seconds": "int(5,600)"
+    "heartbeat_interval_seconds": "int(5,600)",
+    "mqtt_disconnect_timeout_seconds": "int(5,600)",
+    "sample_timeout_seconds": "int(5,600)"
   }
 }
