@@ -74,15 +74,15 @@ esac
   echo "api:"
   echo "  listen: :${API_PORT}"
   if [[ -n "${USERNAME}" && -n "${PASSWORD}" ]]; then
-    echo "  username: ${USERNAME}"
-    echo "  password: ${PASSWORD}"
+    echo "  username: '${USERNAME}'"
+    echo "  password: '${PASSWORD}'"
   fi
   echo "rtsp:"
   echo "  listen: :${RTSP_PORT}"
   echo "ffmpeg:"
   echo "  birdalsa: ${INPUT_TEMPLATE}"
   echo "streams:"
-  echo "  ${STREAM_NAME}: ${STREAM_SPEC}"
+  echo "  ${STREAM_NAME}: '${STREAM_SPEC}'"
 } >"${CONFIG_PATH}"
 
 bashio::log.info "Input format: ${INPUT_FORMAT}"
