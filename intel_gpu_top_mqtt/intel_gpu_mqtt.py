@@ -342,7 +342,7 @@ def publish_discovery(
             payload["icon"] = engine_icons[engine]
 
         config_topic = f"{discovery_prefix}/sensor/{device_id}/{key}/config"
-        info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+        info = client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
         log.debug(
             "MQTT discovery publish %s mid=%s rc=%s", config_topic, info.mid, info.rc
         )
@@ -533,6 +533,7 @@ def main() -> int:
             log.info("MQTT connected successfully")
             # Mark available on every connect (retained)
             _client.publish(f"{base_topic}/availability", "online", qos=1, retain=True)
+            _client.subscribe(f"{args.mqtt_discovery_prefix}/status", qos=1)
         else:
             health.connected = False
             log.error("MQTT connection failed rc=%s", rc)
@@ -588,6 +589,14 @@ def main() -> int:
     buf = ""
     discovery_published = False
     last_publish_time = 0.0
+
+    def on_message(_client, _userdata, msg):
+        nonlocal discovery_published
+        if msg.payload.decode(errors="replace").strip() == "online":
+            log.info("HA birth message received — will republish discovery")
+            discovery_published = False
+
+    client.on_message = on_message
     last_heartbeat_time = 0.0
     last_sample_time = 0.0
     last_intel_restart_attempt = 0.0

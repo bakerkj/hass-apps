@@ -857,7 +857,7 @@ def publish_discovery(
             "suggested_display_precision"
         ]
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
 
 
 def publish_summary_discovery(
@@ -895,7 +895,7 @@ def publish_summary_discovery(
         },
     }
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
 
 
 def clear_discovery(
@@ -1097,6 +1097,7 @@ def main() -> int:
                     qos=1,
                     retain=True,
                 )
+            _client.subscribe(f"{args.mqtt_discovery_prefix}/status", qos=1)
         else:
             log.error("MQTT connect failed rc=%s", rc)
 
@@ -1139,7 +1140,15 @@ def main() -> int:
 
     discovered: dict[str, set[str]] = {}
     summary_discovered: set[str] = set()
+    needs_rediscovery = {"v": False}
     last_totals_by_container: dict[str, dict[str, float]] = {}
+
+    def on_message(_client, _userdata, msg):
+        if msg.payload.decode(errors="replace").strip() == "online":
+            log.info("HA birth message received — will republish discovery")
+            needs_rediscovery["v"] = True
+
+    client.on_message = on_message
     last_heartbeat = 0.0
     last_sample_time = 0.0
 
@@ -1156,6 +1165,12 @@ def main() -> int:
     while not stop["v"]:
         loop_start_monotonic = time.monotonic()
         now = time.time()
+
+        if needs_rediscovery["v"]:
+            discovered.clear()
+            summary_discovered.clear()
+            needs_rediscovery["v"] = False
+            log.info("Discovery state cleared — will republish for all containers")
 
         # MQTT disconnect watchdog
         if not health.connected and health.last_disconnect > 0:

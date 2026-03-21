@@ -336,6 +336,7 @@ def main() -> int:
             health.connected = True
             health.last_connect_ok = time.time()
             log("INFO", f"MQTT connected to {mqtt_host}:{mqtt_port}", log_level)
+            _client.subscribe(f"{discovery_prefix}/status", qos=1)
             mqtt_publish(
                 _client,
                 availability_topic,
@@ -382,6 +383,18 @@ def main() -> int:
     last_status_line = 0.0
     last_sample_time = 0.0
     first_sample_time = 0.0
+
+    def on_message(_client, _userdata, msg):
+        nonlocal discovered
+        if msg.payload.decode(errors="replace").strip() == "online":
+            log(
+                "INFO",
+                "HA birth message received — will republish discovery",
+                log_level,
+            )
+            discovered = False
+
+    client.on_message = on_message
 
     proc: subprocess.Popen | None = None
 
@@ -650,7 +663,7 @@ def main() -> int:
                         t,
                         json.dumps(cfg, separators=(",", ":")),
                         qos=1,
-                        retain=True,
+                        retain=False,
                         log_level=log_level,
                         health=health,
                     )
