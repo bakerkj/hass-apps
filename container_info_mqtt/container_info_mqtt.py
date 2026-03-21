@@ -451,8 +451,10 @@ def cpu_percent_from_stats(payload: dict[str, Any]) -> float | None:
 
     cpu_delta = total_usage - pre_total_usage
     system_delta = system_usage - pre_system_usage
-    if cpu_delta <= 0 or system_delta <= 0:
+    if system_delta <= 0:
         return None
+    if cpu_delta <= 0:
+        return 0.0
 
     online_cpus = safe_int(cpu_stats.get("online_cpus"))
     if online_cpus is None or online_cpus <= 0:

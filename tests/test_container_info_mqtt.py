@@ -262,9 +262,10 @@ def test_cpu_percent_basic():
     assert result == pytest.approx(20.0)
 
 
-def test_cpu_percent_zero_delta_returns_none():
+def test_cpu_percent_zero_cpu_delta_returns_zero():
+    # cpu_delta == 0 means the container used no CPU — valid 0% reading
     stats = _make_stats(100, 100, 1000, 500)
-    assert cim.cpu_percent_from_stats(stats) is None
+    assert cim.cpu_percent_from_stats(stats) == pytest.approx(0.0)
 
 
 def test_cpu_percent_negative_system_delta_returns_none():
