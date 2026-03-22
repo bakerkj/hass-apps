@@ -171,7 +171,7 @@ def build_discovery_payloads(
     base_topic: str,
     availability_topic: str,
     cols: dict[str, str],
-    sample_timeout_s: int,
+    expire_after_s: int,
 ) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
 
@@ -182,7 +182,7 @@ def build_discovery_payloads(
         "model": "turbostat summary",
     }
 
-    expire_after = max(5, int(sample_timeout_s))
+    expire_after = expire_after_s
 
     for original_col, json_key in cols.items():
         name = friendly_name(original_col)
@@ -291,11 +291,12 @@ def main() -> int:
 
     publish_raw = bool(opts.get("publish_raw_sample", True))
 
-    heartbeat_interval = max(1, int(opts.get("heartbeat_interval_seconds", 10)))
+    heartbeat_interval = int(interval)
     disconnect_timeout = max(5, int(opts.get("mqtt_disconnect_timeout_seconds", 300)))
-    sample_timeout = max(
-        5, int(opts.get("sample_timeout_seconds", max(180, int(interval * 3))))
+    expire_after_multiplier = max(
+        2, min(10, int(opts.get("expire_after_multiplier", 4)))
     )
+    expire_after_s = max(60, int(interval) * expire_after_multiplier)
 
     state_topic = f"{base_topic}/state"
     availability_topic = f"{base_topic}/availability"
@@ -310,13 +311,12 @@ def main() -> int:
                 f"  client_id:          {client_id}",
                 f"  disconnect_timeout: {disconnect_timeout}s",
                 f"  discovery_prefix:   {discovery_prefix}",
-                f"  heartbeat:          {heartbeat_interval}s",
                 f"  interval:           {interval}s",
                 f"  log_level:          {log_level}",
                 f"  mqtt_host:          {mqtt_host}:{mqtt_port}",
                 f"  mqtt_username:      {mqtt_username or '(none)'}",
                 f"  publish_raw:        {publish_raw}",
-                f"  sample_timeout:     {sample_timeout}s",
+                f"  expire_after:       {expire_after_s}s",
             ]
         ),
         log_level,
@@ -400,7 +400,7 @@ def main() -> int:
 
     try:
         parser = TurbostatParser()
-        restart_grace_seconds = max(1.0, min(sample_timeout / 2.0, 30.0))
+        restart_grace_seconds = max(1.0, min(expire_after_s / 2.0, 30.0))
         last_turbostat_restart_attempt = 0.0
         turbostat_started_at = 0.0
         samples_since_turbostat_start = 0
@@ -476,7 +476,7 @@ def main() -> int:
             if (
                 samples_since_turbostat_start == 0
                 and turbostat_started_at > 0
-                and (now - turbostat_started_at) > sample_timeout
+                and (now - turbostat_started_at) > expire_after_s
             ):
                 log(
                     "ERROR",
@@ -488,7 +488,7 @@ def main() -> int:
             if (
                 samples_since_turbostat_start > 0
                 and last_sample_time > 0
-                and (now - last_sample_time) > sample_timeout
+                and (now - last_sample_time) > expire_after_s
             ):
                 log(
                     "ERROR",
@@ -500,11 +500,11 @@ def main() -> int:
             if (
                 health.connected
                 and last_sample_time > 0
-                and (now - last_sample_time) <= max(sample_timeout, interval * 2)
+                and (now - last_sample_time) <= max(expire_after_s, interval * 2)
             ):
                 if (
                     health.last_state_publish_ok > 0
-                    and (now - health.last_state_publish_ok) > sample_timeout
+                    and (now - health.last_state_publish_ok) > expire_after_s
                 ):
                     log(
                         "ERROR",
@@ -515,7 +515,7 @@ def main() -> int:
                 if (
                     health.last_state_publish_ok == 0
                     and first_sample_time > 0
-                    and (now - first_sample_time) > sample_timeout
+                    and (now - first_sample_time) > expire_after_s
                 ):
                     log(
                         "ERROR",
@@ -655,7 +655,7 @@ def main() -> int:
                     base_topic=base_topic,
                     availability_topic=availability_topic,
                     cols=cols_map,
-                    sample_timeout_s=sample_timeout,
+                    expire_after_s=expire_after_s,
                 )
                 for t, cfg in disc.items():
                     mqtt_publish(

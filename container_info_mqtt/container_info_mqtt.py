@@ -155,9 +155,8 @@ OPTION_KEYS: set[str] = {
     "mqtt_base_topic",
     "client_id",
     "log_level",
-    "heartbeat_interval_seconds",
+    "expire_after_multiplier",
     "mqtt_disconnect_timeout_seconds",
-    "sample_timeout_seconds",
 }
 
 
@@ -927,9 +926,8 @@ def main() -> int:
     ap.add_argument("--mqtt-base-topic", default=None)
     ap.add_argument("--client-id", default=None)
     ap.add_argument("--log-level", default=None)
-    ap.add_argument("--heartbeat-interval-seconds", type=int, default=None)
+    ap.add_argument("--expire-after-multiplier", type=int, default=None)
     ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=None)
-    ap.add_argument("--sample-timeout-seconds", type=int, default=None)
 
     args = ap.parse_args()
 
@@ -980,17 +978,17 @@ def main() -> int:
     )
     args.client_id = resolve(args.client_id, "client_id", "container-info-mqtt", str)
     args.log_level = resolve(args.log_level, "log_level", "INFO", str)
-    args.heartbeat_interval_seconds = resolve(
-        args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 10, int
+    args.expire_after_multiplier = max(
+        2,
+        min(
+            10, resolve(args.expire_after_multiplier, "expire_after_multiplier", 4, int)
+        ),
     )
     args.mqtt_disconnect_timeout_seconds = resolve(
         args.mqtt_disconnect_timeout_seconds,
         "mqtt_disconnect_timeout_seconds",
         300,
         int,
-    )
-    args.sample_timeout_seconds = resolve(
-        args.sample_timeout_seconds, "sample_timeout_seconds", 180, int
     )
 
     if not args.mqtt_host:
@@ -1001,6 +999,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     log = logging.getLogger("container_info_mqtt")
+    interval_seconds = max(1, args.interval_seconds)
+    expire_after_s = max(60, int(interval_seconds) * args.expire_after_multiplier)
     unknown_option_keys = sorted(key for key in opts.keys() if key not in OPTION_KEYS)
     if unknown_option_keys:
         log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
@@ -1013,13 +1013,12 @@ def main() -> int:
         "  disconnect_timeout: %ds\n"
         "  discovery_prefix:   %s\n"
         "  docker_timeout:     %ds\n"
-        "  heartbeat:          %ds\n"
         "  include_metrics:    %s\n"
         "  interval:           %ds\n"
         "  log_level:          %s\n"
         "  mqtt_host:          %s:%d\n"
         "  mqtt_username:      %s\n"
-        "  sample_timeout:     %ds",
+        "  expire_after:       %ds",
         args.mqtt_base_topic,
         args.client_id,
         args.container_exclude_regex or "(none)",
@@ -1027,14 +1026,13 @@ def main() -> int:
         args.mqtt_disconnect_timeout_seconds,
         args.mqtt_discovery_prefix,
         args.docker_timeout_seconds,
-        args.heartbeat_interval_seconds,
         args.include_metrics,
         args.interval_seconds,
         args.log_level,
         args.mqtt_host,
         args.mqtt_port,
         args.mqtt_username or "(none)",
-        args.sample_timeout_seconds,
+        expire_after_s,
     )
 
     try:
@@ -1152,9 +1150,6 @@ def main() -> int:
     last_heartbeat = 0.0
     last_sample_time = 0.0
 
-    interval_seconds = max(1, args.interval_seconds)
-    expire_after_seconds = max(60, int(interval_seconds) * 3)
-
     def sleep_to_interval(start_monotonic: float) -> None:
         remaining = interval_seconds - (time.monotonic() - start_monotonic)
         if remaining > 0:
@@ -1183,18 +1178,15 @@ def main() -> int:
                 return 11
 
         # Sample stall watchdog
-        if (
-            last_sample_time > 0
-            and (now - last_sample_time) > args.sample_timeout_seconds
-        ):
+        if last_sample_time > 0 and (now - last_sample_time) > expire_after_s:
             log.error(
                 "No Docker samples published for %.1fs (> %ss). Exiting for supervisor restart.",
                 now - last_sample_time,
-                args.sample_timeout_seconds,
+                expire_after_s,
             )
             return 12
 
-        if now - last_heartbeat >= args.heartbeat_interval_seconds:
+        if now - last_heartbeat >= interval_seconds:
             last_heartbeat = now
             hb = {
                 "ts": now,
@@ -1266,7 +1258,7 @@ def main() -> int:
                     base_topic,
                     container_slug,
                     display_name,
-                    expire_after_seconds,
+                    expire_after_s,
                 )
                 summary_discovered.add(container_slug)
 
@@ -1324,7 +1316,7 @@ def main() -> int:
                         display_name,
                         metric_key,
                         metric_def,
-                        expire_after_seconds,
+                        expire_after_s,
                     )
                     discovered[container_slug].add(metric_key)
 

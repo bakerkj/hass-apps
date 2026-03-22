@@ -256,7 +256,7 @@ def test_build_discovery_payloads_structure():
         base_topic="turbostat",
         availability_topic="turbostat/availability",
         cols=cols,
-        sample_timeout_s=180,
+        expire_after_s=120,
     )
 
     assert len(payloads) == 2
@@ -269,7 +269,7 @@ def test_build_discovery_payloads_structure():
     assert p["state_topic"] == "turbostat/pkgwatt/state"
     assert p["unit_of_measurement"] == "W"
     assert p["device_class"] == "power"
-    assert p["expire_after"] == 180
+    assert p["expire_after"] == 120
     assert p["device"]["identifiers"] == ["turbostat"]
 
 
@@ -283,10 +283,10 @@ def test_build_discovery_payloads_expire_after_minimum():
         base_topic="turbostat",
         availability_topic="turbostat/availability",
         cols=cols,
-        sample_timeout_s=1,  # below minimum of 5
+        expire_after_s=60,  # minimum value
     )
     p = list(payloads.values())[0]
-    assert p["expire_after"] == 5
+    assert p["expire_after"] == 60
 
 
 def test_build_discovery_payloads_no_unit_for_unknown():
@@ -301,7 +301,7 @@ def test_build_discovery_payloads_no_unit_for_unknown():
         base_topic="ts",
         availability_topic="ts/avail",
         cols=cols,
-        sample_timeout_s=60,
+        expire_after_s=120,
     )
     p = list(payloads.values())[0]
     assert "unit_of_measurement" not in p
@@ -317,6 +317,6 @@ def test_build_discovery_payloads_empty_cols():
         base_topic="ts",
         availability_topic="ts/avail",
         cols={},
-        sample_timeout_s=60,
+        expire_after_s=120,
     )
     assert payloads == {}

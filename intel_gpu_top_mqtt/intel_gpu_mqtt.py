@@ -284,7 +284,7 @@ def publish_discovery(
     device_id: str,
     device_name: str,
     metrics: dict[str, dict[str, Any]],
-    sample_timeout_s: int,
+    expire_after_s: int,
     log: logging.Logger,
 ) -> None:
     device = {
@@ -303,7 +303,7 @@ def publish_discovery(
         "Blitter": "mdi:image-move",
     }
 
-    expire_after = max(5, int(sample_timeout_s))
+    expire_after = expire_after_s
 
     for key, m in metrics.items():
         state_topic = f"{base_topic}/{key}/state"
@@ -394,8 +394,7 @@ def main() -> int:
     ap.add_argument("--log-level", default=None)
     ap.add_argument("--publish-raw-sample", default=None)
 
-    ap.add_argument("--heartbeat-interval-seconds", type=int, default=None)
-    ap.add_argument("--sample-timeout-seconds", type=int, default=None)
+    ap.add_argument("--expire-after-multiplier", type=int, default=None)
     ap.add_argument("--mqtt-disconnect-timeout-seconds", type=int, default=None)
     ap.add_argument("--intel-restart-grace-seconds", type=int, default=None)
 
@@ -444,11 +443,11 @@ def main() -> int:
         resolve(args.publish_raw_sample, "publish_raw_sample", True)
     )
 
-    args.heartbeat_interval_seconds = resolve(
-        args.heartbeat_interval_seconds, "heartbeat_interval_seconds", 10, int
-    )
-    args.sample_timeout_seconds = resolve(
-        args.sample_timeout_seconds, "sample_timeout_seconds", 25, int
+    args.expire_after_multiplier = max(
+        2,
+        min(
+            10, resolve(args.expire_after_multiplier, "expire_after_multiplier", 4, int)
+        ),
     )
     args.mqtt_disconnect_timeout_seconds = resolve(
         args.mqtt_disconnect_timeout_seconds,
@@ -471,6 +470,7 @@ def main() -> int:
 
     interval_s = max(1, args.interval_seconds)
     interval_ms = interval_s * 1000
+    expire_after_s = max(60, interval_s * args.expire_after_multiplier)
 
     # Device selection
     listing = list_intel_gpu_top_devices(log)
@@ -488,7 +488,6 @@ def main() -> int:
         "  client_id:          %s\n"
         "  disconnect_timeout: %ds\n"
         "  discovery_prefix:   %s\n"
-        "  heartbeat:          %ds\n"
         "  interval:           %ds\n"
         "  log_level:          %s\n"
         "  mqtt_host:          %s:%d\n"
@@ -496,12 +495,11 @@ def main() -> int:
         "  preferred_device:   %s\n"
         "  publish_raw:        %s\n"
         "  restart_grace:      %ds\n"
-        "  sample_timeout:     %ds",
+        "  expire_after:       %ds",
         args.mqtt_base_topic,
         args.client_id,
         args.mqtt_disconnect_timeout_seconds,
         args.mqtt_discovery_prefix,
-        args.heartbeat_interval_seconds,
         interval_s,
         args.log_level,
         args.mqtt_host,
@@ -510,7 +508,7 @@ def main() -> int:
         args.preferred_device_regex or "(auto)",
         args.publish_raw_sample,
         args.intel_restart_grace_seconds,
-        args.sample_timeout_seconds,
+        expire_after_s,
     )
 
     # MQTT setup with reconnect logic
@@ -653,10 +651,7 @@ def main() -> int:
                 restart_intel_gpu_top("render_node_disappeared")
 
             # Sample timeout watchdog
-            if (
-                last_sample_time > 0
-                and (now - last_sample_time) > args.sample_timeout_seconds
-            ):
+            if last_sample_time > 0 and (now - last_sample_time) > expire_after_s:
                 log.error("No intel_gpu_top samples for %.1fs", now - last_sample_time)
                 # Try restart once; if it keeps failing, we'll exit via repeated timeout
                 restart_intel_gpu_top("sample_timeout")
@@ -674,7 +669,7 @@ def main() -> int:
                     return 11
 
             # Heartbeat publish (independent of samples)
-            if now - last_heartbeat_time >= args.heartbeat_interval_seconds:
+            if now - last_heartbeat_time >= interval_s:
                 last_heartbeat_time = now
                 hb_payload = json.dumps(
                     {
@@ -723,7 +718,7 @@ def main() -> int:
                         device_id,
                         device_name,
                         metrics,
-                        args.sample_timeout_seconds,
+                        expire_after_s,
                         log,
                     )
                     discovery_published = True
