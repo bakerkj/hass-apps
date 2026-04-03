@@ -14,6 +14,7 @@ import signal
 import socket
 import subprocess
 import time
+from datetime import datetime
 from urllib.parse import quote
 from typing import Any
 
@@ -129,6 +130,15 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "name": "Block I/O Weight",
         "icon": "mdi:harddisk-plus",
         "value_type": "integer",
+    },
+    "uptime_seconds": {
+        "paths": [("uptime_seconds",)],
+        "name": "Uptime",
+        "unit": "s",
+        "icon": "mdi:timer-outline",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
     },
 }
 
@@ -630,6 +640,25 @@ def fetch_stats_by_id(
     )
 
 
+def parse_docker_timestamp(ts_str: str) -> float | None:
+    """Parse a Docker ISO 8601 timestamp (nanosecond precision) to a Unix timestamp."""
+    m = re.match(
+        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$",
+        ts_str,
+    )
+    if not m:
+        return None
+    base, frac, tz = m.group(1), m.group(2), m.group(3)
+    if frac:
+        frac = frac[:7]  # truncate nanoseconds to microseconds
+    tz_part = "+00:00" if (tz is None or tz == "Z") else tz
+    try:
+        dt = datetime.fromisoformat(base + (frac or "") + tz_part)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
 def fetch_inspect_by_id(
     container_ids: list[str],
     docker_timeout_seconds: int,
@@ -664,8 +693,12 @@ def fetch_inspect_by_id(
         host_cfg = item.get("HostConfig")
 
         status = None
+        started_at: float | None = None
         if isinstance(state_obj, dict):
             status = safe_text(state_obj.get("Status"))
+            started_at_str = safe_text(state_obj.get("StartedAt"))
+            if started_at_str:
+                started_at = parse_docker_timestamp(started_at_str)
 
         cpuset_cpus = None
         cpu_shares = None
@@ -677,6 +710,7 @@ def fetch_inspect_by_id(
 
         inspect_by_id[container_id] = {
             "status": status,
+            "started_at": started_at,
             "cpuset_cpus": cpuset_cpus,
             "cpu_shares": cpu_shares,
             "blkio_weight": blkio_weight,
@@ -721,6 +755,17 @@ def fetch_containers(
         cpuset_cpus = safe_text(inspect_info.get("cpuset_cpus")) or "all"
         cpu_shares = safe_int(inspect_info.get("cpu_shares"))
         blkio_weight = safe_int(inspect_info.get("blkio_weight"))
+        started_at = inspect_info.get("started_at")
+
+        now_wall = time.time()
+        uptime_seconds: float | None = None
+        if (
+            status.lower() == "running"
+            and isinstance(started_at, float)
+            and started_at > 0
+            and started_at <= now_wall
+        ):
+            uptime_seconds = now_wall - started_at
 
         container: dict[str, Any] = {
             "id": container_id,
@@ -730,6 +775,9 @@ def fetch_containers(
             "cpu_shares": cpu_shares if cpu_shares is not None else 0,
             "blkio_weight": blkio_weight if blkio_weight is not None else 0,
         }
+
+        if uptime_seconds is not None:
+            container["uptime_seconds"] = uptime_seconds
 
         cpu_percent = safe_float(stats_info.get("cpu_percent"))
         memory_usage = safe_float(stats_info.get("memory_usage"))
@@ -953,7 +1001,8 @@ def main() -> int:
         "include_metrics",
         "cpu_percent,memory_usage,network_rx_total,network_tx_total,"
         "io_read_total,io_write_total,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight",
+        "io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight,"
+        "uptime_seconds",
         str,
     )
     args.container_include_regex = resolve(
