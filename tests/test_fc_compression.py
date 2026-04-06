@@ -1,0 +1,685 @@
+# Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
+# All rights reserved.
+
+"""Tests for get_eligible_recordings, time_until_next_eligible, compress_one, and housekeeping."""
+
+from __future__ import annotations
+
+import sqlite3
+import subprocess
+import threading
+import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import frigate_compressor as fc
+
+from fc_helpers import (
+    _insert_recording,
+    _make_config,
+    _make_frigate_db,
+    _make_options,
+    _open_compress_db,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Context builders
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_eligible_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides):
+    """Build a minimal CompressorContext for get_eligible_recordings tests."""
+    if compress_conn is None:
+        compress_conn = _open_compress_db(tmp_path)
+    cfg = fc.load_config(
+        str(_make_options(tmp_path, frigate_db=str(frigate_db), **cfg_overrides))
+    )
+    frigate_ro = sqlite3.connect(str(frigate_db))
+    frigate_ro.row_factory = sqlite3.Row
+    frigate_rw = sqlite3.connect(str(frigate_db))
+    frigate_rw.row_factory = sqlite3.Row
+    return fc.CompressorContext(
+        cfg=cfg,
+        compress_db=compress_conn,
+        db_lock=threading.Lock(),
+        frigate_ro=frigate_ro,
+        frigate_ro_lock=threading.Lock(),
+        frigate_rw=frigate_rw,
+        frigate_lock=threading.Lock(),
+    )
+
+
+def _make_compress_one_ctx(tmp_path, src: Path, frigate_db: Path):
+    """Build a CompressorContext for compress_one tests."""
+    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    compress_conn = _open_compress_db(tmp_path)
+    frigate_ro = sqlite3.connect(str(frigate_db))
+    frigate_ro.row_factory = sqlite3.Row
+    frigate_rw = sqlite3.connect(str(frigate_db))
+    frigate_rw.row_factory = sqlite3.Row
+    return fc.CompressorContext(
+        cfg=cfg,
+        compress_db=compress_conn,
+        db_lock=threading.Lock(),
+        frigate_ro=frigate_ro,
+        frigate_ro_lock=threading.Lock(),
+        frigate_rw=frigate_rw,
+        frigate_lock=threading.Lock(),
+    )
+
+
+def _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn=None):
+    """Build a CompressorContext suitable for run_housekeeping tests."""
+    (tmp_path / "recordings").mkdir(exist_ok=True)
+    if compress_conn is None:
+        compress_conn = _open_compress_db(tmp_path)
+    cfg = _make_config(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        recordings_dir=str(tmp_path / "recordings"),
+    )
+    frigate_ro = sqlite3.connect(str(frigate_db))
+    frigate_ro.row_factory = sqlite3.Row
+    frigate_rw = sqlite3.connect(str(frigate_db))
+    frigate_rw.row_factory = sqlite3.Row
+    return fc.CompressorContext(
+        cfg=cfg,
+        compress_db=compress_conn,
+        db_lock=threading.Lock(),
+        frigate_ro=frigate_ro,
+        frigate_ro_lock=threading.Lock(),
+        frigate_rw=frigate_rw,
+        frigate_lock=threading.Lock(),
+    )
+
+
+def _close_ctx(ctx):
+    ctx.compress_db.close()
+    ctx.frigate_ro.close()
+    ctx.frigate_rw.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# get_eligible_recordings
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_get_eligible_recordings_returns_old_enough(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_recording(
+        frigate_conn,
+        "rec1",
+        "cam1",
+        "/media/cam1/a.mp4",
+        time.time() - 8 * 86400,
+        motion=5,
+        objects=0,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    results = fc.get_eligible_recordings(ctx)
+    assert len(results) == 1
+    assert results[0]["recording_id"] == "rec1"
+    assert results[0]["tier"] == 1
+    assert results[0]["recording_type"] == "motion"
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_skips_too_new(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "rec2", "cam1", "/media/cam1/b.mp4", time.time() - 3 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    assert fc.get_eligible_recordings(ctx) == []
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_skips_already_done(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "rec3", "cam1", "/media/cam1/c.mp4", time.time() - 10 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    fc._record(
+        ctx.compress_db,
+        ctx.db_lock,
+        recording_id="rec3",
+        camera="cam1",
+        path="/media/cam1/c.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+    assert fc.get_eligible_recordings(ctx) == []
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_retries_errored(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "rec4", "cam1", "/media/cam1/d.mp4", time.time() - 10 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    fc._record(
+        ctx.compress_db,
+        ctx.db_lock,
+        recording_id="rec4",
+        camera="cam1",
+        path="/media/cam1/d.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=None,
+        duration_sec=None,
+        status=fc.STATUS_ERROR,
+        error_msg="timeout",
+    )
+    results = fc.get_eligible_recordings(ctx)
+    assert len(results) == 1
+    assert results[0]["recording_id"] == "rec4"
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_tier2_assignment(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "rec5", "cam1", "/media/cam1/e.mp4", time.time() - 35 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    results = fc.get_eligible_recordings(ctx)
+    assert len(results) == 1
+    assert results[0]["tier"] == 2
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_object_type(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn,
+        "rec6",
+        "cam1",
+        "/media/cam1/f.mp4",
+        time.time() - 10 * 86400,
+        motion=10,
+        objects=3,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    results = fc.get_eligible_recordings(ctx)
+    assert results[0]["recording_type"] == "object"
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# time_until_next_eligible
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_time_until_next_eligible_no_future_recordings(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
+
+    assert fc.time_until_next_eligible(ctx) == 3600.0
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_time_until_next_eligible_with_pending_recording(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    # 5 days old; tier1 cutoff is 7 days → becomes eligible in ~2 days
+    _insert_recording(
+        frigate_conn, "pending", "cam1", "/media/cam1/p.mp4", time.time() - 5 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
+    wait = fc.time_until_next_eligible(ctx)
+    assert 60.0 <= wait < 3 * 86400
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_time_until_next_eligible_minimum_60s(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    # 30 seconds until eligible
+    _insert_recording(
+        frigate_conn, "soon", "cam1", "/media/cam1/s.mp4", time.time() - 7 * 86400 + 30
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
+    assert fc.time_until_next_eligible(ctx) >= 60.0
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# compress_one
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _setup_compress_one(tmp_path):
+    """Create a source file and Frigate DB entry; return (ctx, src_path)."""
+    src = tmp_path / "recordings" / "cam1" / "clip.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"x" * 10000)
+
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn,
+        "r1",
+        "cam1",
+        str(src),
+        time.time() - 10 * 86400,
+        motion=5,
+        objects=0,
+    )
+    frigate_conn.close()
+
+    ctx = _make_compress_one_ctx(tmp_path, src, frigate_db)
+    return ctx, src
+
+
+def _compress_one(ctx, src, *, path=None, recording_id="r1", recording_type="motion"):
+    return fc.compress_one(
+        recording_id=recording_id,
+        path=path if path is not None else str(src),
+        camera="cam1",
+        tier=1,
+        recording_type=recording_type,
+        encoder="cpu",
+        ctx=ctx,
+    )
+
+
+def _db_row(ctx, recording_id="r1"):
+    return ctx.compress_db.execute(
+        "SELECT * FROM compressed_files WHERE recording_id=?", (recording_id,)
+    ).fetchone()
+
+
+def test_compress_one_missing_file(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+    result = _compress_one(ctx, src, path=str(tmp_path / "nonexistent.mp4"))
+    assert result is False
+    row = _db_row(ctx)
+    assert row["status"] == fc.STATUS_ERROR
+    assert "missing" in row["error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_ffmpeg_success(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is True
+    row = _db_row(ctx)
+    assert row["status"] == fc.STATUS_OK
+    assert row["size_before"] == 10000
+    assert row["size_after"] == 5000
+    _close_ctx(ctx)
+
+
+def test_compress_one_ffmpeg_failure(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        m = MagicMock()
+        m.returncode = 1
+        m.stderr = "ffmpeg error"
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert _db_row(ctx)["status"] == fc.STATUS_ERROR
+    _close_ctx(ctx)
+
+
+def test_compress_one_output_too_small(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"z" * 5)  # less than 10% of 10000
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert "small" in _db_row(ctx)["error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_original_deleted_during_encode(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        src.unlink()  # simulate Frigate deleting original while encoding
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert "deleted" in _db_row(ctx)["error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_recording_removed_from_frigate_db(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+    frigate_rw2 = sqlite3.connect(str(tmp_path / "frigate.db"))
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        frigate_rw2.execute("DELETE FROM recordings WHERE id='r1'")
+        frigate_rw2.commit()
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert src.exists()  # original not replaced
+    assert "Frigate DB" in _db_row(ctx)["error_msg"]
+    frigate_rw2.close()
+    _close_ctx(ctx)
+
+
+def test_compress_one_ffmpeg_exception(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    with patch("subprocess.run", side_effect=OSError("ffmpeg not found")):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert list(src.parent.glob(fc._TEMP_GLOB)) == []
+    row = _db_row(ctx)
+    assert row["status"] == fc.STATUS_ERROR
+    assert "ffmpeg not found" in row["error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_timeout_records_duration(tmp_path):
+    ctx, src = _setup_compress_one(tmp_path)
+
+    with patch(
+        "subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=300)
+    ):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    assert _db_row(ctx)["duration_sec"] is not None
+    _close_ctx(ctx)
+
+
+def test_compress_one_segment_size_update_fails(tmp_path):
+    # If the Frigate DB segment_size update fails, compress_one should still
+    # return True but record status='segment_update_failed' for housekeeping to retry.
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    # sqlite3.Connection.execute is a C-level slot; wrap in a MagicMock to intercept only the segment_size UPDATE.
+    real_rw = ctx.frigate_rw
+    mock_rw = MagicMock(spec=sqlite3.Connection)
+    mock_rw.execute.side_effect = lambda sql, *a, **kw: (
+        (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
+        if "segment_size" in sql
+        else real_rw.execute(sql, *a, **kw)
+    )
+    mock_rw.commit.side_effect = real_rw.commit
+    ctx.frigate_rw = mock_rw
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is True
+    row = _db_row(ctx)
+    assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
+    assert "locked" in row["error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_segment_update_failed_not_recompressed(tmp_path):
+    # A recording with status='segment_update_failed' must not be returned by
+    # get_eligible_recordings — the file is already compressed.
+    ctx, src = _setup_compress_one(tmp_path)
+    ctx.compress_db.execute(
+        "INSERT INTO compressed_files"
+        " (recording_id, camera, path, tier, recording_type, encoder,"
+        "  size_before, size_after, duration_sec, last_attempted_at, status)"
+        " VALUES ('r1','cam1',?,1,'motion','cpu',10000,5000,1.0,datetime('now'),?)",
+        (str(src), fc.STATUS_SEGMENT_UPDATE_FAILED),
+    )
+    ctx.compress_db.commit()
+
+    eligible = fc.get_eligible_recordings(ctx)
+    assert not any(r["recording_id"] == "r1" for r in eligible)
+    _close_ctx(ctx)
+
+
+def test_compress_one_uses_unique_temp_name(tmp_path):
+    # Temp file must embed the recording_id, not use a fixed suffix.
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        _compress_one(ctx, src)
+
+    temp_path = Path(mock_run.call_args[0][0][-1])
+    assert "r1" in temp_path.name
+    assert temp_path.name.startswith(fc._TEMP_PREFIX)
+    _close_ctx(ctx)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# housekeeping
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_housekeeping_prunes_orphaned_entries(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    lock = threading.Lock()
+
+    # Row in compress DB with no matching Frigate recording — should be pruned.
+    fc._record(
+        compress_conn,
+        lock,
+        recording_id="orphan1",
+        camera="cam1",
+        path="/media/cam1/gone.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+    # Row with a matching Frigate recording — should be kept.
+    _insert_recording(
+        frigate_conn, "alive1", "cam1", "/media/cam1/alive.mp4", time.time() - 86400
+    )
+    fc._record(
+        compress_conn,
+        lock,
+        recording_id="alive1",
+        camera="cam1",
+        path="/media/cam1/alive.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=2000,
+        size_after=1000,
+        duration_sec=2.0,
+        status=fc.STATUS_OK,
+    )
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)
+
+    remaining = {
+        r[0]
+        for r in compress_conn.execute(
+            "SELECT recording_id FROM compressed_files"
+        ).fetchall()
+    }
+    assert "orphan1" not in remaining
+    assert "alive1" in remaining
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_housekeeping_retries_segment_update_failed(tmp_path):
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+
+    rec_path = tmp_path / "recordings" / "cam1" / "clip.mp4"
+    rec_path.parent.mkdir(parents=True)
+    rec_path.write_bytes(b"x" * 4096)
+    _insert_recording(frigate_conn, "seg1", "cam1", str(rec_path), time.time() - 86400)
+    frigate_conn.commit()
+
+    compress_conn = _open_compress_db(tmp_path)
+    fc._record(
+        compress_conn,
+        threading.Lock(),
+        recording_id="seg1",
+        camera="cam1",
+        path=str(rec_path),
+        tier=1,
+        recording_type="motion",
+        encoder="cpu",
+        size_before=8192,
+        size_after=4096,
+        duration_sec=1.0,
+        status=fc.STATUS_SEGMENT_UPDATE_FAILED,
+        error_msg="database is locked",
+    )
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)
+
+    row = compress_conn.execute(
+        "SELECT status, error_msg FROM compressed_files WHERE recording_id='seg1'"
+    ).fetchone()
+    assert row["status"] == fc.STATUS_OK
+    assert row["error_msg"] is None
+
+    seg_row = ctx.frigate_rw.execute(
+        "SELECT segment_size FROM recordings WHERE id='seg1'"
+    ).fetchone()
+    assert seg_row["segment_size"] == pytest.approx(4096 / (1024 * 1024), rel=1e-4)
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_housekeeping_segment_retry_file_missing(tmp_path):
+    # If a segment_update_failed file no longer exists on disk, housekeeping skips it.
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "seg2", "cam1", "/nonexistent/clip.mp4", time.time() - 86400
+    )
+    frigate_conn.commit()
+
+    compress_conn = _open_compress_db(tmp_path)
+    fc._record(
+        compress_conn,
+        threading.Lock(),
+        recording_id="seg2",
+        camera="cam1",
+        path="/nonexistent/clip.mp4",
+        tier=1,
+        recording_type="motion",
+        encoder="cpu",
+        size_before=8192,
+        size_after=4096,
+        duration_sec=1.0,
+        status=fc.STATUS_SEGMENT_UPDATE_FAILED,
+        error_msg="locked",
+    )
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)
+
+    row = compress_conn.execute(
+        "SELECT status FROM compressed_files WHERE recording_id='seg2'"
+    ).fetchone()
+    assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED  # unchanged — file gone
+
+    _close_ctx(ctx)
+    frigate_conn.close()

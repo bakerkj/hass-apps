@@ -28,6 +28,7 @@ for _subdir in (
     "ffmpeg_snapshotter",
     "container_info_mqtt",
     "system_resource_tuner",
+    "frigate_compressor",
 ):
     _p = str(_REPO_ROOT / _subdir)
     if _p not in sys.path:

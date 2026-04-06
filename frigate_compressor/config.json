@@ -1,0 +1,142 @@
+{
+  "name": "Frigate Compressor",
+  "version": "0.0.1",
+  "slug": "frigate_compressor",
+  "description": "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age. Tracks state in a local SQLite database.",
+  "url": "https://github.com/bakerkj/hass-apps",
+  "arch": ["amd64"],
+  "init": false,
+  "startup": "application",
+  "map": ["media:rw", "all_addon_configs:rw"],
+  "devices": ["/dev/dri"],
+  "options": {
+    "encoder": "qsv",
+    "max_parallel_jobs": 2,
+    "housekeeping_interval_days": 7,
+    "frigate_db": "/addon_configs/ccab4aaf_frigate-fa/frigate.db",
+    "recordings_dir": "/media/frigate/recordings",
+    "compress_db": "/data/compress.db",
+    "log_level": "INFO",
+    "dry_run": true,
+    "tier1": {
+      "min_days": 7,
+      "continuous": {
+        "quality": 28,
+        "scale_mode": "none",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "none",
+        "fps_value": 1.0
+      },
+      "motion": {
+        "quality": 26,
+        "scale_mode": "halve",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "none",
+        "fps_value": 1.0
+      },
+      "object": {
+        "quality": 22,
+        "scale_mode": "none",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "none",
+        "fps_value": 1.0
+      }
+    },
+    "tier2": {
+      "min_days": 30,
+      "continuous": {
+        "quality": 34,
+        "scale_mode": "halve",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "cap",
+        "fps_value": 4.0
+      },
+      "motion": {
+        "quality": 30,
+        "scale_mode": "halve",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "cap",
+        "fps_value": 8.0
+      },
+      "object": {
+        "quality": 26,
+        "scale_mode": "halve",
+        "scale_value": "iw/2:ih/2",
+        "fps_mode": "cap",
+        "fps_value": 8.0
+      }
+    },
+    "camera_overrides": []
+  },
+  "schema": {
+    "encoder": "list(qsv|nvenc|cpu)",
+    "max_parallel_jobs": "int(1,8)",
+    "housekeeping_interval_days": "int(1,365)",
+    "frigate_db": "str",
+    "recordings_dir": "str",
+    "compress_db": "str",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "dry_run": "bool",
+    "tier1": {
+      "min_days": "int(1,365)",
+      "continuous": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      },
+      "motion": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      },
+      "object": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      }
+    },
+    "tier2": {
+      "min_days": "int(1,365)",
+      "continuous": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      },
+      "motion": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      },
+      "object": {
+        "quality": "int(0,51)",
+        "scale_mode": "list(none|halve|fixed|fraction)",
+        "scale_value": "str",
+        "fps_mode": "list(none|cap|fraction)",
+        "fps_value": "float(0.01,120.0)"
+      }
+    },
+    "camera_overrides": [
+      {
+        "name": "str",
+        "tier": "int(1,2)",
+        "recording_type": "list(continuous|motion|object)",
+        "quality": "int(0,51)?",
+        "scale_mode": "list(none|halve|fixed|fraction)?",
+        "scale_value": "str?",
+        "fps_mode": "list(none|cap|fraction)?",
+        "fps_value": "float(0.01,120.0)?"
+      }
+    ]
+  },
+  "panel_icon": "mdi:video-check"
+}

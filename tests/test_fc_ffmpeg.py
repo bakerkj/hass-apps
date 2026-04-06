@@ -1,0 +1,275 @@
+# Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
+# All rights reserved.
+
+"""Tests for FFmpeg helpers: scale/fps filters, command building, and ffprobe."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import frigate_compressor as fc
+
+from fc_helpers import _make_config
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _build_scale_filter
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_scale_none_returns_empty():
+    assert fc._build_scale_filter("none", "", "cpu", None) == ""
+
+
+def test_scale_halve_cpu():
+    assert fc._build_scale_filter("halve", "", "cpu", None) == "scale=iw/2:ih/2"
+
+
+def test_scale_halve_qsv():
+    assert fc._build_scale_filter("halve", "", "qsv", None) == "scale_qsv=iw/2:ih/2"
+
+
+def test_scale_fixed_cpu():
+    assert fc._build_scale_filter("fixed", "1280:720", "cpu", None) == "scale=1280:720"
+
+
+def test_scale_fixed_qsv():
+    assert (
+        fc._build_scale_filter("fixed", "1280:720", "qsv", None) == "scale_qsv=1280:720"
+    )
+
+
+def test_scale_fraction_cpu():
+    assert (
+        fc._build_scale_filter("fraction", "0.5", "cpu", (1920, 1080))
+        == "scale=960:540"
+    )
+
+
+def test_scale_fraction_qsv():
+    assert (
+        fc._build_scale_filter("fraction", "0.5", "qsv", (1920, 1080))
+        == "scale_qsv=960:540"
+    )
+
+
+def test_scale_fraction_even_pixels():
+    # 1920 * 0.333 = 639.36 → 640 (rounded, forced even); 1080 * 0.333 = 359.64 → 360
+    result = fc._build_scale_filter("fraction", "0.333", "cpu", (1920, 1080))
+    w, h = result.replace("scale=", "").split(":")
+    assert int(w) % 2 == 0
+    assert int(h) % 2 == 0
+
+
+def test_scale_fraction_fallback_on_no_dims():
+    assert fc._build_scale_filter("fraction", "0.5", "cpu", None) == "scale=iw/2:ih/2"
+
+
+def test_scale_fraction_fallback_on_bad_value():
+    assert (
+        fc._build_scale_filter("fraction", "not_a_float", "cpu", (1920, 1080))
+        == "scale=iw/2:ih/2"
+    )
+
+
+def test_scale_unknown_mode_returns_empty():
+    assert fc._build_scale_filter("bogus", "", "cpu", None) == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _build_fps_filter
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_fps_none_returns_empty():
+    assert fc._build_fps_filter("none", 8.0, 20.0) == ""
+
+
+def test_fps_cap():
+    assert fc._build_fps_filter("cap", 8.0, None) == "fps=8"
+
+
+def test_fps_cap_rounds():
+    assert fc._build_fps_filter("cap", 7.6, None) == "fps=8"
+
+
+def test_fps_cap_minimum_one():
+    assert fc._build_fps_filter("cap", 0.1, None) == "fps=1"
+
+
+def test_fps_fraction_with_source():
+    assert fc._build_fps_filter("fraction", 0.5, 20.0) == "fps=10"
+
+
+def test_fps_fraction_fallback_when_no_source():
+    # value treated as absolute cap when source fps is unavailable
+    assert fc._build_fps_filter("fraction", 8.0, None) == "fps=8"
+
+
+def test_fps_unknown_mode_returns_empty():
+    assert fc._build_fps_filter("bogus", 8.0, 20.0) == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# build_ffmpeg_cmd
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _cmd(tmp_path, encoder="cpu", tier=1, camera="cam", recording_type="continuous"):
+    cfg = _make_config(tmp_path)
+    return fc.build_ffmpeg_cmd(
+        Path("/input.mp4"),
+        Path("/output.mp4"),
+        encoder,
+        tier,
+        camera,
+        recording_type,
+        cfg,
+    )
+
+
+def test_build_ffmpeg_cmd_cpu_basic(tmp_path):
+    cmd = _cmd(tmp_path, encoder="cpu")
+    assert "ffmpeg" in cmd
+    assert "libx264" in cmd
+    assert "-crf" in cmd
+
+
+def test_build_ffmpeg_cmd_qsv(tmp_path):
+    cmd = _cmd(tmp_path, encoder="qsv")
+    assert "h264_qsv" in cmd
+    assert "-hwaccel" in cmd
+    assert "qsv" in cmd
+
+
+def test_build_ffmpeg_cmd_nvenc(tmp_path):
+    cmd = _cmd(tmp_path, encoder="nvenc")
+    assert "h264_nvenc" in cmd
+    assert "-hwaccel" in cmd
+    assert "cuda" in cmd
+
+
+def test_build_ffmpeg_cmd_no_vf_when_no_filters(tmp_path):
+    # tier1 continuous: scale_mode=none, fps_mode=none → no -vf
+    cmd = _cmd(tmp_path, encoder="cpu", tier=1, recording_type="continuous")
+    assert "-vf" not in cmd
+
+
+def test_build_ffmpeg_cmd_has_vf_when_scale(tmp_path):
+    # tier1 motion: scale_mode=halve → -vf present
+    cmd = _cmd(tmp_path, encoder="cpu", tier=1, recording_type="motion")
+    assert "-vf" in cmd
+    assert "scale" in cmd[cmd.index("-vf") + 1]
+
+
+def test_build_ffmpeg_cmd_has_vf_when_fps(tmp_path):
+    # tier2 continuous: fps_mode=cap → -vf present
+    cmd = _cmd(tmp_path, encoder="cpu", tier=2, recording_type="continuous")
+    assert "-vf" in cmd
+    assert "fps" in cmd[cmd.index("-vf") + 1]
+
+
+def test_build_ffmpeg_cmd_quality_tier1_object(tmp_path):
+    cfg = _make_config(tmp_path)
+    cmd = fc.build_ffmpeg_cmd(
+        Path("/in.mp4"), Path("/out.mp4"), "cpu", 1, "cam", "object", cfg
+    )
+    assert "-crf" in cmd
+    assert str(cfg.tier1.object.quality) in cmd
+
+
+def test_build_ffmpeg_cmd_quality_tier2_continuous(tmp_path):
+    cfg = _make_config(tmp_path)
+    cmd = fc.build_ffmpeg_cmd(
+        Path("/in.mp4"), Path("/out.mp4"), "cpu", 2, "cam", "continuous", cfg
+    )
+    assert str(cfg.tier2.continuous.quality) in cmd
+
+
+def test_build_ffmpeg_cmd_metadata_flags(tmp_path):
+    cmd = _cmd(tmp_path)
+    assert "-map_metadata" in cmd
+    assert "-movflags" in cmd
+    assert "+faststart" in cmd
+
+
+def test_build_ffmpeg_cmd_copy_audio(tmp_path):
+    cmd = _cmd(tmp_path)
+    assert "-c:a" in cmd
+    assert "copy" in cmd
+
+
+def test_build_ffmpeg_cmd_unknown_recording_type_fallback(tmp_path):
+    # Unknown recording_type falls back to continuous settings.
+    cfg = _make_config(tmp_path)
+    cmd = fc.build_ffmpeg_cmd(
+        Path("/in.mp4"), Path("/out.mp4"), "cpu", 1, "cam", "unknown_type", cfg
+    )
+    assert str(cfg.tier1.continuous.quality) in cmd
+    assert "-vf" not in cmd  # continuous has no scale/fps filters
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _probe_video
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _fake_probe_result(stdout: str, returncode: int = 0) -> MagicMock:
+    m = MagicMock()
+    m.returncode = returncode
+    m.stdout = stdout
+    m.stderr = ""
+    return m
+
+
+def test_probe_video_empty_output(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"")
+    with patch("subprocess.run", return_value=_fake_probe_result("")):
+        dims, fps = fc._probe_video(f)
+    assert dims is None
+    assert fps is None
+
+
+def test_probe_video_nonzero_returncode(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"")
+    with patch(
+        "subprocess.run", return_value=_fake_probe_result("width=1920\n", returncode=1)
+    ):
+        dims, fps = fc._probe_video(f)
+    assert dims is None
+    assert fps is None
+
+
+def test_probe_video_zero_division_fps(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"")
+    stdout = "width=1920\nheight=1080\nr_frame_rate=0/0\n"
+    with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
+        dims, fps = fc._probe_video(f)
+    assert dims == (1920, 1080)
+    assert fps is None  # ZeroDivisionError swallowed gracefully
+
+
+def test_probe_video_bad_dimensions(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"")
+    stdout = "width=N/A\nheight=N/A\nr_frame_rate=25/1\n"
+    with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
+        dims, fps = fc._probe_video(f)
+    assert dims is None
+    assert fps == pytest.approx(25.0)
+
+
+def test_probe_video_valid(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"")
+    stdout = "width=1920\nheight=1080\nr_frame_rate=30000/1001\n"
+    with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
+        dims, fps = fc._probe_video(f)
+    assert dims == (1920, 1080)
+    assert fps == pytest.approx(30000 / 1001)
