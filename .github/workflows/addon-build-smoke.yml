@@ -11,6 +11,7 @@ jobs:
   build:
     name: Build ${{ matrix.addon }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
