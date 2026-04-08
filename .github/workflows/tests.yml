@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6.2.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - run: pip install pytest && pytest tests/ -m "not integration"
 
   integration-tests:
@@ -21,6 +21,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6.2.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - run: sudo apt-get install -y ffmpeg
       - run: pip install pytest && pytest tests/ -m integration -v
