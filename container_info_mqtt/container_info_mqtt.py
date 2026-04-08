@@ -402,8 +402,12 @@ class UnixSocketHTTPConnection(http.client.HTTPConnection):
 
     def connect(self) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        sock.connect(self.unix_socket_path)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self.unix_socket_path)
+        except Exception:
+            sock.close()
+            raise
         self.sock = sock
 
 
