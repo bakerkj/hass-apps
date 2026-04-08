@@ -1,6 +1,73 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
+  "extends": ["config:recommended"],
+  "schedule": ["on sunday"],
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Home Assistant add-on base images in build.yaml files",
+      "fileMatch": ["(^|/)build\\.yaml$"],
+      "matchStrings": [
+        "\\s+(?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
+      "fileMatch": [
+        "^birdnet_audio_stream/Dockerfile$",
+        "^container_info_mqtt/Dockerfile$",
+        "^ffmpeg_snapshotter/Dockerfile$",
+        "^frigate_compressor/Dockerfile$",
+        "^intel_gpu_top_mqtt/Dockerfile$",
+        "^system_resource_tuner/Dockerfile$",
+        "^turbostat_mqtt/Dockerfile$"
+      ],
+      "matchStrings": [
+        "\\s+(?<depName>[a-z][a-z0-9_+.-]*)=(?<currentValue>[\\d][\\w.-]+)"
+      ],
+      "datasourceTemplate": "repology",
+      "versioningTemplate": "loose",
+      "lookupNameTemplate": "alpine_3_23/{{depName}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "matchManagers": ["pre-commit"],
+      "groupName": "pre-commit hooks"
+    },
+    {
+      "matchManagers": ["uv"],
+      "groupName": "python dependencies"
+    },
+    {
+      "matchManagers": ["devcontainer"],
+      "groupName": "dev container"
+    },
+    {
+      "matchManagers": ["regex"],
+      "matchPackageNames": ["/home-assistant/"],
+      "groupName": "home-assistant base images"
+    },
+    {
+      "matchManagers": ["regex"],
+      "matchDatasources": ["repology"],
+      "groupName": "alpine apk packages"
+    },
+    {
+      "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.23 repo",
+      "matchPackageNames": ["igt-gpu-tools"],
+      "matchDatasources": ["repology"],
+      "lookupName": "alpine_edge/igt-gpu-tools"
+    }
   ]
 }
