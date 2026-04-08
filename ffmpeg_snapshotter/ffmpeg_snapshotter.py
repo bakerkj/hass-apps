@@ -41,7 +41,7 @@ def set_latest_symlink(target: Path, latest_path: Path) -> None:
         rel = os.path.relpath(str(target), str(latest_path.parent))
         tmp_link.symlink_to(rel)
         tmp_link.replace(latest_path)
-    except Exception as e:
+    except OSError as e:
         log("WARNING", f"Failed to update symlink {latest_path} -> {target}: {e}")
 
 
@@ -73,7 +73,7 @@ def apply_retention_days(dir_path: Path, retain_days: int, latest_name: str) -> 
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except Exception as e:
+    except OSError as e:
         log("WARNING", f"Retention (days) failed for {dir_path}: {e}")
 
 
@@ -101,9 +101,9 @@ def apply_retention_count(dir_path: Path, retain_count: int, latest_name: str) -
         for _, p in files[retain_count:]:
             try:
                 p.unlink(missing_ok=True)
-            except Exception:
+            except OSError:
                 pass
-    except Exception as e:
+    except OSError as e:
         log("WARNING", f"Retention (count) failed for {dir_path}: {e}")
 
 
@@ -148,7 +148,7 @@ class Worker:
             for f in tmp_dir.iterdir():
                 try:
                     f.unlink()
-                except Exception:
+                except OSError:
                     pass
         log("INFO", f"[{self.cfg.name}] Starting worker")
         self.stop_event.clear()

@@ -20,40 +20,23 @@ from fc_helpers import _make_config
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_scale_none_returns_empty():
-    assert fc._build_scale_filter("none", "", "cpu", None) == ""
-
-
-def test_scale_halve_cpu():
-    assert fc._build_scale_filter("halve", "", "cpu", None) == "scale=iw/2:ih/2"
-
-
-def test_scale_halve_qsv():
-    assert fc._build_scale_filter("halve", "", "qsv", None) == "scale_qsv=iw/2:ih/2"
-
-
-def test_scale_fixed_cpu():
-    assert fc._build_scale_filter("fixed", "1280:720", "cpu", None) == "scale=1280:720"
-
-
-def test_scale_fixed_qsv():
-    assert (
-        fc._build_scale_filter("fixed", "1280:720", "qsv", None) == "scale_qsv=1280:720"
-    )
-
-
-def test_scale_fraction_cpu():
-    assert (
-        fc._build_scale_filter("fraction", "0.5", "cpu", (1920, 1080))
-        == "scale=960:540"
-    )
-
-
-def test_scale_fraction_qsv():
-    assert (
-        fc._build_scale_filter("fraction", "0.5", "qsv", (1920, 1080))
-        == "scale_qsv=960:540"
-    )
+@pytest.mark.parametrize(
+    ("mode", "value", "encoder", "dims", "expected"),
+    [
+        ("none", "", "cpu", None, ""),
+        ("halve", "", "cpu", None, "scale=iw/2:ih/2"),
+        ("halve", "", "qsv", None, "scale_qsv=iw/2:ih/2"),
+        ("fixed", "1280:720", "cpu", None, "scale=1280:720"),
+        ("fixed", "1280:720", "qsv", None, "scale_qsv=1280:720"),
+        ("fraction", "0.5", "cpu", (1920, 1080), "scale=960:540"),
+        ("fraction", "0.5", "qsv", (1920, 1080), "scale_qsv=960:540"),
+        ("fraction", "0.5", "cpu", None, "scale=iw/2:ih/2"),
+        ("fraction", "not_a_float", "cpu", (1920, 1080), "scale=iw/2:ih/2"),
+        ("bogus", "", "cpu", None, ""),
+    ],
+)
+def test_build_scale_filter(mode, value, encoder, dims, expected):
+    assert fc._build_scale_filter(mode, value, encoder, dims) == expected
 
 
 def test_scale_fraction_even_pixels():
@@ -64,53 +47,25 @@ def test_scale_fraction_even_pixels():
     assert int(h) % 2 == 0
 
 
-def test_scale_fraction_fallback_on_no_dims():
-    assert fc._build_scale_filter("fraction", "0.5", "cpu", None) == "scale=iw/2:ih/2"
-
-
-def test_scale_fraction_fallback_on_bad_value():
-    assert (
-        fc._build_scale_filter("fraction", "not_a_float", "cpu", (1920, 1080))
-        == "scale=iw/2:ih/2"
-    )
-
-
-def test_scale_unknown_mode_returns_empty():
-    assert fc._build_scale_filter("bogus", "", "cpu", None) == ""
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # _build_fps_filter
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_fps_none_returns_empty():
-    assert fc._build_fps_filter("none", 8.0, 20.0) == ""
-
-
-def test_fps_cap():
-    assert fc._build_fps_filter("cap", 8.0, None) == "fps=8"
-
-
-def test_fps_cap_rounds():
-    assert fc._build_fps_filter("cap", 7.6, None) == "fps=8"
-
-
-def test_fps_cap_minimum_one():
-    assert fc._build_fps_filter("cap", 0.1, None) == "fps=1"
-
-
-def test_fps_fraction_with_source():
-    assert fc._build_fps_filter("fraction", 0.5, 20.0) == "fps=10"
-
-
-def test_fps_fraction_fallback_when_no_source():
-    # value treated as absolute cap when source fps is unavailable
-    assert fc._build_fps_filter("fraction", 8.0, None) == "fps=8"
-
-
-def test_fps_unknown_mode_returns_empty():
-    assert fc._build_fps_filter("bogus", 8.0, 20.0) == ""
+@pytest.mark.parametrize(
+    ("mode", "value", "source_fps", "expected"),
+    [
+        ("none", 8.0, 20.0, ""),
+        ("cap", 8.0, None, "fps=8"),
+        ("cap", 7.6, None, "fps=8"),
+        ("cap", 0.1, None, "fps=1"),
+        ("fraction", 0.5, 20.0, "fps=10"),
+        ("fraction", 8.0, None, "fps=8"),
+        ("bogus", 8.0, 20.0, ""),
+    ],
+)
+def test_build_fps_filter(mode, value, source_fps, expected):
+    assert fc._build_fps_filter(mode, value, source_fps) == expected
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

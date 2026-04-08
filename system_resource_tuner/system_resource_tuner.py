@@ -568,7 +568,8 @@ def apply_process_nice(
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
-    assert tuning.nice is not None
+    if tuning.nice is None:
+        raise ValueError("apply_process_nice called with tuning.nice=None")
 
     current_nice = read_process_nice(host_pid, tuning.container_label, log)
     if current_nice is not None and current_nice == tuning.nice:
@@ -631,7 +632,8 @@ def apply_process_cpuset(
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
-    assert tuning.cpuset_cpus is not None
+    if tuning.cpuset_cpus is None:
+        raise ValueError("apply_process_cpuset called with tuning.cpuset_cpus=None")
 
     desired_cpus = parse_cpuset_expression(tuning.cpuset_cpus)
     if not desired_cpus:

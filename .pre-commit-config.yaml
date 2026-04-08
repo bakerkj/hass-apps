@@ -13,6 +13,8 @@ repos:
       - id: check-json
       - id: mixed-line-ending
         args: ["--fix=lf"]
+      - id: no-commit-to-branch
+        args: ["--branch", "main"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.9
@@ -100,6 +102,22 @@ repos:
           - python
           - --schemafile
           - https://raw.githubusercontent.com/frenck/action-addon-linter/v2.21.0/src/build.schema.json
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        files: ^(container_info_mqtt|ffmpeg_snapshotter|frigate_compressor|intel_gpu_top_mqtt|system_resource_tuner|turbostat_mqtt)/.*\.py$
+        pass_filenames: false
+        args:
+          - container_info_mqtt
+          - ffmpeg_snapshotter
+          - frigate_compressor
+          - intel_gpu_top_mqtt
+          - system_resource_tuner
+          - turbostat_mqtt
 
   - repo: local
     hooks:

@@ -338,6 +338,11 @@ def load_config(options_path: str) -> Config:
             f"tier1.min_days ({cfg.tier1.min_days})"
         )
 
+    if not cfg.frigate_db.exists():
+        raise FileNotFoundError(f"frigate_db not found: {cfg.frigate_db}")
+    if not cfg.recordings_dir.is_dir():
+        raise FileNotFoundError(f"recordings_dir not found: {cfg.recordings_dir}")
+
     return cfg
 
 
@@ -552,7 +557,8 @@ def _probe_video(filepath: Path) -> tuple[tuple[int, int] | None, float | None]:
                 pass
 
         return dims, fps
-    except Exception:
+    except Exception as e:
+        log("WARNING", f"ffprobe failed for {filepath}: {e}")
         return None, None
 
 
@@ -1090,8 +1096,9 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     tier2_cutoff = time.time() - (cfg.tier2.min_days * 86400)
 
     with db_lock:
+        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
         compress_db.execute(
-            f'ATTACH DATABASE "file:{cfg.frigate_db}?mode=ro" AS frigate_eligible'
+            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
         )
         try:
             rows = compress_db.execute(
@@ -1173,7 +1180,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     temp_files = list(Path(cfg.recordings_dir).rglob(_TEMP_GLOB))
     for tmp in temp_files:
         if cfg.dry_run:
-            log("WARNING", f"DRY RUN: Would remove leftover temp file: {tmp}")
+            log("INFO", f"DRY RUN: Would remove leftover temp file: {tmp}")
         else:
             log("WARNING", f"Removing leftover temp file: {tmp}")
             tmp.unlink(missing_ok=True)
@@ -1250,8 +1257,9 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     # it — avoids loading two full ID sets into memory.
     pruned = 0
     with db_lock:
+        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
         compress_db.execute(
-            f'ATTACH DATABASE "file:{cfg.frigate_db}?mode=ro" AS frigate_ro_hk'
+            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
         )
         try:
             if cfg.dry_run:
@@ -1471,9 +1479,8 @@ def main() -> int:
     last_housekeeping = time.time()
     housekeeping_interval_sec = cfg.housekeeping_interval_days * 86400
 
-    def handle_sig(sig, _frame):
+    def handle_sig(_sig, _frame):
         stopping.set()
-        log("INFO", f"Received signal {sig} — shutting down cleanly")
 
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
@@ -1530,7 +1537,8 @@ def main() -> int:
             if not stopping.is_set():
                 try:
                     sleep_sec = time_until_next_eligible(ctx)
-                except Exception:
+                except Exception as e:
+                    log("WARNING", f"time_until_next_eligible failed: {e}")
                     sleep_sec = 3600.0
 
                 log("INFO", f"Next check in {sleep_sec / 60:.1f} min")

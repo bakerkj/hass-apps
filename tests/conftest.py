@@ -2,7 +2,7 @@
 # All rights reserved.
 
 """
-Shared pytest configuration: sys.path setup and paho.mqtt stub.
+Shared pytest configuration: paho.mqtt stub.
 """
 
 from __future__ import annotations
@@ -10,29 +10,10 @@ from __future__ import annotations
 import logging
 import sys
 import types
-from pathlib import Path
 from unittest.mock import MagicMock
 
 logging.basicConfig(level=logging.WARNING)
 
-
-# ---------------------------------------------------------------------------
-# Make every source directory importable without installing packages.
-# ---------------------------------------------------------------------------
-
-_REPO_ROOT = Path(__file__).parent.parent
-
-for _subdir in (
-    "turbostat_mqtt",
-    "intel_gpu_top_mqtt",
-    "ffmpeg_snapshotter",
-    "container_info_mqtt",
-    "system_resource_tuner",
-    "frigate_compressor",
-):
-    _p = str(_REPO_ROOT / _subdir)
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 # ---------------------------------------------------------------------------
 # Stub out paho.mqtt so the source modules can be imported on machines that

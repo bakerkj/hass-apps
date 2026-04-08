@@ -14,12 +14,18 @@ import frigate_compressor as fc
 
 def _make_options(tmp_path: Path, **overrides) -> Path:
     """Write a minimal options.json and return its path."""
+    frigate_db = Path(overrides.get("frigate_db", tmp_path / "frigate.db"))
+    recordings_dir = Path(overrides.get("recordings_dir", tmp_path / "recordings"))
+    if not frigate_db.exists():
+        frigate_db.touch()
+    if not recordings_dir.exists():
+        recordings_dir.mkdir(parents=True)
     opts = {
         "encoder": "cpu",
         "max_parallel_jobs": 1,
         "housekeeping_interval_days": 7,
-        "frigate_db": str(tmp_path / "frigate.db"),
-        "recordings_dir": str(tmp_path / "recordings"),
+        "frigate_db": str(frigate_db),
+        "recordings_dir": str(recordings_dir),
         "compress_db": str(tmp_path / "compress.db"),
         "log_level": "DEBUG",
         "dry_run": False,
