@@ -1,0 +1,27 @@
+[project]
+name = "hass-apps"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.20.0",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.5",
+]
+
+[tool.mypy]
+mypy_path = [
+    "container_info_mqtt",
+    "ffmpeg_snapshotter",
+    "frigate_compressor",
+    "intel_gpu_top_mqtt",
+    "system_resource_tuner",
+    "turbostat_mqtt",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
+]

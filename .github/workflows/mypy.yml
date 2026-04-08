@@ -1,20 +1,21 @@
-name: addon-lint
+name: mypy
 
 on:
-  pull_request:
   push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  addon-linter:
+  mypy:
+    name: mypy ${{ matrix.addon }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         addon:
-          - birdnet_audio_stream
           - container_info_mqtt
           - ffmpeg_snapshotter
           - frigate_compressor
@@ -22,10 +23,9 @@ jobs:
           - system_resource_tuner
           - turbostat_mqtt
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Run Home Assistant add-on linter
-        uses: frenck/action-addon-linter@v2
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: ./${{ matrix.addon }}
+          python-version: "3.13"
+          cache-dependency-glob: "uv.lock"
+      - run: uv run mypy ${{ matrix.addon }}
