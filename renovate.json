@@ -9,7 +9,7 @@
     {
       "customType": "regex",
       "description": "Home Assistant add-on base images in build.yaml files",
-      "managerFilePatterns": ["(^|/)build\\.yaml$"],
+      "managerFilePatterns": ["/(^|/)build\\.yaml$/"],
       "matchStrings": [
         "\\s+(?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
       ],
@@ -19,15 +19,7 @@
     {
       "customType": "regex",
       "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
-      "managerFilePatterns": [
-        "^birdnet_audio_stream/Dockerfile$",
-        "^container_info_mqtt/Dockerfile$",
-        "^ffmpeg_snapshotter/Dockerfile$",
-        "^frigate_compressor/Dockerfile$",
-        "^intel_gpu_top_mqtt/Dockerfile$",
-        "^system_resource_tuner/Dockerfile$",
-        "^turbostat_mqtt/Dockerfile$"
-      ],
+      "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
         "\\s+(?<depName>[a-z][a-z0-9_+.-]*)=(?<currentValue>[\\d][\\w.-]+)"
       ],
