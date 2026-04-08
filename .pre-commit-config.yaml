@@ -100,3 +100,12 @@ repos:
           - python
           - --schemafile
           - https://raw.githubusercontent.com/frenck/action-addon-linter/v2.21.0/src/build.schema.json
+
+  - repo: local
+    hooks:
+      - id: addon-lint
+        name: HA addon lint
+        entry: scripts/addon-lint.sh
+        language: script
+        files: ^[^/]+/config\.json$
+        pass_filenames: true
