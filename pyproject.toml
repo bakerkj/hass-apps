@@ -25,6 +25,14 @@ mypy_path = [
 
 
 [tool.pytest.ini_options]
+pythonpath = [
+    "container_info_mqtt",
+    "ffmpeg_snapshotter",
+    "frigate_compressor",
+    "intel_gpu_top_mqtt",
+    "system_resource_tuner",
+    "turbostat_mqtt",
+]
 addopts = "--cov=container_info_mqtt --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt --cov-fail-under=30"
 markers = [
     "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
