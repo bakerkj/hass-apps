@@ -30,4 +30,4 @@ jobs:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
       - run: sudo apt-get install -y ffmpeg
-      - run: uv run pytest tests/ -m integration -v
+      - run: uv run pytest tests/ -m integration -v --no-cov
