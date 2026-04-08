@@ -9,30 +9,64 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.addon }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - addon: birdnet_audio_stream
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
-          - addon: system_resource_tuner
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
-          - addon: ffmpeg_snapshotter
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
+            arch: amd64
+            runner: ubuntu-latest
+          - addon: birdnet_audio_stream
+            arch: aarch64
+            runner: ubuntu-24.04-arm
           - addon: container_info_mqtt
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
+            arch: amd64
+            runner: ubuntu-latest
+          - addon: container_info_mqtt
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+          - addon: ffmpeg_snapshotter
+            arch: amd64
+            runner: ubuntu-latest
+          - addon: frigate_compressor
+            arch: amd64
+            runner: ubuntu-latest
           - addon: intel_gpu_top_mqtt
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
+            arch: amd64
+            runner: ubuntu-latest
+          - addon: system_resource_tuner
+            arch: amd64
+            runner: ubuntu-latest
+          - addon: system_resource_tuner
+            arch: aarch64
+            runner: ubuntu-24.04-arm
           - addon: turbostat_mqtt
-            build_from: ghcr.io/home-assistant/amd64-base:3.23
+            arch: amd64
+            runner: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+
+      - name: Read base image from build.yaml
+        id: build_from
+        run: |
+          value=$(grep "^\s*${{ matrix.arch }}:" "${{ matrix.addon }}/build.yaml" | awk '{print $2}')
+          echo "value=${value}" >> "$GITHUB_OUTPUT"
 
       - name: Build add-on image
-        run: |
-          docker build \
-            --build-arg BUILD_FROM=${{ matrix.build_from }} \
-            --file ${{ matrix.addon }}/Dockerfile \
-            ${{ matrix.addon }}
+        uses: home-assistant/builder/actions/build-image@2026.03.2
+        with:
+          arch: ${{ matrix.arch }}
+          image:
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.arch }}-${{
+            matrix.addon }}
+          image-tags: test
+          version: test
+          push: "false"
+          load: "false"
+          context: ${{ matrix.addon }}
+          build-args: BUILD_FROM=${{ steps.build_from.outputs.value }}
+          cache-gha-scope: ${{ matrix.addon }}
+          cosign: "false"
+          container-registry-password: ${{ github.token }}

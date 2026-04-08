@@ -1,2 +1,9 @@
 build_from:
-  amd64: ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.19
+  amd64: ghcr.io/home-assistant/amd64-base:3.23
+labels:
+  org.opencontainers.image.title: "Frigate Compressor"
+  org.opencontainers.image.description:
+    "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU
+    fallback). Two-tier compression based on age."
+  org.opencontainers.image.source: "https://github.com/bakerkj/hass-apps"
+  org.opencontainers.image.licenses: "MIT"

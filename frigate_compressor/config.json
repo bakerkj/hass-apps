@@ -6,7 +6,6 @@
   "url": "https://github.com/bakerkj/hass-apps",
   "arch": ["amd64"],
   "init": false,
-  "startup": "application",
   "map": ["media:rw", "all_addon_configs:rw"],
   "devices": ["/dev/dri"],
   "options": {

@@ -2,22 +2,18 @@ ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
 
-RUN apk update && \
-  apk add --no-cache \
-  python3 \
-  py3-paho-mqtt \
-  bash
+RUN apk add --no-cache \
+  python3=3.12.12-r0 \
+  py3-paho-mqtt=1.6.1-r3
 
-# Home Assistant app base images are Alpine-based.
-# igt-gpu-tools provides intel_gpu_top
+# igt-gpu-tools provides intel_gpu_top (Alpine edge/testing repo)
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
-  apk update && \
-  apk add --no-cache \
-  igt-gpu-tools
+  apk add --no-cache --update \
+  igt-gpu-tools=2.3-r0
 
 COPY run.sh /run.sh
 COPY intel_gpu_mqtt.py /intel_gpu_mqtt.py
 
 RUN chmod +x /run.sh
 
-CMD [ "/run.sh" ]
+CMD ["/run.sh"]

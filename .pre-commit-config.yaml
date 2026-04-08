@@ -21,13 +21,6 @@ repos:
         args: ["--fix"]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.0
-    hooks:
-      - id: mypy
-        args: ["--ignore-missing-imports"]
-        additional_dependencies: ["types-requests"]
-
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.2
     hooks:
@@ -90,7 +83,7 @@ repos:
           - --schemafile
           - https://json.schemastore.org/pre-commit-config.json
       - id: check-github-workflows
-      - id: check-dependabot
+      - id: check-renovate
       - id: check-jsonschema
         name: Validate Home Assistant add-on config schema
         files: ^[^/]+/config\.json$
@@ -99,3 +92,20 @@ repos:
           - python
           - --schemafile
           - https://raw.githubusercontent.com/frenck/action-addon-linter/v2.21.0/src/config.schema.json
+      - id: check-jsonschema
+        name: Validate Home Assistant add-on build schema
+        files: ^[^/]+/build\.ya?ml$
+        args:
+          - --regex-variant
+          - python
+          - --schemafile
+          - https://raw.githubusercontent.com/frenck/action-addon-linter/v2.21.0/src/build.schema.json
+
+  - repo: local
+    hooks:
+      - id: addon-lint
+        name: HA addon lint
+        entry: scripts/addon-lint.sh
+        language: script
+        files: ^[^/]+/config\.json$
+        pass_filenames: true
