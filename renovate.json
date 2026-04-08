@@ -9,7 +9,7 @@
     {
       "customType": "regex",
       "description": "Home Assistant add-on base images in build.yaml files",
-      "fileMatch": ["(^|/)build\\.yaml$"],
+      "managerFilePatterns": ["(^|/)build\\.yaml$"],
       "matchStrings": [
         "\\s+(?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
       ],
@@ -19,7 +19,7 @@
     {
       "customType": "regex",
       "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
-      "fileMatch": [
+      "managerFilePatterns": [
         "^birdnet_audio_stream/Dockerfile$",
         "^container_info_mqtt/Dockerfile$",
         "^ffmpeg_snapshotter/Dockerfile$",
@@ -33,7 +33,7 @@
       ],
       "datasourceTemplate": "repology",
       "versioningTemplate": "loose",
-      "lookupNameTemplate": "alpine_3_23/{{depName}}"
+      "packageNameTemplate": "alpine_3_23/{{depName}}"
     }
   ],
   "packageRules": [
@@ -67,7 +67,7 @@
       "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.23 repo",
       "matchPackageNames": ["igt-gpu-tools"],
       "matchDatasources": ["repology"],
-      "lookupName": "alpine_edge/igt-gpu-tools"
+      "overridePackageName": "alpine_edge/igt-gpu-tools"
     }
   ]
 }
