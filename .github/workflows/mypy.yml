@@ -30,3 +30,15 @@ jobs:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
       - run: uv run mypy ${{ matrix.addon }}
+
+  mypy-all:
+    needs: mypy
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check matrix results
+        run: |
+          if [[ "${{ needs.mypy.result }}" != "success" ]]; then
+            echo "mypy matrix failed"
+            exit 1
+          fi
