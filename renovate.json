@@ -54,12 +54,12 @@
       "groupName": "dev container"
     },
     {
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "matchPackageNames": ["/home-assistant/"],
       "groupName": "home-assistant base images"
     },
     {
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "matchDatasources": ["repology"],
       "groupName": "alpine apk packages"
     },
