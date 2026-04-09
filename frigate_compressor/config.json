@@ -22,21 +22,21 @@
       "continuous": {
         "quality": 28,
         "scale_mode": "none",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "none",
         "fps_value": 1.0
       },
       "motion": {
         "quality": 26,
         "scale_mode": "halve",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "none",
         "fps_value": 1.0
       },
       "object": {
         "quality": 22,
         "scale_mode": "none",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "none",
         "fps_value": 1.0
       }
@@ -46,21 +46,21 @@
       "continuous": {
         "quality": 34,
         "scale_mode": "halve",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "cap",
         "fps_value": 4.0
       },
       "motion": {
         "quality": 30,
         "scale_mode": "halve",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "cap",
         "fps_value": 8.0
       },
       "object": {
         "quality": 26,
         "scale_mode": "halve",
-        "scale_value": "iw/2:ih/2",
+        "scale_value": "",
         "fps_mode": "cap",
         "fps_value": 8.0
       }
