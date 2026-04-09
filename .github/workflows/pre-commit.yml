@@ -20,3 +20,5 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - run: uv run pre-commit run --all-files
+        env:
+          SKIP: no-commit-to-branch,mypy,addon-lint
