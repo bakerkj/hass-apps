@@ -20,13 +20,12 @@ jobs:
         with:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
-      - run:
-          uv run pytest tests/ -m "not integration" --junit-xml=junit-unit.xml
-      - uses: actions/upload-artifact@v7
-        if: always()
+      - run: uv run pytest tests/ -m "not integration" --junit-xml=junit.xml
+      - uses: EnricoMi/publish-unit-test-result-action@v2
+        if: ${{ !cancelled() }}
         with:
-          name: junit-unit
-          path: junit-unit.xml
+          check_name: "Unit test results"
+          files: junit.xml
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -39,24 +38,9 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: sudo apt-get install -y ffmpeg
       - run:
-          uv run pytest tests/ -m integration -v --no-cov
-          --junit-xml=junit-integration.xml
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: junit-integration
-          path: junit-integration.xml
-
-  publish-results:
-    needs: [tests, integration-tests]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: junit-*
-          merge-multiple: true
+          uv run pytest tests/ -m integration -v --no-cov --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
         with:
-          files: junit-*.xml
+          check_name: "Integration test results"
+          files: junit.xml
