@@ -880,14 +880,15 @@ def compress_one(
         filepath, tmpfile, encoder, tier, camera, recording_type, cfg
     )
 
+    dry = "DRY RUN " if cfg.dry_run else ""
     log(
         "INFO",
-        f"[{camera}] tier={tier} type={recording_type} {_display_path(filepath)} ({_fmt(size_before)})",
+        f"[{camera}] {dry}tier={tier} type={recording_type} "
+        f"{_display_path(filepath)} ({_fmt(size_before)})",
     )
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
     if cfg.dry_run:
-        log("INFO", f"[{camera}] DRY RUN: skipping ffmpeg — no files modified")
         return True
 
     t_start = time.monotonic()
