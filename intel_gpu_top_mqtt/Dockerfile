@@ -7,7 +7,7 @@ FROM ${BUILD_FROM}
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN apk add --no-cache \
-      python3=3.12.12-r0 \
+      python3=3.12.13-r0 \
       py3-paho-mqtt=1.6.1-r3 \
  && apk add --no-cache \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
