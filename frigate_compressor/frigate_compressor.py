@@ -521,8 +521,6 @@ _ENCODER_SELF_TEST_CMDS: dict[str, list[str]] = {
         "lavfi",
         "-i",
         "testsrc2=duration=1:size=320x240:rate=10",
-        "-vf",
-        "format=nv12,hwupload=extra_hw_frames=4",
         "-c:v",
         "h264_qsv",
         "-global_quality",
@@ -610,10 +608,14 @@ def check_encoder_works(encoder: str) -> tuple[bool, str]:
         return False, f"failed to invoke ffmpeg: {e}"
 
     if result.returncode != 0:
-        err = (result.stderr or "").strip().splitlines()
-        # Surface the most useful line — the last non-empty stderr line is
-        # almost always the actual error from the driver.
-        msg = err[-1] if err else f"rc={result.returncode}"
+        # Concatenate all non-empty stderr lines so the actual driver error
+        # (e.g. "Error creating a MFX session: -9", which appears EARLY)
+        # isn't lost behind ffmpeg's generic trailing line ("Error opening
+        # output files: Invalid argument").
+        err_lines = [
+            line.strip() for line in (result.stderr or "").splitlines() if line.strip()
+        ]
+        msg = " | ".join(err_lines) if err_lines else f"rc={result.returncode}"
         return False, msg[:FFMPEG_STDERR_MAX_LEN]
 
     return True, "ok"
