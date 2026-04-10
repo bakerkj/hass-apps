@@ -31,16 +31,16 @@ Tier 1 applies first (`tier1.min_days` days old). Tier 2 applies later
 
 ## Configuration
 
-| Option                       | Default                     | Description                                |
-| ---------------------------- | --------------------------- | ------------------------------------------ |
-| `encoder`                    | `qsv`                       | `qsv` (Intel QSV), `nvenc` (NVIDIA), `cpu` |
-| `max_parallel_jobs`          | `2`                         | Concurrent ffmpeg processes                |
-| `housekeeping_interval_days` | `7`                         | How often to prune DB and log summary      |
-| `frigate_db`                 | `/config/frigate.db`        | Path to Frigate's SQLite DB                |
-| `recordings_dir`             | `/media/frigate/recordings` | Path to Frigate recordings                 |
-| `compress_db`                | `/data/compress.db`         | Path to compression tracking DB            |
-| `log_level`                  | `INFO`                      | `DEBUG`, `INFO`, `WARNING`, `ERROR`        |
-| `dry_run`                    | `true`                      | Log actions only — no files or DB writes   |
+| Option                       | Default                     | Description                                                                      |
+| ---------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `encoder`                    | `qsv`                       | `qsv` (Intel libmfx), `vaapi` (Intel/AMD direct VA-API), `nvenc` (NVIDIA), `cpu` |
+| `max_parallel_jobs`          | `2`                         | Concurrent ffmpeg processes                                                      |
+| `housekeeping_interval_days` | `7`                         | How often to prune DB and log summary                                            |
+| `frigate_db`                 | `/config/frigate.db`        | Path to Frigate's SQLite DB                                                      |
+| `recordings_dir`             | `/media/frigate/recordings` | Path to Frigate recordings                                                       |
+| `compress_db`                | `/data/compress.db`         | Path to compression tracking DB                                                  |
+| `log_level`                  | `INFO`                      | `DEBUG`, `INFO`, `WARNING`, `ERROR`                                              |
+| `dry_run`                    | `true`                      | Log actions only — no files or DB writes                                         |
 
 ### First-run safety: `dry_run`
 
@@ -152,10 +152,22 @@ camera_overrides:
 Each entry must have `name`, `tier` (1 or 2), and `recording_type`
 (`continuous`, `motion`, or `object`). All other fields are optional.
 
-## Switching to NVIDIA GPU
+## Choosing the encoder
 
-Change `encoder` to `nvenc` in the add-on options. No other changes needed.
-Already-compressed files are not re-processed.
+| `encoder` | When to use                                                                                         |
+| --------- | --------------------------------------------------------------------------------------------------- |
+| `qsv`     | Intel iGPU via Intel's libmfx/Media SDK. Most mature path on Intel.                                 |
+| `vaapi`   | Intel iGPU (or AMD GPU with Mesa) via direct VA-API. More reliable on Linux when libmfx misbehaves. |
+| `nvenc`   | NVIDIA discrete GPU via NVENC.                                                                      |
+| `cpu`     | Software libx264. Fallback when no GPU is available.                                                |
+
+Switching is just a config change — no other changes needed. Already-compressed
+files are not re-processed.
+
+At startup the add-on runs a 1-second synthetic encode against the chosen
+encoder and aborts (in non-`dry_run` mode) if the GPU/driver/cgroup is not
+reachable, so misconfiguration shows up immediately rather than as a flood of
+per-file errors.
 
 ## Inspecting the compression database
 
