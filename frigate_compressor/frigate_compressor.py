@@ -767,9 +767,13 @@ _ENCODER_PARAMS: dict[str, dict] = {
         "hwaccel_extra": ["-hwaccel_device", "/dev/dri/renderD128"],
         "codec": "h264_vaapi",
         "quality_flag": "-qp",
-        # h264_vaapi uses -compression_level (1=high quality/slow ... 7=fast).
+        # h264_vaapi uses -compression_level. On Intel iHD VA-API, level 4
+        # (the driver default) is the sweet spot: empirical benchmark on 10
+        # files × 10 iters showed level 1 is ~29% slower AND produces ~2%
+        # LARGER total output than level 4. Levels 4 and 7 are essentially
+        # identical. See "Choosing the encoder" in README.md.
         "preset_flag": "-compression_level",
-        "preset": "1",
+        "preset": "4",
     },
     "nvenc": {
         "hwaccel": ("cuda", "cuda"),
