@@ -26,10 +26,13 @@ from fc_helpers import _make_config
         ("none", "", "cpu", None, ""),
         ("halve", "", "cpu", None, "scale=iw/2:ih/2"),
         ("halve", "", "qsv", None, "scale_qsv=iw/2:ih/2"),
+        ("halve", "", "vaapi", None, "scale_vaapi=iw/2:ih/2"),
         ("fixed", "1280:720", "cpu", None, "scale=1280:720"),
         ("fixed", "1280:720", "qsv", None, "scale_qsv=1280:720"),
+        ("fixed", "1280:720", "vaapi", None, "scale_vaapi=1280:720"),
         ("fraction", "0.5", "cpu", (1920, 1080), "scale=960:540"),
         ("fraction", "0.5", "qsv", (1920, 1080), "scale_qsv=960:540"),
+        ("fraction", "0.5", "vaapi", (1920, 1080), "scale_vaapi=960:540"),
         ("fraction", "0.5", "cpu", None, "scale=iw/2:ih/2"),
         ("fraction", "not_a_float", "cpu", (1920, 1080), "scale=iw/2:ih/2"),
         ("bogus", "", "cpu", None, ""),
@@ -98,6 +101,23 @@ def test_build_ffmpeg_cmd_qsv(tmp_path):
     assert "h264_qsv" in cmd
     assert "-hwaccel" in cmd
     assert "qsv" in cmd
+    # qsv uses -global_quality and -preset
+    assert "-global_quality" in cmd
+    assert "-preset" in cmd
+
+
+def test_build_ffmpeg_cmd_vaapi(tmp_path):
+    cmd = _cmd(tmp_path, encoder="vaapi")
+    assert "h264_vaapi" in cmd
+    assert "-hwaccel" in cmd
+    assert "vaapi" in cmd
+    # vaapi needs an explicit render node — auto-detect is unreliable
+    assert "-hwaccel_device" in cmd
+    assert "/dev/dri/renderD128" in cmd
+    # vaapi uses -qp and -compression_level (not -preset)
+    assert "-qp" in cmd
+    assert "-compression_level" in cmd
+    assert "-preset" not in cmd
 
 
 def test_build_ffmpeg_cmd_nvenc(tmp_path):

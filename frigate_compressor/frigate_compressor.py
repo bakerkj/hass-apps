@@ -492,6 +492,8 @@ def detect_encoder(preferred: str) -> str:
         output = result.stdout + result.stderr
         if preferred == "qsv" and "h264_qsv" in output:
             return "qsv"
+        if preferred == "vaapi" and "h264_vaapi" in output:
+            return "vaapi"
         if preferred == "nvenc" and "h264_nvenc" in output:
             return "nvenc"
     except Exception as e:
@@ -524,6 +526,27 @@ _ENCODER_SELF_TEST_CMDS: dict[str, list[str]] = {
         "-c:v",
         "h264_qsv",
         "-global_quality",
+        "28",
+        "-f",
+        "null",
+        "-",
+    ],
+    "vaapi": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-vaapi_device",
+        "/dev/dri/renderD128",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=duration=1:size=320x240:rate=10",
+        "-vf",
+        "format=nv12,hwupload",
+        "-c:v",
+        "h264_vaapi",
+        "-qp",
         "28",
         "-f",
         "null",
@@ -698,7 +721,11 @@ def _build_scale_filter(
     else:
         return ""
 
-    return f"scale_qsv={dims}" if encoder == "qsv" else f"scale={dims}"
+    if encoder == "qsv":
+        return f"scale_qsv={dims}"
+    if encoder == "vaapi":
+        return f"scale_vaapi={dims}"
+    return f"scale={dims}"
 
 
 def _build_fps_filter(mode: str, value: float, source_fps: float | None) -> str:
@@ -727,20 +754,37 @@ def _build_fps_filter(mode: str, value: float, source_fps: float | None) -> str:
 _ENCODER_PARAMS: dict[str, dict] = {
     "qsv": {
         "hwaccel": ("qsv", "qsv"),
+        "hwaccel_extra": [],
         "codec": "h264_qsv",
         "quality_flag": "-global_quality",
+        "preset_flag": "-preset",
         "preset": "slower",
+    },
+    "vaapi": {
+        "hwaccel": ("vaapi", "vaapi"),
+        # VA-API needs an explicit render node — auto-detect is unreliable
+        # when libva probes wayland/X11 first.
+        "hwaccel_extra": ["-hwaccel_device", "/dev/dri/renderD128"],
+        "codec": "h264_vaapi",
+        "quality_flag": "-qp",
+        # h264_vaapi uses -compression_level (1=high quality/slow ... 7=fast).
+        "preset_flag": "-compression_level",
+        "preset": "1",
     },
     "nvenc": {
         "hwaccel": ("cuda", "cuda"),
+        "hwaccel_extra": [],
         "codec": "h264_nvenc",
         "quality_flag": "-cq",
+        "preset_flag": "-preset",
         "preset": "p4",
     },
     "cpu": {
         "hwaccel": None,
+        "hwaccel_extra": [],
         "codec": "libx264",
         "quality_flag": "-crf",
+        "preset_flag": "-preset",
         "preset": "fast",
     },
 }
@@ -786,7 +830,13 @@ def build_ffmpeg_cmd(
 
     enc = _ENCODER_PARAMS.get(encoder, _ENCODER_PARAMS["cpu"])
     hwaccel_args = (
-        ["-hwaccel", enc["hwaccel"][0], "-hwaccel_output_format", enc["hwaccel"][1]]
+        [
+            "-hwaccel",
+            enc["hwaccel"][0],
+            "-hwaccel_output_format",
+            enc["hwaccel"][1],
+            *enc["hwaccel_extra"],
+        ]
         if enc["hwaccel"]
         else []
     )
@@ -803,7 +853,7 @@ def build_ffmpeg_cmd(
         enc["codec"],
         enc["quality_flag"],
         str(quality),
-        "-preset",
+        enc["preset_flag"],
         enc["preset"],
         *common_out,
     ]
