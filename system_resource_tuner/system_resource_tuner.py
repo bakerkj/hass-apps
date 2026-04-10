@@ -562,17 +562,43 @@ def list_process_threads(
     return tids
 
 
+_NICE_RESCAN_PASSES = 3
+
+
 def apply_process_nice(
     tuning: ProcessTuning,
     host_pid: int,
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
+    """Apply nice value to every thread of the process.
+
+    Linux nice values are per-task, not per-process: ``setpriority(
+    PRIO_PROCESS, tid, nice)`` only updates the single task whose TID is
+    passed.  Worker threads keep their original nice unless we iterate over
+    /proc/<pid>/task/* and call setpriority for each TID.
+
+    To close the race window where a thread is created between scan and
+    apply (the new thread inherits its parent's nice via clone(2), which
+    may still be the *old* nice if the parent hasn't been updated yet),
+    we re-scan up to ``_NICE_RESCAN_PASSES`` times until no new TIDs
+    appear.  Bounded so a pathological process spawning short-lived
+    threads can't loop us forever.
+    """
     if tuning.nice is None:
         raise ValueError("apply_process_nice called with tuning.nice=None")
 
-    current_nice = read_process_nice(host_pid, tuning.container_label, log)
-    if current_nice is not None and current_nice == tuning.nice:
+    thread_ids = list_process_threads(host_pid, tuning.container_label, log)
+    if not thread_ids:
+        return
+
+    # Fast path: skip the syscalls if every thread already has the desired
+    # nice value.  Avoids log noise when nothing has changed since the
+    # previous reconcile pass.
+    if all(
+        read_process_nice(tid, tuning.container_label, log) == tuning.nice
+        for tid in thread_ids
+    ):
         log.debug(
             "No process nice change needed for container=%s host_pid=%d",
             tuning.container_label,
@@ -582,47 +608,73 @@ def apply_process_nice(
 
     if dry_run:
         log.info(
-            "DRY RUN: setpriority container=%s host_pid=%d nice=%d",
+            "DRY RUN: setpriority container=%s host_pid=%d threads=%d nice=%d",
             tuning.container_label,
             host_pid,
+            len(thread_ids),
             tuning.nice,
         )
         return
 
-    try:
-        os.setpriority(os.PRIO_PROCESS, host_pid, tuning.nice)
-    except ProcessLookupError:
+    failures: list[str] = []
+    seen: set[int] = set()
+    changed = 0
+    rescans = 0
+
+    for _ in range(_NICE_RESCAN_PASSES):
+        current = list_process_threads(host_pid, tuning.container_label, log)
+        if not current:
+            break
+        rescans += 1
+        new_tids = [tid for tid in current if tid not in seen]
+        if not new_tids:
+            break
+        for tid in new_tids:
+            try:
+                os.setpriority(os.PRIO_PROCESS, tid, tuning.nice)
+                changed += 1
+            except ProcessLookupError:
+                log.debug(
+                    "Task disappeared while setting nice: container=%s host_pid=%d task_pid=%d",
+                    tuning.container_label,
+                    host_pid,
+                    tid,
+                )
+            except PermissionError as e:
+                failures.append(f"task_pid={tid}: {e}")
+            except OSError as e:
+                failures.append(f"task_pid={tid}: {e}")
+        seen.update(current)
+
+    if failures:
+        preview = "; ".join(failures[:3])
+        if len(failures) > 3:
+            preview += f"; ... (+{len(failures) - 3} more)"
         log.error(
-            "Failed setting nice=%d for container=%s host_pid=%d: process no longer exists",
+            "Failed applying nice=%d for container=%s host_pid=%d: %s",
             tuning.nice,
             tuning.container_label,
             host_pid,
+            preview,
         )
         return
-    except PermissionError as e:
-        log.error(
-            "Failed setting nice=%d for container=%s host_pid=%d: %s",
-            tuning.nice,
+
+    if changed == 0:
+        log.warning(
+            "No threads were updated for container=%s host_pid=%d",
             tuning.container_label,
             host_pid,
-            e,
-        )
-        return
-    except OSError as e:
-        log.error(
-            "Failed setting nice=%d for container=%s host_pid=%d: %s",
-            tuning.nice,
-            tuning.container_label,
-            host_pid,
-            e,
         )
         return
 
     log.info(
-        "Process nice updated for container=%s host_pid=%d to nice=%d",
+        "Process nice updated for container=%s host_pid=%d to nice=%d "
+        "across %d thread(s) in %d scan(s)",
         tuning.container_label,
         host_pid,
         tuning.nice,
+        changed,
+        rescans,
     )
 
 

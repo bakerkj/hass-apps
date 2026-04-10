@@ -436,3 +436,239 @@ def test_parse_host_process_targets_unconfigured_entry_skipped():
     raw = [{"process_match_regex": "foo"}]  # no nice or cpuset_cpus
     result = srt.parse_host_process_targets(raw, _LOG)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# apply_process_nice
+#
+# These tests pin down the bounded re-scan loop and per-thread setpriority
+# behavior.  Linux nice is per-task, so a regression that reverts to a
+# single setpriority(PRIO_PROCESS, host_pid, ...) call would only update
+# the main thread and leave worker threads at the old nice — exactly what
+# happened before this code was rewritten.
+# ---------------------------------------------------------------------------
+
+
+def _process_tuning(nice: int | None = 5) -> srt.ProcessTuning:
+    """Build a minimal ProcessTuning whose only configured field is nice."""
+    return srt.ProcessTuning(
+        container=None,
+        process_match_regex="",
+        nice=nice,
+        cpuset_cpus=None,
+    )
+
+
+class _FakeProcStub:
+    """Test stub: replaces list_process_threads + read_process_nice + os.setpriority.
+
+    Tracks which TIDs setpriority was called with so tests can assert the
+    correct iteration / re-scan behavior.
+    """
+
+    def __init__(
+        self,
+        scan_results: list[list[int]],
+        initial_nice: int = 0,
+        setpriority_raises: dict[int, Exception] | None = None,
+    ):
+        # scan_results[i] is what list_process_threads returns on the i-th
+        # call.  After exhausting the list, the last entry is repeated.
+        self._scans = list(scan_results)
+        self._scan_idx = 0
+        self._initial_nice = initial_nice
+        self._setpriority_raises = setpriority_raises or {}
+        # Per-tid current nice; reads return this, setpriority updates it
+        # (so the fast-path "all match" check sees the right values).
+        self._current: dict[int, int] = {}
+        # Recording of every (tid, nice) call for assertions.
+        self.setpriority_calls: list[tuple[int, int]] = []
+        self.scan_count = 0
+        self.read_calls: list[int] = []
+
+    def list_process_threads(self, host_pid, label, log):
+        self.scan_count += 1
+        idx = min(self._scan_idx, len(self._scans) - 1)
+        self._scan_idx += 1
+        return list(self._scans[idx])
+
+    def read_process_nice(self, tid, label, log):
+        self.read_calls.append(tid)
+        return self._current.get(tid, self._initial_nice)
+
+    def setpriority(self, which, tid, nice):
+        if tid in self._setpriority_raises:
+            raise self._setpriority_raises[tid]
+        self.setpriority_calls.append((tid, nice))
+        self._current[tid] = nice
+
+
+def _install_stub(monkeypatch, stub: _FakeProcStub) -> None:
+    monkeypatch.setattr(srt, "list_process_threads", stub.list_process_threads)
+    monkeypatch.setattr(srt, "read_process_nice", stub.read_process_nice)
+    monkeypatch.setattr(srt.os, "setpriority", stub.setpriority)
+
+
+def test_apply_process_nice_raises_when_nice_is_none():
+    with pytest.raises(ValueError, match="tuning.nice=None"):
+        srt.apply_process_nice(_process_tuning(nice=None), 1234, False, _LOG)
+
+
+def test_apply_process_nice_returns_when_no_threads(monkeypatch):
+    """If list_process_threads returns None (process gone) we exit silently."""
+    monkeypatch.setattr(srt, "list_process_threads", lambda *a, **kw: None)
+    # Should not raise even though setpriority is unmocked — it must never
+    # be called.
+    monkeypatch.setattr(
+        srt.os, "setpriority", lambda *a, **kw: pytest.fail("setpriority called")
+    )
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+
+def test_apply_process_nice_skip_when_all_threads_already_match(monkeypatch):
+    """Fast path: every thread already has the desired nice, no syscalls."""
+    stub = _FakeProcStub(scan_results=[[100, 101, 102]], initial_nice=5)
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    assert stub.setpriority_calls == []  # no writes
+    assert stub.scan_count == 1  # only the fast-path scan, no re-scans
+    assert stub.read_calls == [100, 101, 102]
+
+
+def test_apply_process_nice_updates_all_threads_in_one_scan(monkeypatch):
+    """Steady-state process: one scan finds all threads, all get updated."""
+    stub = _FakeProcStub(scan_results=[[100, 101, 102]], initial_nice=0)
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    # Every TID got setpriority called exactly once with the new value.
+    assert sorted(stub.setpriority_calls) == [(100, 5), (101, 5), (102, 5)]
+    # Two scans total: 1 for the fast-path check + 1 inside the apply loop.
+    # The apply loop's second iteration sees no new TIDs and breaks.
+    assert stub.scan_count == 3  # fast-path + 2 loop iterations (one finds nothing new)
+
+
+def test_apply_process_nice_dry_run_does_not_call_setpriority(monkeypatch):
+    stub = _FakeProcStub(scan_results=[[100, 101]], initial_nice=0)
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, dry_run=True, log=_LOG)
+
+    assert stub.setpriority_calls == []
+
+
+def test_apply_process_nice_rescan_catches_thread_spawned_during_iteration(
+    monkeypatch,
+):
+    """The race window we close: a new thread appears between scans.
+
+    First scan returns [100, 101].  Second scan returns [100, 101, 102]
+    — TID 102 was created after the fast-path scan saw the process.  The
+    re-scan loop must pick up 102 and call setpriority on it.
+    """
+    stub = _FakeProcStub(
+        scan_results=[
+            [100, 101],  # fast-path scan: nice mismatch detected on 100
+            [100, 101],  # first apply pass: update 100 and 101
+            [100, 101, 102],  # second apply pass: 102 has appeared
+            [100, 101, 102],  # third apply pass: nothing new, exit loop
+        ],
+        initial_nice=0,
+    )
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    # Every TID — including the late-arriving 102 — got nice=5.
+    assert sorted(stub.setpriority_calls) == [(100, 5), (101, 5), (102, 5)]
+
+
+def test_apply_process_nice_rescan_is_bounded(monkeypatch):
+    """A pathological process spawning fresh threads forever cannot loop us
+    forever — the loop is capped at _NICE_RESCAN_PASSES iterations."""
+    # Each scan returns two NEW TIDs that have never been seen before.
+    # Without the bound, this would loop forever.
+    stub = _FakeProcStub(
+        scan_results=[
+            [100, 101],  # fast-path scan
+            [100, 101],  # apply pass 1: process 100, 101
+            [102, 103],  # apply pass 2: process 102, 103
+            [104, 105],  # apply pass 3: process 104, 105
+            [106, 107],  # would be apply pass 4 — must NOT be reached
+        ],
+        initial_nice=0,
+    )
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    # 3 apply passes × 2 new tids each = 6 setpriority calls.  No more.
+    # If 106/107 were in the call list, the loop wasn't bounded.
+    assert sorted(stub.setpriority_calls) == [
+        (100, 5),
+        (101, 5),
+        (102, 5),
+        (103, 5),
+        (104, 5),
+        (105, 5),
+    ]
+
+
+def test_apply_process_nice_skips_dead_threads(monkeypatch):
+    """A thread dying mid-iteration (ProcessLookupError) is logged at DEBUG
+    and skipped — it does not abort the rest of the iteration."""
+    stub = _FakeProcStub(
+        scan_results=[[100, 101, 102]],
+        initial_nice=0,
+        setpriority_raises={101: ProcessLookupError("died")},
+    )
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    # 100 and 102 should still have been updated; 101 was skipped.
+    tids_updated = sorted(tid for tid, _ in stub.setpriority_calls)
+    assert tids_updated == [100, 102]
+
+
+def test_apply_process_nice_permission_error_aborts_with_log(monkeypatch, caplog):
+    """A PermissionError is collected and reported as an error — the
+    function returns without claiming success."""
+    stub = _FakeProcStub(
+        scan_results=[[100, 101]],
+        initial_nice=0,
+        setpriority_raises={
+            100: PermissionError("EPERM"),
+            101: PermissionError("EPERM"),
+        },
+    )
+    _install_stub(monkeypatch, stub)
+
+    with caplog.at_level(logging.ERROR):
+        srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    assert any("Failed applying nice=5" in r.message for r in caplog.records)
+
+
+def test_apply_process_nice_does_not_redo_already_seen_tids(monkeypatch):
+    """The seen-set prevents re-calling setpriority on the same TID across
+    rescans, even when the process keeps the same threads."""
+    stub = _FakeProcStub(
+        scan_results=[
+            [100, 101],
+            [100, 101],
+            [100, 101],
+            [100, 101],
+        ],
+        initial_nice=0,
+    )
+    _install_stub(monkeypatch, stub)
+
+    srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
+
+    # Each TID should have setpriority called exactly once, not on every
+    # re-scan iteration.
+    assert sorted(stub.setpriority_calls) == [(100, 5), (101, 5)]
