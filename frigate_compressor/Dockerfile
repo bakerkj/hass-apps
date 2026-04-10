@@ -1,6 +1,9 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
 RUN apk add --no-cache \
   python3=3.12.12-r0 \
   ffmpeg=8.0.1-r1 \

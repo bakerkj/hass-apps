@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sqlite3
 import subprocess
@@ -103,6 +104,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+
+# Version is supplied at build time by the HA Supervisor (BUILD_VERSION build
+# arg, sourced from config.json). config.json is the single source of truth.
+__version__ = os.environ.get("ADDON_VERSION", "dev")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1435,7 +1440,7 @@ def main() -> int:
     frigate_lock = threading.Lock()
 
     log("INFO", "════════════════════════════════════════")
-    log("INFO", "Frigate Compressor v1.0 starting")
+    log("INFO", f"Frigate Compressor v{__version__} starting")
     if cfg.dry_run:
         log("INFO", "  *** DRY RUN MODE — no files or databases will be modified ***")
     log("INFO", f"  Encoder        : {encoder}")
