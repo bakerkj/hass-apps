@@ -2,7 +2,7 @@ ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
-  python3=3.12.12-r0 \
+  python3=3.12.13-r0 \
   ffmpeg=8.0.1-r1 \
   libva=2.22.0-r1 \
   intel-media-driver=25.4.6-r0 \
