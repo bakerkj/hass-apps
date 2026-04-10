@@ -11,7 +11,7 @@ ENV ADDON_VERSION=${BUILD_VERSION}
 # repo to the second apk call only, so future stable updates can't
 # accidentally come from edge.
 RUN apk add --no-cache \
-      python3=3.12.12-r0 \
+      python3=3.12.13-r0 \
       ffmpeg=8.0.1-r1 \
       libva=2.22.0-r1 \
       intel-media-driver=25.4.6-r0 \
