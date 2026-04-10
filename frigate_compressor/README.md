@@ -40,6 +40,21 @@ Tier 1 applies first (`tier1.min_days` days old). Tier 2 applies later
 | `recordings_dir`             | `/media/frigate/recordings` | Path to Frigate recordings                 |
 | `compress_db`                | `/data/compress.db`         | Path to compression tracking DB            |
 | `log_level`                  | `INFO`                      | `DEBUG`, `INFO`, `WARNING`, `ERROR`        |
+| `dry_run`                    | `true`                      | Log actions only — no files or DB writes   |
+
+### First-run safety: `dry_run`
+
+`dry_run` defaults to **`true`**. In this mode the add-on will:
+
+- Scan Frigate's DB and identify every recording that would be compressed
+- Log the exact ffmpeg command, target tier, and expected savings for each one
+- **Not** invoke ffmpeg, write to `compress.db`, modify any recording file, or
+  update `segment_size` in Frigate's DB
+
+This lets you confirm the encoder, tier thresholds, and per-camera overrides
+behave the way you expect before letting the add-on touch real recordings. Once
+you're happy with what the logs show, set `dry_run: false` to enable
+compression.
 
 ### Per-tier, per-type settings
 

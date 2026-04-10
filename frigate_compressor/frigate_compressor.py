@@ -95,14 +95,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sqlite3
 import subprocess
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+
+# Version is supplied at build time by the HA Supervisor (BUILD_VERSION build
+# arg, sourced from config.json). config.json is the single source of truth.
+__version__ = os.environ.get("ADDON_VERSION", "dev")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -726,6 +732,15 @@ FFMPEG_TIMEOUT_SEC = 300
 # Max bytes of ffmpeg stderr text stored in the compress DB error_msg column.
 FFMPEG_STDERR_MAX_LEN = 300
 
+# Bounds on the main loop's sleep between compression passes.
+# - MIN avoids hammering Frigate's DB when a recording is just barely
+#   under the eligibility threshold.
+# - MAX caps the wait so that even pathological states (frigate paused,
+#   long fallback paths) re-check at least every 10 minutes instead of
+#   sleeping for hours or days at a time.
+MIN_SLEEP_SEC = 60.0
+MAX_SLEEP_SEC = 600.0
+
 
 @dataclass
 class CompressorContext:
@@ -865,14 +880,15 @@ def compress_one(
         filepath, tmpfile, encoder, tier, camera, recording_type, cfg
     )
 
+    dry = "DRY RUN " if cfg.dry_run else ""
     log(
         "INFO",
-        f"[{camera}] tier={tier} type={recording_type} {filepath.name} ({_fmt(size_before)})",
+        f"[{camera}] {dry}tier={tier} type={recording_type} "
+        f"{_display_path(filepath)} ({_fmt(size_before)})",
     )
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
     if cfg.dry_run:
-        log("INFO", f"[{camera}] DRY RUN: skipping ffmpeg — no files modified")
         return True
 
     t_start = time.monotonic()
@@ -892,7 +908,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg timeout ({FFMPEG_TIMEOUT_SEC}s): {filepath.name}",
+            f"[{camera}] ffmpeg timeout after {duration:.1f}s "
+            f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
         )
         return False
     except Exception as e:
@@ -905,7 +922,10 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg=f"ffmpeg exception: {e}",
         )
-        log("ERROR", f"[{camera}] ffmpeg raised unexpected exception: {e}")
+        log(
+            "ERROR",
+            f"[{camera}] ffmpeg raised unexpected exception after {duration:.1f}s: {e}",
+        )
         return False
 
     duration = time.monotonic() - t_start
@@ -922,7 +942,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg failed (rc={result.returncode}): {filepath.name}",
+            f"[{camera}] ffmpeg failed after {duration:.1f}s "
+            f"(rc={result.returncode}): {_display_path(filepath)}",
         )
         if err:
             log("DEBUG", f"[{camera}]   stderr: {err}")
@@ -936,7 +957,11 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg="output missing",
         )
-        log("WARNING", f"[{camera}] output missing after encode: {filepath.name}")
+        log(
+            "WARNING",
+            f"[{camera}] output missing after encode ({duration:.1f}s): "
+            f"{_display_path(filepath)}",
+        )
         return False
 
     size_after = tmpfile.stat().st_size
@@ -953,7 +978,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] output suspiciously small — keeping original: {filepath.name}",
+            f"[{camera}] output suspiciously small after {duration:.1f}s — "
+            f"keeping original: {_display_path(filepath)}",
         )
         return False
 
@@ -971,7 +997,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original deleted during compression — discarding output: {filepath.name}",
+            f"[{camera}] original deleted during compression ({duration:.1f}s) — "
+            f"discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -987,7 +1014,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original changed during compression — discarding output: {filepath.name}",
+            f"[{camera}] original changed during compression ({duration:.1f}s) — "
+            f"discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -1010,13 +1038,16 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] recording removed from Frigate DB during compression — discarding output to prevent orphan: {filepath.name}",
+            f"[{camera}] recording removed from Frigate DB during compression "
+            f"({duration:.1f}s) — discarding output to prevent orphan: "
+            f"{_display_path(filepath)}",
         )
         return False
 
     # Atomically replace original.
     log(
-        "INFO", f"[{camera}] Replacing original with compressed output: {filepath.name}"
+        "INFO",
+        f"[{camera}] Replacing original with compressed output: {_display_path(filepath)}",
     )
     try:
         tmpfile.replace(filepath)
@@ -1029,7 +1060,10 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg=f"replace failed: {e}",
         )
-        log("ERROR", f"[{camera}] failed to replace original: {e}")
+        log(
+            "ERROR",
+            f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
+        )
         return False
 
     saved = size_before - size_after
@@ -1136,8 +1170,13 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
 def time_until_next_eligible(ctx: CompressorContext) -> float:
     """
-    Returns seconds until the next recording becomes eligible for tier 1 compression.
-    Returns 3600 if nothing is pending (no future candidates in the DB).
+    Returns seconds until the next recording becomes eligible for tier 1
+    compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
+
+    Returns ``MAX_SLEEP_SEC`` if nothing is pending (no future candidates in
+    the DB) — which keeps the daemon waking up at least every 10 minutes to
+    re-check rather than sleeping forever if Frigate is paused or has no
+    recordings.
     """
     cfg = ctx.cfg
     tier1_cutoff = time.time() - (cfg.tier1.min_days * 86400)
@@ -1154,10 +1193,10 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
         ).fetchone()
 
     if row is None:
-        return 3600.0
+        return MAX_SLEEP_SEC
 
     eligible_at = row["start_time"] + (cfg.tier1.min_days * 86400)
-    return max(60.0, eligible_at - time.time())
+    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, eligible_at - time.time()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1204,7 +1243,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         if not fpath.exists():
             log(
                 "DEBUG",
-                f"[{row['camera']}] segment_update_failed file no longer on disk, skipping: {fpath.name}",
+                f"[{row['camera']}] segment_update_failed file no longer on disk, skipping: {_display_path(fpath)}",
             )
             continue
         actual_size_mb = fpath.stat().st_size / (1024 * 1024)
@@ -1212,13 +1251,13 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             log(
                 "INFO",
                 f"[{row['camera']}] DRY RUN: would retry segment_size update"
-                f" ({actual_size_mb:.3f}MB): {fpath.name}",
+                f" ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
             continue
         try:
             log(
                 "DEBUG",
-                f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {fpath.name}",
+                f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
             with frigate_lock:
                 frigate_rw.execute(
@@ -1236,7 +1275,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             promoted += 1
             log(
                 "INFO",
-                f"[{row['camera']}] retried segment_size update — ok: {fpath.name}",
+                f"[{row['camera']}] retried segment_size update — ok: {_display_path(fpath)}",
             )
         except Exception as e:
             log(
@@ -1346,6 +1385,22 @@ def run_housekeeping(ctx: CompressorContext) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _display_path(filepath: Path) -> str:
+    """Format a Frigate recording path for compact log display.
+
+    Frigate stores recordings as
+    ``<recordings_dir>/YYYY-MM-DD/HH/<camera>/MM.SS.mp4``.  The bare filename
+    (e.g. ``38.11.mp4``) is meaningless without the date and hour, so we
+    return ``YYYY-MM-DD/HH/MM.SS.mp4``.  The camera is already shown as a
+    log prefix, so we omit it to avoid redundancy.  Falls back to the bare
+    filename if the path is shorter than expected.
+    """
+    parts = filepath.parts
+    if len(parts) >= 4:
+        return f"{parts[-4]}/{parts[-3]}/{parts[-1]}"
+    return filepath.name
+
+
 def _fmt(n: int | float | None) -> str:
     """Human-readable byte size string."""
     if n is None:
@@ -1435,7 +1490,7 @@ def main() -> int:
     frigate_lock = threading.Lock()
 
     log("INFO", "════════════════════════════════════════")
-    log("INFO", "Frigate Compressor v1.0 starting")
+    log("INFO", f"Frigate Compressor v{__version__} starting")
     if cfg.dry_run:
         log("INFO", "  *** DRY RUN MODE — no files or databases will be modified ***")
     log("INFO", f"  Encoder        : {encoder}")
@@ -1476,7 +1531,6 @@ def main() -> int:
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
     stopping = threading.Event()
-    last_housekeeping = time.time()
     housekeeping_interval_sec = cfg.housekeeping_interval_days * 86400
 
     def handle_sig(_sig, _frame):
@@ -1486,66 +1540,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_sig)
 
     try:
-        while not stopping.is_set():
-            # ── Housekeeping ──────────────────────────────────────────────────
-            if (time.time() - last_housekeeping) >= housekeeping_interval_sec:
-                try:
-                    run_housekeeping(ctx)
-                except Exception as e:
-                    log("ERROR", f"Housekeeping failed: {e}")
-                last_housekeeping = time.time()
-
-            # ── Find eligible recordings ──────────────────────────────────────
-            try:
-                eligible = get_eligible_recordings(ctx)
-            except Exception as e:
-                log("ERROR", f"Failed to query eligible recordings: {e}")
-                stopping.wait(timeout=60)
-                continue
-
-            if eligible:
-                suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
-                log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
-
-                with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
-                    futures = {
-                        pool.submit(
-                            compress_one,
-                            r["recording_id"],
-                            r["path"],
-                            r["camera"],
-                            r["tier"],
-                            r["recording_type"],
-                            encoder,
-                            ctx,
-                        ): r
-                        for r in eligible
-                        if not stopping.is_set()
-                    }
-                    for future in as_completed(futures):
-                        if stopping.is_set():
-                            break
-                        r = futures[future]
-                        try:
-                            future.result()
-                        except Exception as e:
-                            log("ERROR", f"[{r['camera']}] unhandled error: {e}")
-                # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
-                # running jobs complete before we reach the sleep or DB close.
-
-            # ── Sleep until next recording becomes eligible ───────────────────
-            if not stopping.is_set():
-                try:
-                    sleep_sec = time_until_next_eligible(ctx)
-                except Exception as e:
-                    log("WARNING", f"time_until_next_eligible failed: {e}")
-                    sleep_sec = 3600.0
-
-                log("INFO", f"Next check in {sleep_sec / 60:.1f} min")
-
-                # stopping.wait() returns immediately when the event is set, so a
-                # signal wakes us without waiting for the full sleep duration.
-                stopping.wait(timeout=sleep_sec)
+        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec)
     finally:
         log("INFO", "Frigate Compressor stopped")
         compress_db.close()
@@ -1553,6 +1548,95 @@ def main() -> int:
         frigate_rw.close()
 
     return 0
+
+
+def run_main_loop(
+    ctx: CompressorContext,
+    encoder: str,
+    stopping: threading.Event,
+    housekeeping_interval_sec: float,
+) -> None:
+    """Process eligible recordings forever, sleeping only when caught up.
+
+    Extracted from ``main()`` so the loop's scheduling behavior (run-then-
+    re-check vs sleep-until-next) is testable in isolation.
+    """
+    cfg = ctx.cfg
+    last_housekeeping = time.time()
+
+    while not stopping.is_set():
+        # ── Housekeeping ──────────────────────────────────────────────────
+        if (time.time() - last_housekeeping) >= housekeeping_interval_sec:
+            try:
+                run_housekeeping(ctx)
+            except Exception as e:
+                log("ERROR", f"Housekeeping failed: {e}")
+            last_housekeeping = time.time()
+
+        # ── Find eligible recordings ──────────────────────────────────────
+        try:
+            eligible = get_eligible_recordings(ctx)
+        except Exception as e:
+            log("ERROR", f"Failed to query eligible recordings: {e}")
+            stopping.wait(timeout=60)
+            continue
+
+        if eligible:
+            suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
+            log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
+            camera_counts = Counter(r["camera"] for r in eligible)
+            breakdown = ", ".join(
+                f"{cam}={n}" for cam, n in sorted(camera_counts.items())
+            )
+            log("INFO", f"  per-camera: {breakdown}")
+
+            with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
+                futures = {
+                    pool.submit(
+                        compress_one,
+                        r["recording_id"],
+                        r["path"],
+                        r["camera"],
+                        r["tier"],
+                        r["recording_type"],
+                        encoder,
+                        ctx,
+                    ): r
+                    for r in eligible
+                    if not stopping.is_set()
+                }
+                for future in as_completed(futures):
+                    if stopping.is_set():
+                        break
+                    r = futures[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        log("ERROR", f"[{r['camera']}] unhandled error: {e}")
+            # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
+            # running jobs complete before we reach this point.
+
+            # We just did real work — additional recordings may have aged
+            # into eligibility while we were busy.  Loop straight back to
+            # the top so housekeeping still runs and we re-query eligible
+            # without sleeping.  Sleeping only when truly caught up means
+            # we can never fall arbitrarily far behind a steady recording
+            # rate just because the previous pass was long.
+            continue
+
+        # ── No work — sleep until the next recording becomes eligible ────
+        if not stopping.is_set():
+            try:
+                sleep_sec = time_until_next_eligible(ctx)
+            except Exception as e:
+                log("WARNING", f"time_until_next_eligible failed: {e}")
+                sleep_sec = MAX_SLEEP_SEC
+
+            log("INFO", f"Next check in {sleep_sec / 60:.1f} min")
+
+            # stopping.wait() returns immediately when the event is set, so a
+            # signal wakes us without waiting for the full sleep duration.
+            stopping.wait(timeout=sleep_sec)
 
 
 if __name__ == "__main__":
