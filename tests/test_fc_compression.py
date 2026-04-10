@@ -501,6 +501,8 @@ def test_compress_one_segment_size_update_fails(tmp_path):
         return m
 
     # sqlite3.Connection.execute is a C-level slot; wrap in a MagicMock to intercept only the segment_size UPDATE.
+    # _close_ctx() will close ctx.frigate_rw, which is now the mock — so we
+    # have to close the real connection ourselves to avoid leaking it.
     real_rw = ctx.frigate_rw
     mock_rw = MagicMock(spec=sqlite3.Connection)
     mock_rw.execute.side_effect = lambda sql, *a, **kw: (
@@ -511,14 +513,17 @@ def test_compress_one_segment_size_update_fails(tmp_path):
     mock_rw.commit.side_effect = real_rw.commit
     ctx.frigate_rw = mock_rw
 
-    with patch("subprocess.run", side_effect=fake_run):
-        result = _compress_one(ctx, src)
+    try:
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _compress_one(ctx, src)
 
-    assert result is True
-    row = _db_row(ctx)
-    assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
-    assert "locked" in row["error_msg"]
-    _close_ctx(ctx)
+        assert result is True
+        row = _db_row(ctx)
+        assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
+        assert "locked" in row["error_msg"]
+    finally:
+        real_rw.close()
+        _close_ctx(ctx)
 
 
 def test_compress_one_segment_update_failed_not_recompressed(tmp_path):
