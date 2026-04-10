@@ -1029,15 +1029,16 @@ def compress_one(
         filepath, tmpfile, encoder, tier, camera, recording_type, cfg
     )
 
-    dry = "DRY RUN " if cfg.dry_run else ""
-    log(
-        "INFO",
-        f"[{camera}] {dry}tier={tier} type={recording_type} "
-        f"{_display_path(filepath)} ({_fmt(size_before)})",
-    )
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
     if cfg.dry_run:
+        # Dry-run does no work, so the post-success summary line never runs.
+        # Emit a single self-contained INFO line here instead.
+        log(
+            "INFO",
+            f"[{camera}] DRY RUN tier={tier} type={recording_type} "
+            f"{_display_path(filepath)} ({_fmt(size_before)})",
+        )
         return True
 
     t_start = time.monotonic()
@@ -1193,9 +1194,11 @@ def compress_one(
         )
         return False
 
-    # Atomically replace original.
+    # Atomically replace original.  Logged at DEBUG only — the start line
+    # already named the file and the success summary follows immediately, so
+    # an INFO "Replacing..." line in between is just noise.
     log(
-        "INFO",
+        "DEBUG",
         f"[{camera}] Replacing original with compressed output: {_display_path(filepath)}",
     )
     try:
@@ -1216,10 +1219,13 @@ def compress_one(
         return False
 
     saved = size_before - size_after
+    pct = (saved / size_before * 100) if size_before else 0.0
     log(
         "INFO",
-        f"[{camera}] {_fmt(size_before)} → {_fmt(size_after)} "
-        f"(saved {_fmt(saved)}, {duration:.1f}s)",
+        f"[{camera}] tier={tier} type={recording_type} "
+        f"{_display_path(filepath)} "
+        f"{_fmt(size_before)} → {_fmt(size_after)} "
+        f"(saved {_fmt(saved)} / {pct:.1f}%, {duration:.1f}s)",
     )
 
     # Update segment_size in Frigate's DB (MB, float).
