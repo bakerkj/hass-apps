@@ -503,6 +503,99 @@ def detect_encoder(preferred: str) -> str:
     return "cpu"
 
 
+# Encoder-specific test commands.  Each one synthesizes a 1-second test
+# pattern with lavfi (no input file needed) and runs it through the chosen
+# hardware encoder, discarding the output.  If the encoder can't reach the
+# GPU/driver/cgroup, the command exits non-zero with a stderr message that
+# names the actual problem ("Operation not permitted", "No VA display
+# found", "Cannot load nvcuda.dll", etc.).
+_ENCODER_SELF_TEST_CMDS: dict[str, list[str]] = {
+    "qsv": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=duration=1:size=320x240:rate=10",
+        "-vf",
+        "format=nv12,hwupload=extra_hw_frames=4",
+        "-c:v",
+        "h264_qsv",
+        "-global_quality",
+        "28",
+        "-f",
+        "null",
+        "-",
+    ],
+    "nvenc": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=duration=1:size=320x240:rate=10",
+        "-c:v",
+        "h264_nvenc",
+        "-cq",
+        "28",
+        "-f",
+        "null",
+        "-",
+    ],
+    "cpu": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=duration=1:size=320x240:rate=10",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "28",
+        "-preset",
+        "ultrafast",
+        "-f",
+        "null",
+        "-",
+    ],
+}
+
+
+def check_encoder_works(encoder: str) -> tuple[bool, str]:
+    """Run a 1-second synthetic encode to confirm the encoder is reachable.
+
+    Returns (ok, message).  Used at startup to fail fast when hardware
+    acceleration is misconfigured (missing /dev/dri cgroup access, broken
+    driver, libmfx not initializing) instead of producing errors per-file.
+    """
+    cmd = _ENCODER_SELF_TEST_CMDS.get(encoder)
+    if cmd is None:
+        return False, f"unknown encoder '{encoder}'"
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "self-test ffmpeg timed out after 30s"
+    except OSError as e:
+        return False, f"failed to invoke ffmpeg: {e}"
+
+    if result.returncode != 0:
+        err = (result.stderr or "").strip().splitlines()
+        # Surface the most useful line — the last non-empty stderr line is
+        # almost always the actual error from the driver.
+        msg = err[-1] if err else f"rc={result.returncode}"
+        return False, msg[:FFMPEG_STDERR_MAX_LEN]
+
+    return True, "ok"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FFMPEG HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1474,6 +1567,21 @@ def main() -> int:
 
     encoder = detect_encoder(cfg.encoder)
     _warn_qsv_fps_conflicts(cfg, encoder)
+
+    encoder_ok, encoder_msg = check_encoder_works(encoder)
+    if encoder_ok:
+        log("INFO", f"Encoder self-test: {encoder} OK")
+    elif cfg.dry_run:
+        log(
+            "WARNING",
+            f"Encoder self-test: {encoder} FAILED — {encoder_msg}. "
+            "Continuing because dry_run is enabled, but real compression "
+            "would fail on every file.",
+        )
+    else:
+        log("ERROR", f"Encoder self-test: {encoder} FAILED — {encoder_msg}")
+        log("ERROR", "Hardware acceleration is not available. Aborting startup.")
+        return 1
 
     compress_db = open_compress_db(cfg.compress_db)
     frigate_ro = open_frigate_db(cfg.frigate_db)
