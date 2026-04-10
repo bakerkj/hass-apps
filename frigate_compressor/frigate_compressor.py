@@ -1216,10 +1216,11 @@ def compress_one(
         return False
 
     saved = size_before - size_after
+    pct = (saved / size_before * 100) if size_before else 0.0
     log(
         "INFO",
         f"[{camera}] {_fmt(size_before)} → {_fmt(size_after)} "
-        f"(saved {_fmt(saved)}, {duration:.1f}s)",
+        f"(saved {_fmt(saved)} / {pct:.1f}%, {duration:.1f}s)",
     )
 
     # Update segment_size in Frigate's DB (MB, float).
