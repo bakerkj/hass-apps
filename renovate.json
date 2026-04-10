@@ -60,6 +60,12 @@
       "matchPackageNames": ["alpine_3_23/igt-gpu-tools"],
       "matchDatasources": ["repology"],
       "overridePackageName": "alpine_edge/igt-gpu-tools"
+    },
+    {
+      "description": "onevpl-intel-gpu comes from Alpine edge/testing, not the stable Alpine 3.23 repo",
+      "matchPackageNames": ["alpine_3_23/onevpl-intel-gpu"],
+      "matchDatasources": ["repology"],
+      "overridePackageName": "alpine_edge/onevpl-intel-gpu"
     }
   ]
 }
