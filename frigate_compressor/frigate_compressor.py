@@ -872,7 +872,7 @@ def compress_one(
 
     log(
         "INFO",
-        f"[{camera}] tier={tier} type={recording_type} {filepath.name} ({_fmt(size_before)})",
+        f"[{camera}] tier={tier} type={recording_type} {_display_path(filepath)} ({_fmt(size_before)})",
     )
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
@@ -897,7 +897,7 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg timeout ({FFMPEG_TIMEOUT_SEC}s): {filepath.name}",
+            f"[{camera}] ffmpeg timeout ({FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
         )
         return False
     except Exception as e:
@@ -927,7 +927,7 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg failed (rc={result.returncode}): {filepath.name}",
+            f"[{camera}] ffmpeg failed (rc={result.returncode}): {_display_path(filepath)}",
         )
         if err:
             log("DEBUG", f"[{camera}]   stderr: {err}")
@@ -941,7 +941,10 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg="output missing",
         )
-        log("WARNING", f"[{camera}] output missing after encode: {filepath.name}")
+        log(
+            "WARNING",
+            f"[{camera}] output missing after encode: {_display_path(filepath)}",
+        )
         return False
 
     size_after = tmpfile.stat().st_size
@@ -958,7 +961,7 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] output suspiciously small — keeping original: {filepath.name}",
+            f"[{camera}] output suspiciously small — keeping original: {_display_path(filepath)}",
         )
         return False
 
@@ -976,7 +979,7 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original deleted during compression — discarding output: {filepath.name}",
+            f"[{camera}] original deleted during compression — discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -992,7 +995,7 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original changed during compression — discarding output: {filepath.name}",
+            f"[{camera}] original changed during compression — discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -1015,13 +1018,14 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] recording removed from Frigate DB during compression — discarding output to prevent orphan: {filepath.name}",
+            f"[{camera}] recording removed from Frigate DB during compression — discarding output to prevent orphan: {_display_path(filepath)}",
         )
         return False
 
     # Atomically replace original.
     log(
-        "INFO", f"[{camera}] Replacing original with compressed output: {filepath.name}"
+        "INFO",
+        f"[{camera}] Replacing original with compressed output: {_display_path(filepath)}",
     )
     try:
         tmpfile.replace(filepath)
@@ -1209,7 +1213,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         if not fpath.exists():
             log(
                 "DEBUG",
-                f"[{row['camera']}] segment_update_failed file no longer on disk, skipping: {fpath.name}",
+                f"[{row['camera']}] segment_update_failed file no longer on disk, skipping: {_display_path(fpath)}",
             )
             continue
         actual_size_mb = fpath.stat().st_size / (1024 * 1024)
@@ -1217,13 +1221,13 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             log(
                 "INFO",
                 f"[{row['camera']}] DRY RUN: would retry segment_size update"
-                f" ({actual_size_mb:.3f}MB): {fpath.name}",
+                f" ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
             continue
         try:
             log(
                 "DEBUG",
-                f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {fpath.name}",
+                f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
             with frigate_lock:
                 frigate_rw.execute(
@@ -1241,7 +1245,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             promoted += 1
             log(
                 "INFO",
-                f"[{row['camera']}] retried segment_size update — ok: {fpath.name}",
+                f"[{row['camera']}] retried segment_size update — ok: {_display_path(fpath)}",
             )
         except Exception as e:
             log(
@@ -1349,6 +1353,22 @@ def run_housekeeping(ctx: CompressorContext) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _display_path(filepath: Path) -> str:
+    """Format a Frigate recording path for compact log display.
+
+    Frigate stores recordings as
+    ``<recordings_dir>/YYYY-MM-DD/HH/<camera>/MM.SS.mp4``.  The bare filename
+    (e.g. ``38.11.mp4``) is meaningless without the date and hour, so we
+    return ``YYYY-MM-DD/HH/MM.SS.mp4``.  The camera is already shown as a
+    log prefix, so we omit it to avoid redundancy.  Falls back to the bare
+    filename if the path is shorter than expected.
+    """
+    parts = filepath.parts
+    if len(parts) >= 4:
+        return f"{parts[-4]}/{parts[-3]}/{parts[-1]}"
+    return filepath.name
 
 
 def _fmt(n: int | float | None) -> str:
