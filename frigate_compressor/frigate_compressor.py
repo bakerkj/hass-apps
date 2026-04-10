@@ -101,6 +101,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -1531,6 +1532,11 @@ def main() -> int:
             if eligible:
                 suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
                 log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
+                camera_counts = Counter(r["camera"] for r in eligible)
+                breakdown = ", ".join(
+                    f"{cam}={n}" for cam, n in sorted(camera_counts.items())
+                )
+                log("INFO", f"  per-camera: {breakdown}")
 
                 with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
                     futures = {
