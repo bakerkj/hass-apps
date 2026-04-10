@@ -898,7 +898,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg timeout ({FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
+            f"[{camera}] ffmpeg timeout after {duration:.1f}s "
+            f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
         )
         return False
     except Exception as e:
@@ -911,7 +912,10 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg=f"ffmpeg exception: {e}",
         )
-        log("ERROR", f"[{camera}] ffmpeg raised unexpected exception: {e}")
+        log(
+            "ERROR",
+            f"[{camera}] ffmpeg raised unexpected exception after {duration:.1f}s: {e}",
+        )
         return False
 
     duration = time.monotonic() - t_start
@@ -928,7 +932,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] ffmpeg failed (rc={result.returncode}): {_display_path(filepath)}",
+            f"[{camera}] ffmpeg failed after {duration:.1f}s "
+            f"(rc={result.returncode}): {_display_path(filepath)}",
         )
         if err:
             log("DEBUG", f"[{camera}]   stderr: {err}")
@@ -944,7 +949,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] output missing after encode: {_display_path(filepath)}",
+            f"[{camera}] output missing after encode ({duration:.1f}s): "
+            f"{_display_path(filepath)}",
         )
         return False
 
@@ -962,7 +968,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] output suspiciously small — keeping original: {_display_path(filepath)}",
+            f"[{camera}] output suspiciously small after {duration:.1f}s — "
+            f"keeping original: {_display_path(filepath)}",
         )
         return False
 
@@ -980,7 +987,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original deleted during compression — discarding output: {_display_path(filepath)}",
+            f"[{camera}] original deleted during compression ({duration:.1f}s) — "
+            f"discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -996,7 +1004,8 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] original changed during compression — discarding output: {_display_path(filepath)}",
+            f"[{camera}] original changed during compression ({duration:.1f}s) — "
+            f"discarding output: {_display_path(filepath)}",
         )
         return False
 
@@ -1019,7 +1028,9 @@ def compress_one(
         )
         log(
             "WARNING",
-            f"[{camera}] recording removed from Frigate DB during compression — discarding output to prevent orphan: {_display_path(filepath)}",
+            f"[{camera}] recording removed from Frigate DB during compression "
+            f"({duration:.1f}s) — discarding output to prevent orphan: "
+            f"{_display_path(filepath)}",
         )
         return False
 
@@ -1039,7 +1050,10 @@ def compress_one(
             status=STATUS_ERROR,
             error_msg=f"replace failed: {e}",
         )
-        log("ERROR", f"[{camera}] failed to replace original: {e}")
+        log(
+            "ERROR",
+            f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
+        )
         return False
 
     saved = size_before - size_after
