@@ -252,7 +252,7 @@ def test_time_until_next_eligible_no_future_recordings(tmp_path):
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
 
-    assert fc.time_until_next_eligible(ctx) == 3600.0
+    assert fc.time_until_next_eligible(ctx) == fc.MAX_SLEEP_SEC
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -261,14 +261,15 @@ def test_time_until_next_eligible_no_future_recordings(tmp_path):
 def test_time_until_next_eligible_with_pending_recording(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
-    # 5 days old; tier1 cutoff is 7 days → becomes eligible in ~2 days
+    # 5 days old; tier1 cutoff is 7 days → would naively wait ~2 days,
+    # but the cap clamps it to MAX_SLEEP_SEC.
     _insert_recording(
         frigate_conn, "pending", "cam1", "/media/cam1/p.mp4", time.time() - 5 * 86400
     )
 
     ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
     wait = fc.time_until_next_eligible(ctx)
-    assert 60.0 <= wait < 3 * 86400
+    assert fc.MIN_SLEEP_SEC <= wait <= fc.MAX_SLEEP_SEC
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -283,7 +284,24 @@ def test_time_until_next_eligible_minimum_60s(tmp_path):
     )
 
     ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
-    assert fc.time_until_next_eligible(ctx) >= 60.0
+    assert fc.time_until_next_eligible(ctx) >= fc.MIN_SLEEP_SEC
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_time_until_next_eligible_caps_at_max_sleep(tmp_path):
+    """A recording that just started recording (tier1 deadline ~min_days
+    away) must not produce a multi-day sleep — it should clamp to
+    MAX_SLEEP_SEC so the loop wakes up and re-checks state."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    # Just-started recording: tier1 eligibility is min_days × 86400 seconds
+    # away, far longer than MAX_SLEEP_SEC (600s).
+    _insert_recording(frigate_conn, "fresh", "cam1", "/media/cam1/f.mp4", time.time())
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db=frigate_db)
+    assert fc.time_until_next_eligible(ctx) == fc.MAX_SLEEP_SEC
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -680,6 +698,164 @@ def test_housekeeping_segment_retry_file_missing(tmp_path):
         "SELECT status FROM compressed_files WHERE recording_id='seg2'"
     ).fetchone()
     assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED  # unchanged — file gone
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# run_main_loop scheduling
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# These tests pin down the rule that the daemon must NOT sleep between passes
+# when the previous pass had work — only when the queue is fully drained.
+# Regression here would let the daemon fall arbitrarily far behind a steady
+# recording rate just because one pass took longer than the inter-recording
+# gap.
+
+
+def _eligible_row(rid: str = "r1", camera: str = "cam1") -> dict:
+    return {
+        "recording_id": rid,
+        "camera": camera,
+        "path": f"/tmp/{rid}.mp4",
+        "tier": 1,
+        "recording_type": "object",
+    }
+
+
+def test_run_main_loop_does_not_sleep_when_work_was_done(monkeypatch, tmp_path):
+    """If a pass processed >0 recordings, the loop must re-query immediately
+    instead of calling time_until_next_eligible / sleeping."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    # Three passes: work, work, empty.  After the empty pass we should sleep
+    # once via time_until_next_eligible, and the test ends.
+    eligible_calls = {"n": 0}
+    next_calls = {"n": 0}
+    wait_timeouts: list[float | None] = []
+
+    def fake_eligible(_ctx):
+        eligible_calls["n"] += 1
+        if eligible_calls["n"] == 1:
+            return [_eligible_row("r1"), _eligible_row("r2")]
+        if eligible_calls["n"] == 2:
+            return [_eligible_row("r3")]
+        return []
+
+    def fake_next_eligible(_ctx):
+        next_calls["n"] += 1
+        return 999.0
+
+    def fake_compress(*_args, **_kwargs):
+        return True
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        # End the loop the first time it tries to sleep so the test terminates.
+        stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "time_until_next_eligible", fake_next_eligible)
+    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    # 3 eligible queries: work, work, empty.
+    assert eligible_calls["n"] == 3
+    # Sleep path entered exactly once — only after the empty pass.
+    assert next_calls["n"] == 1
+    assert wait_timeouts == [999.0]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_run_main_loop_sleeps_immediately_when_no_work(monkeypatch, tmp_path):
+    """If the very first pass returns nothing, the loop should go straight
+    to time_until_next_eligible without ever entering the work branch."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    eligible_calls = {"n": 0}
+    next_calls = {"n": 0}
+    compress_calls = {"n": 0}
+    wait_timeouts: list[float | None] = []
+
+    def fake_eligible(_ctx):
+        eligible_calls["n"] += 1
+        return []
+
+    def fake_next_eligible(_ctx):
+        next_calls["n"] += 1
+        return 60.0
+
+    def fake_compress(*_args, **_kwargs):
+        compress_calls["n"] += 1
+        return True
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "time_until_next_eligible", fake_next_eligible)
+    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    assert eligible_calls["n"] == 1
+    assert next_calls["n"] == 1
+    assert compress_calls["n"] == 0  # never entered the work branch
+    assert wait_timeouts == [60.0]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_run_main_loop_sleep_path_handles_query_exception(monkeypatch, tmp_path):
+    """time_until_next_eligible blowing up must not crash the loop —
+    it should fall back to a 1h sleep."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    wait_timeouts: list[float | None] = []
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+
+    def boom(_ctx):
+        raise RuntimeError("frigate db went away")
+
+    monkeypatch.setattr(fc, "time_until_next_eligible", boom)
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    # Fell back to the MAX_SLEEP_SEC default instead of crashing.
+    assert wait_timeouts == [fc.MAX_SLEEP_SEC]
 
     _close_ctx(ctx)
     frigate_conn.close()

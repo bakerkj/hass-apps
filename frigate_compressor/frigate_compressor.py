@@ -732,6 +732,15 @@ FFMPEG_TIMEOUT_SEC = 300
 # Max bytes of ffmpeg stderr text stored in the compress DB error_msg column.
 FFMPEG_STDERR_MAX_LEN = 300
 
+# Bounds on the main loop's sleep between compression passes.
+# - MIN avoids hammering Frigate's DB when a recording is just barely
+#   under the eligibility threshold.
+# - MAX caps the wait so that even pathological states (frigate paused,
+#   long fallback paths) re-check at least every 10 minutes instead of
+#   sleeping for hours or days at a time.
+MIN_SLEEP_SEC = 60.0
+MAX_SLEEP_SEC = 600.0
+
 
 @dataclass
 class CompressorContext:
@@ -1160,8 +1169,13 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
 def time_until_next_eligible(ctx: CompressorContext) -> float:
     """
-    Returns seconds until the next recording becomes eligible for tier 1 compression.
-    Returns 3600 if nothing is pending (no future candidates in the DB).
+    Returns seconds until the next recording becomes eligible for tier 1
+    compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
+
+    Returns ``MAX_SLEEP_SEC`` if nothing is pending (no future candidates in
+    the DB) — which keeps the daemon waking up at least every 10 minutes to
+    re-check rather than sleeping forever if Frigate is paused or has no
+    recordings.
     """
     cfg = ctx.cfg
     tier1_cutoff = time.time() - (cfg.tier1.min_days * 86400)
@@ -1178,10 +1192,10 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
         ).fetchone()
 
     if row is None:
-        return 3600.0
+        return MAX_SLEEP_SEC
 
     eligible_at = row["start_time"] + (cfg.tier1.min_days * 86400)
-    return max(60.0, eligible_at - time.time())
+    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, eligible_at - time.time()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1516,7 +1530,6 @@ def main() -> int:
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
     stopping = threading.Event()
-    last_housekeeping = time.time()
     housekeeping_interval_sec = cfg.housekeeping_interval_days * 86400
 
     def handle_sig(_sig, _frame):
@@ -1526,71 +1539,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_sig)
 
     try:
-        while not stopping.is_set():
-            # ── Housekeeping ──────────────────────────────────────────────────
-            if (time.time() - last_housekeeping) >= housekeeping_interval_sec:
-                try:
-                    run_housekeeping(ctx)
-                except Exception as e:
-                    log("ERROR", f"Housekeeping failed: {e}")
-                last_housekeeping = time.time()
-
-            # ── Find eligible recordings ──────────────────────────────────────
-            try:
-                eligible = get_eligible_recordings(ctx)
-            except Exception as e:
-                log("ERROR", f"Failed to query eligible recordings: {e}")
-                stopping.wait(timeout=60)
-                continue
-
-            if eligible:
-                suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
-                log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
-                camera_counts = Counter(r["camera"] for r in eligible)
-                breakdown = ", ".join(
-                    f"{cam}={n}" for cam, n in sorted(camera_counts.items())
-                )
-                log("INFO", f"  per-camera: {breakdown}")
-
-                with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
-                    futures = {
-                        pool.submit(
-                            compress_one,
-                            r["recording_id"],
-                            r["path"],
-                            r["camera"],
-                            r["tier"],
-                            r["recording_type"],
-                            encoder,
-                            ctx,
-                        ): r
-                        for r in eligible
-                        if not stopping.is_set()
-                    }
-                    for future in as_completed(futures):
-                        if stopping.is_set():
-                            break
-                        r = futures[future]
-                        try:
-                            future.result()
-                        except Exception as e:
-                            log("ERROR", f"[{r['camera']}] unhandled error: {e}")
-                # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
-                # running jobs complete before we reach the sleep or DB close.
-
-            # ── Sleep until next recording becomes eligible ───────────────────
-            if not stopping.is_set():
-                try:
-                    sleep_sec = time_until_next_eligible(ctx)
-                except Exception as e:
-                    log("WARNING", f"time_until_next_eligible failed: {e}")
-                    sleep_sec = 3600.0
-
-                log("INFO", f"Next check in {sleep_sec / 60:.1f} min")
-
-                # stopping.wait() returns immediately when the event is set, so a
-                # signal wakes us without waiting for the full sleep duration.
-                stopping.wait(timeout=sleep_sec)
+        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec)
     finally:
         log("INFO", "Frigate Compressor stopped")
         compress_db.close()
@@ -1598,6 +1547,95 @@ def main() -> int:
         frigate_rw.close()
 
     return 0
+
+
+def run_main_loop(
+    ctx: CompressorContext,
+    encoder: str,
+    stopping: threading.Event,
+    housekeeping_interval_sec: float,
+) -> None:
+    """Process eligible recordings forever, sleeping only when caught up.
+
+    Extracted from ``main()`` so the loop's scheduling behavior (run-then-
+    re-check vs sleep-until-next) is testable in isolation.
+    """
+    cfg = ctx.cfg
+    last_housekeeping = time.time()
+
+    while not stopping.is_set():
+        # ── Housekeeping ──────────────────────────────────────────────────
+        if (time.time() - last_housekeeping) >= housekeeping_interval_sec:
+            try:
+                run_housekeeping(ctx)
+            except Exception as e:
+                log("ERROR", f"Housekeeping failed: {e}")
+            last_housekeeping = time.time()
+
+        # ── Find eligible recordings ──────────────────────────────────────
+        try:
+            eligible = get_eligible_recordings(ctx)
+        except Exception as e:
+            log("ERROR", f"Failed to query eligible recordings: {e}")
+            stopping.wait(timeout=60)
+            continue
+
+        if eligible:
+            suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
+            log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
+            camera_counts = Counter(r["camera"] for r in eligible)
+            breakdown = ", ".join(
+                f"{cam}={n}" for cam, n in sorted(camera_counts.items())
+            )
+            log("INFO", f"  per-camera: {breakdown}")
+
+            with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
+                futures = {
+                    pool.submit(
+                        compress_one,
+                        r["recording_id"],
+                        r["path"],
+                        r["camera"],
+                        r["tier"],
+                        r["recording_type"],
+                        encoder,
+                        ctx,
+                    ): r
+                    for r in eligible
+                    if not stopping.is_set()
+                }
+                for future in as_completed(futures):
+                    if stopping.is_set():
+                        break
+                    r = futures[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        log("ERROR", f"[{r['camera']}] unhandled error: {e}")
+            # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
+            # running jobs complete before we reach this point.
+
+            # We just did real work — additional recordings may have aged
+            # into eligibility while we were busy.  Loop straight back to
+            # the top so housekeeping still runs and we re-query eligible
+            # without sleeping.  Sleeping only when truly caught up means
+            # we can never fall arbitrarily far behind a steady recording
+            # rate just because the previous pass was long.
+            continue
+
+        # ── No work — sleep until the next recording becomes eligible ────
+        if not stopping.is_set():
+            try:
+                sleep_sec = time_until_next_eligible(ctx)
+            except Exception as e:
+                log("WARNING", f"time_until_next_eligible failed: {e}")
+                sleep_sec = MAX_SLEEP_SEC
+
+            log("INFO", f"Next check in {sleep_sec / 60:.1f} min")
+
+            # stopping.wait() returns immediately when the event is set, so a
+            # signal wakes us without waiting for the full sleep duration.
+            stopping.wait(timeout=sleep_sec)
 
 
 if __name__ == "__main__":
