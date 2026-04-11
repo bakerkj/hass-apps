@@ -1,6 +1,6 @@
 {
   "name": "Frigate Compressor",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "slug": "frigate_compressor",
   "description": "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age. Tracks state in a local SQLite database.",
   "url": "https://github.com/bakerkj/hass-apps",
@@ -26,6 +26,7 @@
     "mqtt_base_topic": "frigate_compressor",
     "mqtt_client_id": "frigate-compressor",
     "mqtt_publish_interval_seconds": 60,
+    "mqtt_disconnect_timeout_seconds": 300,
     "rate_window_seconds": 300,
     "tier1": {
       "min_days": 7,
@@ -94,6 +95,7 @@
     "mqtt_base_topic": "str?",
     "mqtt_client_id": "str?",
     "mqtt_publish_interval_seconds": "int(5,3600)?",
+    "mqtt_disconnect_timeout_seconds": "int(5,3600)?",
     "rate_window_seconds": "int(60,86400)?",
     "tier1": {
       "min_days": "int(1,365)",

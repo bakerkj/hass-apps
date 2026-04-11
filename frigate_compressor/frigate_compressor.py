@@ -169,10 +169,27 @@ class MqttConfig:
     client_id: str
     publish_interval_seconds: int
     rate_window_seconds: int
+    disconnect_timeout_seconds: int = 300
 
     @property
     def enabled(self) -> bool:
         return bool(self.host)
+
+
+class MqttHealth:
+    """Liveness tracking for the MQTT publisher, mirrors other addons.
+
+    The watchdog in the publish loop reads ``connected``, ``last_disconnect``
+    and ``last_state_publish_ok`` to decide whether to trigger a
+    supervisor restart (exit code 11 for stuck-disconnected, 12 for
+    connected-but-no-publishes).
+    """
+
+    def __init__(self) -> None:
+        self.connected: bool = False
+        self.last_connect_ok: float = 0.0
+        self.last_disconnect: float = 0.0
+        self.last_state_publish_ok: float = 0.0
 
 
 @dataclass
@@ -205,6 +222,7 @@ class Config:
             client_id="frigate-compressor",
             publish_interval_seconds=60,
             rate_window_seconds=300,
+            disconnect_timeout_seconds=300,
         )
     )
 
@@ -367,6 +385,9 @@ def load_config(options_path: str) -> Config:
         client_id=str(opts.get("mqtt_client_id", "frigate-compressor")),
         publish_interval_seconds=int(opts.get("mqtt_publish_interval_seconds", 60)),
         rate_window_seconds=int(opts.get("rate_window_seconds", 300)),
+        disconnect_timeout_seconds=max(
+            5, int(opts.get("mqtt_disconnect_timeout_seconds", 300))
+        ),
     )
 
     cfg = Config(
@@ -1785,12 +1806,12 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
 
 
 class RateTracker:
-    """Signed per-hour rate of change over a fixed time window.
+    """Signed per-second rate of change over a fixed time window.
 
     Stores ``(timestamp, value)`` samples per key.  On each ``update``,
     drops samples older than ``window_seconds`` and returns
-    ``(latest - oldest_in_window) / dt * 3600``.  Returns ``None`` until
-    at least two samples are present.
+    ``(latest - oldest_in_window) / dt``.  Returns ``None`` until at
+    least two samples are present.
 
     Not thread-safe — all updates are expected to come from the publisher
     thread.
@@ -1815,7 +1836,7 @@ class RateTracker:
         dt = t1 - t0
         if dt <= 0:
             return None
-        return (v1 - v0) / dt * 3600.0
+        return (v1 - v0) / dt
 
     def reset(self) -> None:
         self._samples.clear()
@@ -1849,7 +1870,7 @@ _TOP_SENSORS: list[_SensorSpec] = [
     (
         "total_bytes_rate",
         "Total bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1857,7 +1878,7 @@ _TOP_SENSORS: list[_SensorSpec] = [
     (
         "tier0_bytes_rate",
         "Uncompressed bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1865,7 +1886,7 @@ _TOP_SENSORS: list[_SensorSpec] = [
     (
         "tier1_bytes_rate",
         "Tier 1 bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1873,7 +1894,7 @@ _TOP_SENSORS: list[_SensorSpec] = [
     (
         "tier2_bytes_rate",
         "Tier 2 bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1914,7 +1935,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "total_bytes_rate",
         "Total bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1922,7 +1943,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "continuous_bytes_rate",
         "Continuous bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1930,7 +1951,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "motion_bytes_rate",
         "Motion bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1938,7 +1959,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "object_bytes_rate",
         "Object bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1946,7 +1967,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "tier0_bytes_rate",
         "Uncompressed bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1954,7 +1975,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "tier1_bytes_rate",
         "Tier 1 bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -1962,7 +1983,7 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     (
         "tier2_bytes_rate",
         "Tier 2 bytes rate",
-        "B/h",
+        "B/s",
         "data_rate",
         "mdi:chart-line",
         True,
@@ -2016,17 +2037,21 @@ class MqttPublisher:
         self.mqtt_cfg = mqtt_cfg
         self.stopping = stopping
         self.tracker = RateTracker(mqtt_cfg.rate_window_seconds)
+        self.health = MqttHealth()
         self.client: paho_mqtt.Client | None = None
         self._thread: threading.Thread | None = None
         # Devices for which we've already published HA discovery on the
         # current connection.  Cleared on (re)connect and on HA birth.
         self._discovery_published: set[str] = set()
         self._lock = threading.Lock()
+        # Set to 11/12 by the watchdogs when a supervisor restart is needed;
+        # main() reads this after the main loop exits.
+        self.exit_code: int | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        client = paho_mqtt.Client(client_id=self.mqtt_cfg.client_id)
+        client = paho_mqtt.Client(client_id=self.mqtt_cfg.client_id, clean_session=True)
         if self.mqtt_cfg.username:
             client.username_pw_set(self.mqtt_cfg.username, self.mqtt_cfg.password)
         availability_topic = f"{self.mqtt_cfg.base_topic}/availability"
@@ -2092,7 +2117,12 @@ class MqttPublisher:
 
     def _on_connect(self, client, _userdata, _flags, rc) -> None:
         if rc == 0:
-            log("INFO", "MQTT connected")
+            self.health.connected = True
+            self.health.last_connect_ok = time.time()
+            log(
+                "INFO",
+                f"MQTT connected to {self.mqtt_cfg.host}:{self.mqtt_cfg.port}",
+            )
             client.publish(
                 f"{self.mqtt_cfg.base_topic}/availability",
                 "online",
@@ -2103,10 +2133,16 @@ class MqttPublisher:
             with self._lock:
                 self._discovery_published.clear()
         else:
-            log("WARNING", f"MQTT connection failed rc={rc}")
+            self.health.connected = False
+            log("ERROR", f"MQTT connect failed rc={rc}")
 
     def _on_disconnect(self, _client, _userdata, rc) -> None:
-        log("WARNING", f"MQTT disconnected rc={rc} (will retry)")
+        self.health.connected = False
+        self.health.last_disconnect = time.time()
+        if rc == 0:
+            log("WARNING", "MQTT disconnected (clean)")
+        else:
+            log("WARNING", f"MQTT disconnected rc={rc} (will retry)")
 
     def _on_message(self, _client, _userdata, msg) -> None:
         try:
@@ -2127,10 +2163,55 @@ class MqttPublisher:
                 self.publish_once()
             except Exception as e:
                 log("ERROR", f"MQTT publish failed: {e}")
+            if self._check_watchdogs(time.time()):
+                return
             elapsed = time.time() - t0
             sleep_for = max(1.0, self.mqtt_cfg.publish_interval_seconds - elapsed)
             if self.stopping.wait(timeout=sleep_for):
                 return
+
+    def _check_watchdogs(self, now: float) -> bool:
+        """Return True and trigger shutdown if a watchdog fires.
+
+        Mirrors the turbostat/intel_gpu/container_info pattern: exit 11 if
+        MQTT has been disconnected for longer than
+        ``disconnect_timeout_seconds``, exit 12 if the publisher is
+        connected but successful state publishes have stalled for longer
+        than ``publish_interval_seconds * 4``.
+        """
+        disconnect_timeout = self.mqtt_cfg.disconnect_timeout_seconds
+        stall_timeout = max(60, self.mqtt_cfg.publish_interval_seconds * 4)
+
+        if (
+            not self.health.connected
+            and self.health.last_disconnect > 0
+            and (now - self.health.last_disconnect) > disconnect_timeout
+        ):
+            log(
+                "ERROR",
+                f"MQTT disconnected for {now - self.health.last_disconnect:.1f}s"
+                f" (> {disconnect_timeout}s). Exiting for supervisor restart.",
+            )
+            self.exit_code = 11
+            self.stopping.set()
+            return True
+
+        if (
+            self.health.connected
+            and self.health.last_state_publish_ok > 0
+            and (now - self.health.last_state_publish_ok) > stall_timeout
+        ):
+            log(
+                "ERROR",
+                f"MQTT state publish stalled for"
+                f" {now - self.health.last_state_publish_ok:.1f}s"
+                f" (> {stall_timeout}s). Exiting for supervisor restart.",
+            )
+            self.exit_code = 12
+            self.stopping.set()
+            return True
+
+        return False
 
     def publish_once(self) -> None:
         """Compute one snapshot and publish state for all sensors.
@@ -2207,7 +2288,15 @@ class MqttPublisher:
             if is_rate:
                 payload["suggested_display_precision"] = 0
             try:
-                client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+                info = client.publish(
+                    config_topic, json.dumps(payload), qos=1, retain=True
+                )
+                if info.rc != paho_mqtt.MQTT_ERR_SUCCESS:
+                    log(
+                        "WARNING",
+                        f"MQTT discovery publish rc={info.rc} topic={config_topic}",
+                    )
+                    published = False
             except Exception as e:
                 log("WARNING", f"MQTT discovery publish failed for {key}: {e}")
                 published = False
@@ -2275,10 +2364,15 @@ class MqttPublisher:
                 payload = f"{val:.6g}"
             else:
                 payload = str(val)
+            topic = f"{prefix}/{key}/state"
             try:
-                client.publish(f"{prefix}/{key}/state", payload, qos=0, retain=False)
+                info = client.publish(topic, payload, qos=0, retain=False)
+                if info.rc == paho_mqtt.MQTT_ERR_SUCCESS:
+                    self.health.last_state_publish_ok = time.time()
+                else:
+                    log("WARNING", f"MQTT state publish rc={info.rc} topic={topic}")
             except Exception as e:
-                log("DEBUG", f"MQTT state publish failed for {key}: {e}")
+                log("WARNING", f"MQTT state publish failed for {key}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2390,7 +2484,8 @@ def main() -> int:
             f"  MQTT           : {cfg.mqtt.host}:{cfg.mqtt.port}"
             f" base={cfg.mqtt.base_topic}"
             f" interval={cfg.mqtt.publish_interval_seconds}s"
-            f" rate_window={cfg.mqtt.rate_window_seconds}s",
+            f" rate_window={cfg.mqtt.rate_window_seconds}s"
+            f" disconnect_timeout={cfg.mqtt.disconnect_timeout_seconds}s",
         )
     else:
         log("INFO", "  MQTT           : disabled (mqtt_host empty)")
@@ -2447,6 +2542,8 @@ def main() -> int:
         frigate_ro.close()
         frigate_rw.close()
 
+    if publisher is not None and publisher.exit_code is not None:
+        return publisher.exit_code
     return 0
 
 

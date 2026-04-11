@@ -292,10 +292,10 @@ def test_rate_tracker_returns_none_on_first_sample():
 def test_rate_tracker_simple_delta():
     rt = fc.RateTracker(window_seconds=300)
     rt.update("k", 0, now=0)
-    # 100 units gained over 60s → 100/60 * 3600 = 6000/h
+    # 100 units gained over 60s → 100/60 ≈ 1.6667 B/s
     rate = rt.update("k", 100, now=60)
     assert rate is not None
-    assert abs(rate - 6000.0) < 1e-6
+    assert abs(rate - (100.0 / 60.0)) < 1e-9
 
 
 def test_rate_tracker_signed_negative():
@@ -304,8 +304,8 @@ def test_rate_tracker_signed_negative():
     rate = rt.update("k", 700, now=60)
     assert rate is not None
     assert rate < 0
-    # Lost 300 units in 60s → -300/60 * 3600 = -18000/h
-    assert abs(rate - (-18000.0)) < 1e-6
+    # Lost 300 units in 60s → -5.0 B/s
+    assert abs(rate - (-5.0)) < 1e-9
 
 
 def test_rate_tracker_window_drops_old_samples():
@@ -316,9 +316,9 @@ def test_rate_tracker_window_drops_old_samples():
     # After dropping, only one sample remains → return None
     # (we just appended (400, 600); previous (0, 0) is < 400-300=100)
     rate = rt.update("k", 700, now=460)
-    # Now samples = [(400, 600), (460, 700)]; rate = 100/60 * 3600 = 6000/h
+    # Now samples = [(400, 600), (460, 700)]; rate = 100/60 ≈ 1.6667 B/s
     assert rate is not None
-    assert abs(rate - 6000.0) < 1e-6
+    assert abs(rate - (100.0 / 60.0)) < 1e-9
 
 
 def test_rate_tracker_keys_independent():
@@ -549,6 +549,7 @@ def test_mqtt_options_loaded(tmp_path):
         mqtt_base_topic="custom_topic",
         mqtt_publish_interval_seconds=120,
         rate_window_seconds=600,
+        mqtt_disconnect_timeout_seconds=450,
     )
     assert cfg.mqtt.host == "broker.local"
     assert cfg.mqtt.port == 2883
@@ -557,3 +558,79 @@ def test_mqtt_options_loaded(tmp_path):
     assert cfg.mqtt.base_topic == "custom_topic"
     assert cfg.mqtt.publish_interval_seconds == 120
     assert cfg.mqtt.rate_window_seconds == 600
+    assert cfg.mqtt.disconnect_timeout_seconds == 450
+
+
+def test_mqtt_disconnect_timeout_defaults_to_300(tmp_path):
+    cfg = _make_config(tmp_path, mqtt_host="broker.local")
+    assert cfg.mqtt.disconnect_timeout_seconds == 300
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MqttHealth + watchdogs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_health_marked_connected_on_successful_publish(tmp_path, monkeypatch):
+    """A successful state publish should stamp last_state_publish_ok."""
+    publisher, ctx, writer, _client = _build_publisher(tmp_path, monkeypatch)
+    try:
+        assert publisher.health.last_state_publish_ok == 0.0
+        publisher.publish_once()
+        assert publisher.health.last_state_publish_ok > 0.0
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_watchdog_exits_11_after_long_disconnect(tmp_path, monkeypatch):
+    publisher, ctx, writer, _client = _build_publisher(tmp_path, monkeypatch)
+    try:
+        publisher.mqtt_cfg.disconnect_timeout_seconds = 60
+        publisher.health.connected = False
+        publisher.health.last_disconnect = 1000.0
+        # 1100 - 1000 = 100s > 60s timeout
+        assert publisher._check_watchdogs(now=1100.0) is True
+        assert publisher.exit_code == 11
+        assert publisher.stopping.is_set()
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_watchdog_does_not_exit_while_connected(tmp_path, monkeypatch):
+    publisher, ctx, writer, _client = _build_publisher(tmp_path, monkeypatch)
+    try:
+        publisher.mqtt_cfg.disconnect_timeout_seconds = 60
+        publisher.health.connected = True
+        publisher.health.last_disconnect = 1000.0  # irrelevant while connected
+        publisher.health.last_state_publish_ok = 1090.0
+        assert publisher._check_watchdogs(now=1100.0) is False
+        assert publisher.exit_code is None
+        assert not publisher.stopping.is_set()
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_watchdog_exits_12_on_state_publish_stall(tmp_path, monkeypatch):
+    publisher, ctx, writer, _client = _build_publisher(tmp_path, monkeypatch)
+    try:
+        # stall_timeout = max(60, publish_interval_seconds * 4) = 240 with default 60s
+        publisher.health.connected = True
+        publisher.health.last_state_publish_ok = 1000.0
+        # 1300 - 1000 = 300s > 240s stall timeout
+        assert publisher._check_watchdogs(now=1300.0) is True
+        assert publisher.exit_code == 12
+        assert publisher.stopping.is_set()
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_watchdog_ignores_stall_before_first_publish(tmp_path, monkeypatch):
+    """If we've never published yet, the stall watchdog must not fire."""
+    publisher, ctx, writer, _client = _build_publisher(tmp_path, monkeypatch)
+    try:
+        publisher.health.connected = True
+        publisher.health.last_state_publish_ok = 0.0
+        assert publisher._check_watchdogs(now=100000.0) is False
+        assert publisher.exit_code is None
+    finally:
+        _close_stats_ctx(ctx, writer)
