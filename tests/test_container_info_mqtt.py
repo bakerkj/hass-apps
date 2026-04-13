@@ -494,6 +494,70 @@ def test_parse_include_metrics_strips_whitespace():
 
 
 # ---------------------------------------------------------------------------
+# summary_only_metrics derivation
+# ---------------------------------------------------------------------------
+
+
+def _summary_only(summary_raw: str, include_raw: str) -> list[str]:
+    """Replicate the summary_only_metrics derivation from main()."""
+    selected = set(cim.parse_include_metrics(include_raw, _LOG))
+    if not summary_raw.strip():
+        return []
+    return [
+        m for m in cim.parse_include_metrics(summary_raw, _LOG) if m not in selected
+    ]
+
+
+def test_summary_only_excludes_metrics_already_in_include():
+    result = _summary_only("cpu_percent,cpu_shares", "cpu_percent,memory_usage")
+    assert "cpu_percent" not in result
+    assert "cpu_shares" in result
+
+
+def test_summary_only_empty_summary_gives_empty_list():
+    result = _summary_only("", "cpu_percent,memory_usage")
+    assert result == []
+
+
+def test_summary_only_whitespace_summary_gives_empty_list():
+    result = _summary_only("   ", "cpu_percent")
+    assert result == []
+
+
+def test_summary_only_all_in_include_gives_empty():
+    result = _summary_only("cpu_percent,memory_usage", "cpu_percent,memory_usage")
+    assert result == []
+
+
+def test_summary_only_no_overlap():
+    result = _summary_only("cpu_shares,blkio_weight", "cpu_percent,memory_usage")
+    assert set(result) == {"cpu_shares", "blkio_weight"}
+
+
+def test_summary_only_unknown_keys_skipped():
+    result = _summary_only("cpu_shares,nonexistent", "cpu_percent")
+    assert "nonexistent" not in result
+    assert "cpu_shares" in result
+
+
+def test_summary_only_default_config_deduplicates_correctly():
+    # Simulate the real defaults: summary is a superset of include.
+    # Metrics shared with include_metrics should be deduped; only the
+    # extra ones (cpu_shares, cpuset_cpus, blkio_weight) should appear.
+    default_include = (
+        "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,uptime_seconds"
+    )
+    default_summary = (
+        "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,uptime_seconds,"
+        "cpu_shares,cpuset_cpus,blkio_weight"
+    )
+    result = _summary_only(default_summary, default_include)
+    assert set(result) == {"cpu_shares", "cpuset_cpus", "blkio_weight"}
+
+
+# ---------------------------------------------------------------------------
 # redact_options_for_log
 # ---------------------------------------------------------------------------
 
