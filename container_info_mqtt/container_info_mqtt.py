@@ -903,7 +903,7 @@ def publish_discovery(
             "suggested_display_precision"
         ]
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
 
 def publish_summary_discovery(
@@ -941,7 +941,7 @@ def publish_summary_discovery(
         },
     }
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
 
 def clear_discovery(
