@@ -107,12 +107,6 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "suggested_display_precision": 0,
         "round_digits": 3,
     },
-    "status": {
-        "paths": [("status",), ("state",)],
-        "name": "Status",
-        "icon": "mdi:information-outline",
-        "value_type": "string",
-    },
     "cpuset_cpus": {
         "paths": [("cpuset_cpus",)],
         "name": "CPU Set",
@@ -155,6 +149,7 @@ OPTION_KEYS: set[str] = {
     "interval_seconds",
     "docker_timeout_seconds",
     "include_metrics",
+    "summary_metrics",
     "container_include_regex",
     "container_exclude_regex",
     "mqtt_host",
@@ -967,6 +962,7 @@ def main() -> int:
     ap.add_argument("--interval-seconds", type=int, default=None)
     ap.add_argument("--docker-timeout-seconds", type=int, default=None)
     ap.add_argument("--include-metrics", default=None)
+    ap.add_argument("--summary-metrics", default=None)
     ap.add_argument("--container-include-regex", default=None)
     ap.add_argument("--container-exclude-regex", default=None)
 
@@ -1003,10 +999,16 @@ def main() -> int:
     args.include_metrics = resolve(
         args.include_metrics,
         "include_metrics",
-        "cpu_percent,memory_usage,network_rx_total,network_tx_total,"
-        "io_read_total,io_write_total,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight,"
-        "uptime_seconds",
+        "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,uptime_seconds",
+        str,
+    )
+    args.summary_metrics = resolve(
+        args.summary_metrics,
+        "summary_metrics",
+        "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,uptime_seconds,"
+        "cpu_shares,cpuset_cpus,blkio_weight",
         str,
     )
     args.container_include_regex = resolve(
@@ -1067,6 +1069,7 @@ def main() -> int:
         "  discovery_prefix:   %s\n"
         "  docker_timeout:     %ds\n"
         "  include_metrics:    %s\n"
+        "  summary_metrics:    %s\n"
         "  interval:           %ds\n"
         "  log_level:          %s\n"
         "  mqtt_host:          %s:%d\n"
@@ -1080,6 +1083,7 @@ def main() -> int:
         args.mqtt_discovery_prefix,
         args.docker_timeout_seconds,
         args.include_metrics,
+        args.summary_metrics or "(none)",
         args.interval_seconds,
         args.log_level,
         args.mqtt_host,
@@ -1108,6 +1112,15 @@ def main() -> int:
 
     selected_metrics = parse_include_metrics(args.include_metrics, log)
     selected_metric_set = set(selected_metrics)
+    summary_only_metrics = (
+        [
+            m
+            for m in parse_include_metrics(args.summary_metrics, log)
+            if m not in selected_metric_set
+        ]
+        if args.summary_metrics.strip()
+        else []
+    )
 
     proc = run_cmd(["docker", "info"], args.docker_timeout_seconds)
     if proc.returncode != 0:
@@ -1402,7 +1415,29 @@ def main() -> int:
                 summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
 
-            summary_state = str(summary_attributes.get("status", "unknown"))
+            for metric_key in summary_only_metrics:
+                if not network_metric_enabled(metric_key):
+                    continue
+                metric_def = METRIC_DEFS[metric_key]
+                if metric_key in RATE_METRICS:
+                    value = rate_values.get(metric_key)
+                else:
+                    value = metric_value(container, metric_key)
+                if value is None:
+                    continue
+                value_type = metric_def.get("value_type", "number")
+                if value_type == "string":
+                    summary_attributes[metric_key] = str(value)
+                elif value_type == "integer":
+                    summary_attributes[metric_key] = int(value)
+                else:
+                    numeric_value = float(value)
+                    round_digits = metric_def.get("round_digits")
+                    if isinstance(round_digits, int):
+                        numeric_value = round(numeric_value, round_digits)
+                    summary_attributes[metric_key] = numeric_value
+
+            summary_state = container.get("status", "unknown")
             summary_state_topic = f"{base_topic}/{container_slug}/summary/state"
             summary_attributes_topic = (
                 f"{base_topic}/{container_slug}/summary/attributes"
