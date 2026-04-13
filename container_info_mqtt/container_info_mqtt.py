@@ -107,12 +107,6 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "suggested_display_precision": 0,
         "round_digits": 3,
     },
-    "status": {
-        "paths": [("status",), ("state",)],
-        "name": "Status",
-        "icon": "mdi:information-outline",
-        "value_type": "string",
-    },
     "cpuset_cpus": {
         "paths": [("cpuset_cpus",)],
         "name": "CPU Set",
@@ -1003,10 +997,8 @@ def main() -> int:
     args.include_metrics = resolve(
         args.include_metrics,
         "include_metrics",
-        "cpu_percent,memory_usage,network_rx_total,network_tx_total,"
-        "io_read_total,io_write_total,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,status,cpuset_cpus,cpu_shares,blkio_weight,"
-        "uptime_seconds",
+        "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
+        "io_read_rate,io_write_rate,uptime_seconds",
         str,
     )
     args.container_include_regex = resolve(
@@ -1402,7 +1394,13 @@ def main() -> int:
                 summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
 
-            summary_state = str(summary_attributes.get("status", "unknown"))
+            summary_status = (
+                safe_text(container.get("status"))
+                or safe_text(container.get("state"))
+                or "unknown"
+            )
+            summary_attributes["status"] = summary_status
+            summary_state = summary_status
             summary_state_topic = f"{base_topic}/{container_slug}/summary/state"
             summary_attributes_topic = (
                 f"{base_topic}/{container_slug}/summary/attributes"
