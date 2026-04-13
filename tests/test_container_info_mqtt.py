@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -491,6 +494,31 @@ def test_parse_include_metrics_strips_whitespace():
     result = cim.parse_include_metrics(" cpu_percent , memory_usage ", _LOG)
     assert "cpu_percent" in result
     assert "memory_usage" in result
+
+
+# ---------------------------------------------------------------------------
+# fetch_ps_containers — name normalisation
+# ---------------------------------------------------------------------------
+
+
+def _fake_ps_proc(rows: list[dict[str, Any]]) -> subprocess.CompletedProcess[str]:
+    stdout = "\n".join(json.dumps(row) for row in rows)
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+
+def test_fetch_ps_strips_leading_slash():
+    row = {"ID": "abc123", "Names": "/builder_foo", "Status": "Up", "State": "running"}
+    with patch("container_info_mqtt.run_cmd", return_value=_fake_ps_proc([row])):
+        result = cim.fetch_ps_containers(10, _LOG)
+    assert len(result) == 1
+    assert result[0]["name"] == "builder_foo"
+
+
+def test_fetch_ps_name_without_slash_unchanged():
+    row = {"ID": "abc123", "Names": "mycontainer", "Status": "Up", "State": "running"}
+    with patch("container_info_mqtt.run_cmd", return_value=_fake_ps_proc([row])):
+        result = cim.fetch_ps_containers(10, _LOG)
+    assert result[0]["name"] == "mycontainer"
 
 
 # ---------------------------------------------------------------------------

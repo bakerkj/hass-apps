@@ -372,7 +372,8 @@ def fetch_ps_containers(
             continue
 
         container_id = safe_text(payload.get("ID") or payload.get("Id"))
-        name = safe_text(payload.get("Names") or payload.get("Name"))
+        raw_name = safe_text(payload.get("Names") or payload.get("Name"))
+        name = raw_name.lstrip("/") if raw_name else None
         if container_id is None or name is None:
             continue
 
@@ -903,7 +904,7 @@ def publish_discovery(
             "suggested_display_precision"
         ]
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
 
 def publish_summary_discovery(
@@ -941,7 +942,7 @@ def publish_summary_discovery(
         },
     }
 
-    client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+    client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
 
 
 def clear_discovery(
