@@ -867,15 +867,15 @@ def publish_discovery(
     metric_def: dict[str, Any],
     expire_after_s: int,
 ) -> None:
-    sensor_id = f"{container_slug}_{metric_key}"
-    config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
+    node_id = f"{device_id}_{container_slug}"
+    config_topic = f"{discovery_prefix}/sensor/{node_id}/{metric_key}/config"
     state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
     friendly_container_name = f"Container {container_display_name_text}"
 
     payload: dict[str, Any] = {
         "name": metric_def["name"],
         "has_entity_name": True,
-        "unique_id": f"{device_id}_{sensor_id}",
+        "unique_id": f"{device_id}_{container_slug}_{metric_key}",
         "default_entity_id": f"sensor.container_{container_slug}_{metric_key}",
         "state_topic": state_topic,
         "availability_topic": f"{base_topic}/{container_slug}/availability",
@@ -915,8 +915,8 @@ def publish_summary_discovery(
     container_display_name_text: str,
     expire_after_s: int,
 ) -> None:
-    sensor_id = f"{container_slug}_summary"
-    config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
+    node_id = f"{device_id}_{container_slug}"
+    config_topic = f"{discovery_prefix}/sensor/{node_id}/summary/config"
     state_topic = f"{base_topic}/{container_slug}/summary/state"
     attributes_topic = f"{base_topic}/{container_slug}/summary/attributes"
     friendly_container_name = f"Container {container_display_name_text}"
@@ -924,7 +924,7 @@ def publish_summary_discovery(
     payload: dict[str, Any] = {
         "name": "Summary",
         "has_entity_name": True,
-        "unique_id": f"{device_id}_{sensor_id}",
+        "unique_id": f"{device_id}_{container_slug}_summary",
         "default_entity_id": f"sensor.container_{container_slug}_summary",
         "state_topic": state_topic,
         "json_attributes_topic": attributes_topic,
@@ -951,8 +951,8 @@ def clear_discovery(
     container_slug: str,
     metric_key: str,
 ) -> None:
-    sensor_id = f"{container_slug}_{metric_key}"
-    config_topic = f"{discovery_prefix}/sensor/{device_id}/{sensor_id}/config"
+    node_id = f"{device_id}_{container_slug}"
+    config_topic = f"{discovery_prefix}/sensor/{node_id}/{metric_key}/config"
     client.publish(config_topic, "", qos=1, retain=True)
 
 
