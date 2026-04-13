@@ -3,7 +3,7 @@ FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
   python3=3.12.13-r0 \
-  docker-cli=29.1.3-r3
+  docker-cli=29.1.3-r4
 
 COPY run.sh /run.sh
 COPY system_resource_tuner.py /system_resource_tuner.py
