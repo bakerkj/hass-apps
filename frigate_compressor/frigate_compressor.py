@@ -108,6 +108,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import paho.mqtt.client as paho_mqtt
+import yaml
 
 # Version is supplied at build time by the HA Supervisor (BUILD_VERSION build
 # arg, sourced from config.json). config.json is the single source of truth.
@@ -139,6 +140,7 @@ def log(level: str, msg: str) -> None:
 class TypeSettings:
     """Compression settings for one recording type within a tier."""
 
+    enabled: bool  # whether to compress this recording type
     quality: int  # CQ/CRF (0-51, lower = better quality)
     scale_mode: str  # none | halve | fixed | fraction
     scale_value: str  # fixed="1280:720", fraction="0.5"
@@ -146,14 +148,37 @@ class TypeSettings:
     fps_value: float  # cap=max fps, fraction=multiplier (e.g. 0.5 = half)
 
 
+_TYPE_SETTINGS_FIELDS = (
+    "enabled",
+    "quality",
+    "scale_mode",
+    "scale_value",
+    "fps_mode",
+    "fps_value",
+)
+_RECORDING_TYPES = ("continuous", "motion", "object")
+
+
 @dataclass
 class TierConfig:
     """Compression settings for one age tier (tier 1 or tier 2)."""
 
+    enabled: bool  # whether this tier is active for this camera
     min_days: int  # age in days before this tier applies
     continuous: TypeSettings  # segments with no motion and no objects
     motion: TypeSettings  # segments with motion but no object detection
     object: TypeSettings  # segments with at least one detected object
+
+
+@dataclass
+class CameraConfig:
+    """Fully resolved compression configuration for one camera."""
+
+    name: str
+    enabled: bool  # whether to process this camera at all
+    dry_run: bool  # per-camera dry run
+    tier1: TierConfig
+    tier2: TierConfig
 
 
 @dataclass
@@ -194,23 +219,21 @@ class MqttHealth:
 
 @dataclass
 class Config:
-    """Top-level add-on configuration loaded from options.json."""
+    """Top-level add-on configuration.
 
-    encoder: str  # qsv | nvenc | cpu
+    HAOS options (options.json) provide infrastructure settings (encoder,
+    paths, MQTT).  Camera-centric compression settings come from a separate
+    YAML config file and are resolved into per-camera ``CameraConfig`` objects.
+    """
+
+    encoder: str  # qsv | vaapi | nvenc | cpu
     max_parallel_jobs: int  # concurrent ffmpeg processes
-    tier1: TierConfig
-    tier2: TierConfig
     housekeeping_interval_days: int  # days between housekeeping runs
     frigate_db: Path  # path to Frigate's SQLite DB
     recordings_dir: Path  # path to Frigate's recordings
     compress_db: Path  # path to our SQLite DB
     log_level: str  # DEBUG | INFO | WARNING | ERROR
-    # (camera, tier, recording_type) → partial TypeSettings field overrides.
-    # Any field absent from the dict falls back to the global tier setting.
-    camera_overrides: dict[tuple[str, int, str], dict[str, int | float | str]]
-    dry_run: bool = (
-        False  # when True: log all actions but do not modify any files or DBs
-    )
+    cameras: dict[str, CameraConfig]  # camera_name → fully resolved config
     mqtt: MqttConfig = field(
         default_factory=lambda: MqttConfig(
             host="",
@@ -226,155 +249,229 @@ class Config:
         )
     )
 
+    @property
+    def all_dry_run(self) -> bool:
+        """True when every configured camera is in dry-run mode."""
+        return (
+            all(cam.dry_run for cam in self.cameras.values()) if self.cameras else True
+        )
 
-_TIER1_DEFAULTS: dict = {
-    "min_days": 7,
-    "continuous": {
+
+# ── Built-in defaults (match the YAML ``defaults`` block) ────────────────────
+# These are used when no config.yaml exists or when fields are omitted.
+
+_BUILTIN_DEFAULTS: dict = {
+    "enabled": True,
+    "dry_run": False,
+    "tier1": {
+        "enabled": True,
+        "min_days": 7,
         "quality": 28,
         "scale_mode": "none",
         "scale_value": "",
         "fps_mode": "none",
         "fps_value": 1.0,
+        "motion": {
+            "quality": 26,
+            "scale_mode": "halve",
+        },
+        "object": {
+            "quality": 22,
+        },
     },
-    "motion": {
-        "quality": 26,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "none",
-        "fps_value": 1.0,
-    },
-    "object": {
-        "quality": 22,
-        "scale_mode": "none",
-        "scale_value": "",
-        "fps_mode": "none",
-        "fps_value": 1.0,
-    },
-}
-_TIER2_DEFAULTS: dict = {
-    "min_days": 30,
-    "continuous": {
+    "tier2": {
+        "enabled": True,
+        "min_days": 30,
         "quality": 34,
         "scale_mode": "halve",
         "scale_value": "",
         "fps_mode": "cap",
         "fps_value": 4.0,
-    },
-    "motion": {
-        "quality": 30,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 8.0,
-    },
-    "object": {
-        "quality": 26,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 8.0,
+        "motion": {
+            "quality": 30,
+            "fps_value": 8.0,
+        },
+        "object": {
+            "quality": 26,
+            "fps_value": 8.0,
+        },
     },
 }
 
 
-def _load_type_settings(d: dict, defaults: dict) -> TypeSettings:
-    quality = int(d.get("quality", defaults["quality"]))
-    if not 0 <= quality <= 51:
-        raise ValueError(f"quality must be 0–51, got {quality}")
-    scale_mode = str(d.get("scale_mode", defaults["scale_mode"]))
-    scale_value = str(d.get("scale_value", defaults["scale_value"]))
-    if scale_mode == "fixed" and not scale_value:
-        raise ValueError(
-            "scale_mode='fixed' requires a non-empty scale_value (e.g. '1280:720')"
-        )
-    return TypeSettings(
-        quality=quality,
-        scale_mode=scale_mode,
-        scale_value=scale_value,
-        fps_mode=str(d.get("fps_mode", defaults["fps_mode"])),
-        fps_value=float(d.get("fps_value", defaults["fps_value"])),
-    )
-
-
-def _load_tier(t: dict, defaults: dict) -> TierConfig:
-    return TierConfig(
-        min_days=int(t.get("min_days", defaults["min_days"])),
-        continuous=_load_type_settings(
-            t.get("continuous") or {}, defaults["continuous"]
-        ),
-        motion=_load_type_settings(t.get("motion") or {}, defaults["motion"]),
-        object=_load_type_settings(t.get("object") or {}, defaults["object"]),
-    )
-
-
-def _load_partial_type_settings(d: dict) -> dict:
-    """
-    Validate and return a dict containing only the TypeSettings fields present
-    in *d*.  Used for per-camera overrides — absent fields fall back to the
-    global tier setting at resolution time.
-    """
-    result: dict = {}
-    if "quality" in d:
-        q = int(d["quality"])
-        if not 0 <= q <= 51:
-            raise ValueError(f"quality must be 0–51, got {q}")
-        result["quality"] = q
-    if "scale_mode" in d:
-        result["scale_mode"] = str(d["scale_mode"])
-    if "scale_value" in d:
-        result["scale_value"] = str(d["scale_value"])
-    if result.get("scale_mode") == "fixed" and not result.get("scale_value"):
-        raise ValueError(
-            "scale_mode='fixed' requires a non-empty scale_value (e.g. '1280:720')"
-        )
-    if "fps_mode" in d:
-        result["fps_mode"] = str(d["fps_mode"])
-    if "fps_value" in d:
-        result["fps_value"] = float(d["fps_value"])
+def _merge_type_fields(base: dict, overlay: dict) -> dict:
+    """Merge overlay's TypeSettings fields on top of base."""
+    result = {k: base[k] for k in _TYPE_SETTINGS_FIELDS if k in base}
+    for k in _TYPE_SETTINGS_FIELDS:
+        if k in overlay:
+            result[k] = overlay[k]
     return result
 
 
-def _resolve_type_settings(
-    cfg: Config, camera: str, tier: int, recording_type: str
-) -> TypeSettings:
-    """
-    Return TypeSettings for this (camera, tier, recording_type), merging any
-    per-camera override on top of the global tier/type defaults.
-    """
-    tier_cfg = cfg.tier1 if tier == 1 else cfg.tier2
-    base: TypeSettings | None = getattr(tier_cfg, recording_type, None)
-    if base is None:
-        log(
-            "WARNING",
-            f"Unknown recording_type '{recording_type}' for camera '{camera}' tier {tier}"
-            " — falling back to 'continuous' settings",
+def _validate_type_settings(d: dict, label: str) -> TypeSettings:
+    """Validate and construct a TypeSettings from a fully-merged dict."""
+    quality = int(d["quality"])
+    if not 0 <= quality <= 51:
+        raise ValueError(f"{label}: quality must be 0–51, got {quality}")
+    scale_mode = str(d["scale_mode"])
+    scale_value = str(d["scale_value"])
+    if scale_mode == "fixed" and not scale_value:
+        raise ValueError(
+            f"{label}: scale_mode='fixed' requires a non-empty scale_value "
+            "(e.g. '1280:720')"
         )
-        base = tier_cfg.continuous
-    override = cfg.camera_overrides.get((camera, tier, recording_type))
-    if not override:
-        return base
     return TypeSettings(
-        quality=int(override.get("quality", base.quality)),
-        scale_mode=str(override.get("scale_mode", base.scale_mode)),
-        scale_value=str(override.get("scale_value", base.scale_value)),
-        fps_mode=str(override.get("fps_mode", base.fps_mode)),
-        fps_value=float(override.get("fps_value", base.fps_value)),
+        enabled=bool(d.get("enabled", True)),
+        quality=quality,
+        scale_mode=scale_mode,
+        scale_value=scale_value,
+        fps_mode=str(d["fps_mode"]),
+        fps_value=float(d["fps_value"]),
     )
 
 
-def load_config(options_path: str) -> Config:
+def _resolve_tier(
+    defaults_tier: dict,
+    camera_tier: dict | None,
+    camera_name: str,
+    tier_num: int,
+) -> TierConfig:
+    """Resolve a single tier's config using 4-layer merge.
+
+    Resolution order (later layers override earlier):
+      1. defaults tier base TypeSettings fields
+      2. defaults tier per-type overrides (continuous/motion/object)
+      3. camera tier base TypeSettings fields
+      4. camera tier per-type overrides
+    """
+    # Tier-level scalars
+    enabled = defaults_tier.get("enabled", True)
+    min_days = int(defaults_tier.get("min_days", 7))
+    if camera_tier:
+        if "enabled" in camera_tier:
+            enabled = bool(camera_tier["enabled"])
+        if "min_days" in camera_tier:
+            min_days = int(camera_tier["min_days"])
+
+    # Base TypeSettings from defaults tier
+    base = {k: defaults_tier[k] for k in _TYPE_SETTINGS_FIELDS if k in defaults_tier}
+
+    types: dict[str, TypeSettings] = {}
+    for rtype in _RECORDING_TYPES:
+        label = f"{camera_name}/tier{tier_num}/{rtype}"
+        # Layer 1: defaults tier base
+        merged = dict(base)
+        # Layer 2: defaults tier per-type override
+        defaults_type = defaults_tier.get(rtype)
+        if isinstance(defaults_type, dict):
+            merged = _merge_type_fields(merged, defaults_type)
+        # Layer 3: camera tier base
+        if camera_tier:
+            merged = _merge_type_fields(merged, camera_tier)
+        # Layer 4: camera tier per-type override
+        if camera_tier:
+            camera_type = camera_tier.get(rtype)
+            if isinstance(camera_type, dict):
+                merged = _merge_type_fields(merged, camera_type)
+        types[rtype] = _validate_type_settings(merged, label)
+
+    return TierConfig(
+        enabled=bool(enabled),
+        min_days=min_days,
+        continuous=types["continuous"],
+        motion=types["motion"],
+        object=types["object"],
+    )
+
+
+def _resolve_camera(
+    name: str,
+    defaults: dict,
+    camera: dict | None,
+) -> CameraConfig:
+    """Resolve a single camera's full config by merging defaults + camera block."""
+    enabled = defaults.get("enabled", True)
+    dry_run = defaults.get("dry_run", False)
+    if camera:
+        if "enabled" in camera:
+            enabled = bool(camera["enabled"])
+        if "dry_run" in camera:
+            dry_run = bool(camera["dry_run"])
+
+    return CameraConfig(
+        name=name,
+        enabled=bool(enabled),
+        dry_run=bool(dry_run),
+        tier1=_resolve_tier(
+            defaults.get("tier1") or {},
+            (camera or {}).get("tier1"),
+            name,
+            1,
+        ),
+        tier2=_resolve_tier(
+            defaults.get("tier2") or {},
+            (camera or {}).get("tier2"),
+            name,
+            2,
+        ),
+    )
+
+
+def _discover_cameras(frigate_db: Path) -> list[str]:
+    """Return distinct camera names from Frigate's recordings table."""
+    conn = sqlite3.connect(f"file:{frigate_db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT camera FROM recordings ORDER BY camera"
+        ).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        conn.close()
+
+
+def _merge_defaults(builtin: dict, user: dict) -> dict:
+    """Deep-merge the user's ``defaults`` block on top of built-in defaults.
+
+    Only dicts are recursed into; scalar values in *user* replace *builtin*.
+    """
+    result = dict(builtin)
+    for k, v in user.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _merge_defaults(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def load_config(options_path: str, yaml_path: str | None = None) -> Config:
+    """Load config from HAOS options.json + camera YAML config file.
+
+    If *yaml_path* is not provided, it is read from the ``config_path`` key
+    in options.json (defaulting to
+    ``/addon_configs/frigate_compressor/config.yaml``).
+    """
     with open(options_path, "r", encoding="utf-8") as f:
         opts = json.load(f)
 
-    cam_overrides: dict[tuple[str, int, str], dict] = {}
-    for entry in opts.get("camera_overrides") or []:
-        key = (
-            str(entry["name"]),
-            int(entry["tier"]),
-            str(entry["recording_type"]),
+    if yaml_path is None:
+        yaml_path = str(
+            opts.get(
+                "config_path",
+                "/addon_configs/frigate_compressor/config.yaml",
+            )
         )
-        cam_overrides[key] = _load_partial_type_settings(entry)
 
+    # Load YAML config (defaults + cameras).  Missing file → empty config.
+    yaml_cfg: dict = {}
+    yaml_file = Path(yaml_path)
+    if yaml_file.is_file():
+        with open(yaml_file, "r", encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+
+    # Merge user defaults on top of built-in defaults.
+    defaults = _merge_defaults(_BUILTIN_DEFAULTS, yaml_cfg.get("defaults") or {})
+
+    # MQTT from options.json
     mqtt_cfg = MqttConfig(
         host=str(opts.get("mqtt_host", "") or ""),
         port=int(opts.get("mqtt_port", 1883)),
@@ -390,35 +487,47 @@ def load_config(options_path: str) -> Config:
         ),
     )
 
-    cfg = Config(
+    frigate_db = Path(
+        opts.get("frigate_db", "/addon_configs/ccab4aaf_frigate-fa/frigate.db")
+    )
+    recordings_dir = Path(opts.get("recordings_dir", "/media/frigate/recordings"))
+
+    if not frigate_db.exists():
+        raise FileNotFoundError(f"frigate_db not found: {frigate_db}")
+    if not recordings_dir.is_dir():
+        raise FileNotFoundError(f"recordings_dir not found: {recordings_dir}")
+
+    # Discover cameras from Frigate DB, then resolve configs.
+    discovered = _discover_cameras(frigate_db)
+    yaml_cameras: dict = yaml_cfg.get("cameras") or {}
+
+    # All camera names: union of YAML-configured + Frigate-discovered.
+    all_names = sorted(set(list(yaml_cameras.keys()) + discovered))
+
+    cameras: dict[str, CameraConfig] = {}
+    for name in all_names:
+        cam_block = yaml_cameras.get(name)  # None for discovered-only cameras
+        cameras[name] = _resolve_camera(name, defaults, cam_block)
+
+    # Per-camera tier ordering validation.
+    for name, cam_cfg in cameras.items():
+        if cam_cfg.tier2.min_days <= cam_cfg.tier1.min_days:
+            raise ValueError(
+                f"Camera '{name}': tier2.min_days ({cam_cfg.tier2.min_days}) must be "
+                f"greater than tier1.min_days ({cam_cfg.tier1.min_days})"
+            )
+
+    return Config(
         encoder=opts.get("encoder", "qsv"),
         max_parallel_jobs=int(opts.get("max_parallel_jobs", 2)),
-        tier1=_load_tier(opts.get("tier1") or {}, _TIER1_DEFAULTS),
-        tier2=_load_tier(opts.get("tier2") or {}, _TIER2_DEFAULTS),
         housekeeping_interval_days=int(opts.get("housekeeping_interval_days", 7)),
-        frigate_db=Path(
-            opts.get("frigate_db", "/addon_configs/ccab4aaf_frigate-fa/frigate.db")
-        ),
-        recordings_dir=Path(opts.get("recordings_dir", "/media/frigate/recordings")),
+        frigate_db=frigate_db,
+        recordings_dir=recordings_dir,
         compress_db=Path(opts.get("compress_db", "/data/compress.db")),
         log_level=(opts.get("log_level") or "INFO").upper(),
-        camera_overrides=cam_overrides,
-        dry_run=bool(opts.get("dry_run", True)),
+        cameras=cameras,
         mqtt=mqtt_cfg,
     )
-
-    if cfg.tier2.min_days <= cfg.tier1.min_days:
-        raise ValueError(
-            f"tier2.min_days ({cfg.tier2.min_days}) must be greater than "
-            f"tier1.min_days ({cfg.tier1.min_days})"
-        )
-
-    if not cfg.frigate_db.exists():
-        raise FileNotFoundError(f"frigate_db not found: {cfg.frigate_db}")
-    if not cfg.recordings_dir.is_dir():
-        raise FileNotFoundError(f"recordings_dir not found: {cfg.recordings_dir}")
-
-    return cfg
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -869,12 +978,8 @@ def build_ffmpeg_cmd(
     input_path: Path,
     output_path: Path,
     encoder: str,
-    tier: int,
-    camera: str,
-    recording_type: str,
-    cfg: Config,
+    ts: TypeSettings,
 ) -> list[str]:
-    ts = _resolve_type_settings(cfg, camera, tier, recording_type)
     quality = ts.quality
 
     # Run ffprobe only when needed (fraction modes require actual source values)
@@ -1053,6 +1158,27 @@ def compress_one(
     frigate_rw = ctx.frigate_rw
     frigate_lock = ctx.frigate_lock
 
+    # Resolve per-camera settings.
+    cam_cfg = cfg.cameras.get(camera)
+    if cam_cfg is None:
+        log("WARNING", f"[{camera}] Not in camera config, skipping")
+        return False
+    tier_cfg = cam_cfg.tier1 if tier == 1 else cam_cfg.tier2
+    ts: TypeSettings | None = getattr(tier_cfg, recording_type, None)
+    if ts is None:
+        log(
+            "WARNING",
+            f"[{camera}] No resolved settings for tier{tier}/{recording_type}, skipping",
+        )
+        return False
+    if not ts.enabled:
+        log(
+            "DEBUG",
+            f"[{camera}] Compression disabled for tier{tier}/{recording_type}, skipping",
+        )
+        return True
+    dry_run = cam_cfg.dry_run
+
     def rec(
         *,
         size_before: int | None,
@@ -1094,13 +1220,11 @@ def compress_one(
     # Temp file is named .tmp.{recording_id}.mp4 — unique per job, easy to
     # identify as a temp file by housekeeping without affecting other jobs.
     tmpfile = filepath.parent / f"{_TEMP_PREFIX}{recording_id}.mp4"
-    cmd = build_ffmpeg_cmd(
-        filepath, tmpfile, encoder, tier, camera, recording_type, cfg
-    )
+    cmd = build_ffmpeg_cmd(filepath, tmpfile, encoder, ts)
 
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
-    if cfg.dry_run:
+    if dry_run:
         # Dry-run does no work, so the post-success summary line never runs.
         # Emit a single self-contained INFO line here instead.
         log(
@@ -1337,21 +1461,34 @@ def compress_one(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _min_tier1_min_days(cfg: Config) -> int:
+    """Return the smallest tier1.min_days across all enabled cameras."""
+    days = [
+        cam.tier1.min_days
+        for cam in cfg.cameras.values()
+        if cam.enabled and cam.tier1.enabled
+    ]
+    return min(days) if days else 7
+
+
 def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     """
     Returns recordings eligible for compression that haven't been successfully
     compressed yet.  Each result dict has keys:
         recording_id, camera, path, tier, recording_type
 
-    Attaches Frigate's DB to the compress connection so a single query can
-    cross-reference both tables, avoiding fetching already-done rows.
+    Filters out disabled cameras and disabled tiers using per-camera config.
+    The SQL query uses the most aggressive (minimum) tier1 cutoff across all
+    enabled cameras to fetch candidates; Python-side filtering applies each
+    camera's actual cutoffs.
     """
     cfg = ctx.cfg
     compress_db = ctx.compress_db
     db_lock = ctx.db_lock
 
-    tier1_cutoff = time.time() - (cfg.tier1.min_days * 86400)
-    tier2_cutoff = time.time() - (cfg.tier2.min_days * 86400)
+    # Use the most aggressive cutoff for the SQL query to get all candidates.
+    min_t1_days = _min_tier1_min_days(cfg)
+    earliest_cutoff = time.time() - (min_t1_days * 86400)
 
     with db_lock:
         _frigate_db_str = str(cfg.frigate_db).replace('"', "")
@@ -1371,19 +1508,36 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
                        )
                 ORDER BY r.start_time ASC
                 """,
-                (tier1_cutoff, STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED),
+                (earliest_cutoff, STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED),
             ).fetchall()
         finally:
             compress_db.execute("DETACH DATABASE frigate_eligible")
 
+    now = time.time()
     results = []
     for row in rows:
-        tier = 2 if row["start_time"] < tier2_cutoff else 1
+        camera = row["camera"]
+        cam_cfg = cfg.cameras.get(camera)
+        if cam_cfg is None or not cam_cfg.enabled:
+            continue
+
+        start_time = row["start_time"]
+        age_days_sec = now - start_time
+
+        # Determine which tier applies based on this camera's cutoffs.
+        tier: int | None = None
+        if cam_cfg.tier2.enabled and age_days_sec >= cam_cfg.tier2.min_days * 86400:
+            tier = 2
+        elif cam_cfg.tier1.enabled and age_days_sec >= cam_cfg.tier1.min_days * 86400:
+            tier = 1
+        if tier is None:
+            continue
+
         rtype = _recording_type(row["motion"], row["objects"])
         results.append(
             {
                 "recording_id": row["id"],
-                "camera": row["camera"],
+                "camera": camera,
                 "path": row["path"],
                 "tier": tier,
                 "recording_type": rtype,
@@ -1397,13 +1551,12 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
     Returns seconds until the next recording becomes eligible for tier 1
     compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
 
-    Returns ``MAX_SLEEP_SEC`` if nothing is pending (no future candidates in
-    the DB) — which keeps the daemon waking up at least every 10 minutes to
-    re-check rather than sleeping forever if Frigate is paused or has no
-    recordings.
+    Uses the minimum tier1.min_days across all enabled cameras.
+    Returns ``MAX_SLEEP_SEC`` if nothing is pending.
     """
     cfg = ctx.cfg
-    tier1_cutoff = time.time() - (cfg.tier1.min_days * 86400)
+    min_days = _min_tier1_min_days(cfg)
+    tier1_cutoff = time.time() - (min_days * 86400)
 
     with ctx.frigate_ro_lock:
         row = ctx.frigate_ro.execute(
@@ -1419,7 +1572,7 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
     if row is None:
         return MAX_SLEEP_SEC
 
-    eligible_at = row["start_time"] + (cfg.tier1.min_days * 86400)
+    eligible_at = row["start_time"] + (min_days * 86400)
     return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, eligible_at - time.time()))
 
 
@@ -1442,7 +1595,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     # compression jobs are never interrupted — each job uses a unique name.
     temp_files = list(Path(cfg.recordings_dir).rglob(_TEMP_GLOB))
     for tmp in temp_files:
-        if cfg.dry_run:
+        if cfg.all_dry_run:
             log("INFO", f"DRY RUN: Would remove leftover temp file: {tmp}")
         else:
             log("WARNING", f"Removing leftover temp file: {tmp}")
@@ -1471,7 +1624,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             )
             continue
         actual_size_mb = fpath.stat().st_size / (1024 * 1024)
-        if cfg.dry_run:
+        if cfg.all_dry_run:
             log(
                 "INFO",
                 f"[{row['camera']}] DRY RUN: would retry segment_size update"
@@ -1525,7 +1678,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
         )
         try:
-            if cfg.dry_run:
+            if cfg.all_dry_run:
                 pruned = compress_db.execute(
                     """
                     SELECT COUNT(*) FROM compressed_files
@@ -1549,7 +1702,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         finally:
             compress_db.execute("DETACH DATABASE frigate_ro_hk")
     if pruned:
-        prefix = "DRY RUN: Would prune" if cfg.dry_run else "Pruned"
+        prefix = "DRY RUN: Would prune" if cfg.all_dry_run else "Pruned"
         log("INFO", f"{prefix} {pruned} orphaned DB entries")
     else:
         log("DEBUG", "No orphaned DB entries")
@@ -1639,6 +1792,8 @@ def _fmt(n: int | float | None) -> str:
 
 def _fmt_type(ts: TypeSettings) -> str:
     """One-line summary of a TypeSettings for startup logging."""
+    if not ts.enabled:
+        return "SKIP (compression disabled)"
     sc = f"{ts.scale_mode}({ts.scale_value})" if ts.scale_mode != "none" else "original"
     fp = f"{ts.fps_mode}({ts.fps_value})" if ts.fps_mode != "none" else "original"
     return f"q={ts.quality} scale={sc} fps={fp}"
@@ -2382,7 +2537,7 @@ class MqttPublisher:
 
 def _warn_qsv_fps_conflicts(cfg: Config, encoder: str) -> None:
     """
-    Emit one WARNING per (label, tier, recording_type) combination where QSV
+    Emit one WARNING per (camera, tier, recording_type) combination where QSV
     encoding is active alongside both an fps filter and a scale filter.
     Mixed CPU/GPU filter chains can cause FFmpeg to fail with a cryptic
     'Error while filtering' message.  Called once at startup to inform the
@@ -2391,30 +2546,22 @@ def _warn_qsv_fps_conflicts(cfg: Config, encoder: str) -> None:
     if encoder != "qsv":
         return
 
-    # Check global tier settings first.
-    for tier_num, tier_cfg in ((1, cfg.tier1), (2, cfg.tier2)):
-        for rtype in ("continuous", "motion", "object"):
-            ts: TypeSettings = getattr(tier_cfg, rtype)
-            if ts.fps_mode != "none" and ts.scale_mode != "none":
-                log(
-                    "WARNING",
-                    f"Config [tier{tier_num}/{rtype}]: QSV encoder + fps_mode='{ts.fps_mode}'"
-                    f" + scale_mode='{ts.scale_mode}' — mixed CPU/GPU filter chain may cause"
-                    " FFmpeg to fail. Consider fps_mode='none' with QSV, or encoder='cpu'.",
-                )
-
-    # Check camera overrides: resolve the full merged settings and warn if both
-    # filters are active after merging with the global defaults.
-    for cam, tier_num, rtype in cfg.camera_overrides:
-        ts = _resolve_type_settings(cfg, cam, tier_num, rtype)
-        if ts.fps_mode != "none" and ts.scale_mode != "none":
-            log(
-                "WARNING",
-                f"Config [{cam} tier{tier_num}/{rtype} override]: QSV encoder"
-                f" + fps_mode='{ts.fps_mode}' + scale_mode='{ts.scale_mode}'"
-                " — mixed CPU/GPU filter chain may cause FFmpeg to fail."
-                " Consider fps_mode='none' with QSV, or encoder='cpu'.",
-            )
+    for cam_name, cam_cfg in cfg.cameras.items():
+        if not cam_cfg.enabled:
+            continue
+        for tier_num, tier_cfg in ((1, cam_cfg.tier1), (2, cam_cfg.tier2)):
+            if not tier_cfg.enabled:
+                continue
+            for rtype in _RECORDING_TYPES:
+                ts: TypeSettings = getattr(tier_cfg, rtype)
+                if ts.fps_mode != "none" and ts.scale_mode != "none":
+                    log(
+                        "WARNING",
+                        f"Config [{cam_name} tier{tier_num}/{rtype}]: QSV encoder"
+                        f" + fps_mode='{ts.fps_mode}' + scale_mode='{ts.scale_mode}'"
+                        " — mixed CPU/GPU filter chain may cause FFmpeg to fail."
+                        " Consider fps_mode='none' with QSV, or encoder='cpu'.",
+                    )
 
 
 def main() -> int:
@@ -2433,11 +2580,11 @@ def main() -> int:
     encoder_ok, encoder_msg = check_encoder_works(encoder)
     if encoder_ok:
         log("INFO", f"Encoder self-test: {encoder} OK")
-    elif cfg.dry_run:
+    elif cfg.all_dry_run:
         log(
             "WARNING",
             f"Encoder self-test: {encoder} FAILED — {encoder_msg}. "
-            "Continuing because dry_run is enabled, but real compression "
+            "Continuing because all cameras are dry_run, but real compression "
             "would fail on every file.",
         )
     else:
@@ -2461,19 +2608,11 @@ def main() -> int:
 
     log("INFO", "════════════════════════════════════════")
     log("INFO", f"Frigate Compressor v{__version__} starting")
-    if cfg.dry_run:
+    if cfg.all_dry_run:
         log("INFO", "  *** DRY RUN MODE — no files or databases will be modified ***")
     log("INFO", f"  Encoder        : {encoder}")
     log("INFO", f"  Parallel jobs  : {cfg.max_parallel_jobs}")
     log("INFO", f"  Log level      : {cfg.log_level}")
-    log("INFO", f"  Tier 1  (>{cfg.tier1.min_days}d):")
-    log("INFO", f"    continuous : {_fmt_type(cfg.tier1.continuous)}")
-    log("INFO", f"    motion     : {_fmt_type(cfg.tier1.motion)}")
-    log("INFO", f"    object     : {_fmt_type(cfg.tier1.object)}")
-    log("INFO", f"  Tier 2  (>{cfg.tier2.min_days}d):")
-    log("INFO", f"    continuous : {_fmt_type(cfg.tier2.continuous)}")
-    log("INFO", f"    motion     : {_fmt_type(cfg.tier2.motion)}")
-    log("INFO", f"    object     : {_fmt_type(cfg.tier2.object)}")
     log("INFO", f"  Housekeeping   : every {cfg.housekeeping_interval_days}d")
     log("INFO", f"  Frigate DB     : {cfg.frigate_db}")
     log("INFO", f"  Recordings     : {cfg.recordings_dir}")
@@ -2489,15 +2628,21 @@ def main() -> int:
         )
     else:
         log("INFO", "  MQTT           : disabled (mqtt_host empty)")
-    if cfg.camera_overrides:
-        log("INFO", "  Camera overrides:")
-        grouped: dict[str, list] = {}
-        for (cam, t, rtype), fields in cfg.camera_overrides.items():
-            grouped.setdefault(cam, []).append((t, rtype, fields))
-        for cam in sorted(grouped):
-            for t, rtype, fields in sorted(grouped[cam]):
-                field_str = ", ".join(f"{k}={v}" for k, v in fields.items())
-                log("INFO", f"    {cam} tier{t}/{rtype}: {field_str}")
+    log("INFO", f"  Cameras        : {len(cfg.cameras)}")
+    for cam_name, cam_cfg in cfg.cameras.items():
+        flags = []
+        if not cam_cfg.enabled:
+            flags.append("DISABLED")
+        if cam_cfg.dry_run:
+            flags.append("DRY_RUN")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        log("INFO", f"  ── {cam_name}{flag_str}")
+        for tier_num, tier_cfg in ((1, cam_cfg.tier1), (2, cam_cfg.tier2)):
+            tier_flag = "" if tier_cfg.enabled else " [DISABLED]"
+            log("INFO", f"      Tier {tier_num} (>{tier_cfg.min_days}d){tier_flag}:")
+            for rtype in _RECORDING_TYPES:
+                ts = getattr(tier_cfg, rtype)
+                log("INFO", f"        {rtype:<12}: {_fmt_type(ts)}")
     log("INFO", "════════════════════════════════════════")
 
     ctx = CompressorContext(
@@ -2579,7 +2724,7 @@ def run_main_loop(
             continue
 
         if eligible:
-            suffix = " (DRY RUN — skipping ffmpeg)" if cfg.dry_run else ""
+            suffix = " (DRY RUN — skipping ffmpeg)" if cfg.all_dry_run else ""
             log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
             camera_counts = Counter(r["camera"] for r in eligible)
             breakdown = ", ".join(

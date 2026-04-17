@@ -102,7 +102,11 @@ def _make_ctx(
     *,
     dry_run: bool = False,
 ) -> fc.CompressorContext:
-    opts = _make_options(tmp_path, frigate_db=str(frigate_db), dry_run=dry_run)
+    opts = _make_options(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_defaults={"dry_run": dry_run},
+    )
     cfg = fc.load_config(str(opts))
     compress_conn = _open_compress_db(tmp_path)
     frigate_ro = sqlite3.connect(str(frigate_db))

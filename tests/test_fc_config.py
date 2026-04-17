@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Tests for recording type classification, config loading, and type-settings resolution."""
+"""Tests for recording type classification, config loading, and resolution logic."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 
 import frigate_compressor as fc
 
-from fc_helpers import _make_config, _make_options
+from fc_helpers import _make_config, _make_frigate_db
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -48,7 +48,7 @@ def test_recording_type_continuous_motion_zero():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# load_config
+# load_config — basic loading
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -56,52 +56,29 @@ def test_load_config_defaults(tmp_path):
     cfg = _make_config(tmp_path)
     assert cfg.encoder == "cpu"
     assert cfg.max_parallel_jobs == 1
-    assert cfg.tier1.min_days == 7
-    assert cfg.tier2.min_days == 30
-    assert cfg.log_level == "DEBUG"
+    assert "cam" in cfg.cameras
+    cam = cfg.cameras["cam"]
+    assert cam.tier1.min_days == 7
+    assert cam.tier2.min_days == 30
+    assert cam.enabled is True
+    assert cam.dry_run is False
 
 
 def test_load_config_tier1_type_settings(tmp_path):
     cfg = _make_config(tmp_path)
-    assert cfg.tier1.continuous.quality == 28
-    assert cfg.tier1.continuous.scale_mode == "none"
-    assert cfg.tier1.motion.scale_mode == "halve"
-    assert cfg.tier1.object.quality == 22
+    cam = cfg.cameras["cam"]
+    assert cam.tier1.continuous.quality == 28
+    assert cam.tier1.continuous.scale_mode == "none"
+    assert cam.tier1.motion.scale_mode == "halve"
+    assert cam.tier1.object.quality == 22
 
 
 def test_load_config_tier2_type_settings(tmp_path):
     cfg = _make_config(tmp_path)
-    assert cfg.tier2.continuous.fps_mode == "cap"
-    assert cfg.tier2.continuous.fps_value == 4.0
-    assert cfg.tier2.motion.fps_value == 8.0
-
-
-def test_load_config_camera_overrides(tmp_path):
-    cfg = _make_config(
-        tmp_path,
-        camera_overrides=[
-            {
-                "name": "cam1",
-                "tier": 1,
-                "recording_type": "object",
-                "quality": 18,
-                "scale_mode": "fixed",
-                "scale_value": "1280:720",
-            }
-        ],
-    )
-    assert cfg.camera_overrides == {
-        ("cam1", 1, "object"): {
-            "quality": 18,
-            "scale_mode": "fixed",
-            "scale_value": "1280:720",
-        }
-    }
-
-
-def test_load_config_empty_overrides(tmp_path):
-    cfg = _make_config(tmp_path)
-    assert cfg.camera_overrides == {}
+    cam = cfg.cameras["cam"]
+    assert cam.tier2.continuous.fps_mode == "cap"
+    assert cam.tier2.continuous.fps_value == 4.0
+    assert cam.tier2.motion.fps_value == 8.0
 
 
 def test_load_config_paths(tmp_path):
@@ -111,116 +88,333 @@ def test_load_config_paths(tmp_path):
     assert isinstance(cfg.recordings_dir, type(cfg.recordings_dir))
 
 
-def test_load_config_invalid_tier_ordering(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["min_days"] = 30
-    data["tier2"]["min_days"] = 7
-    p.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="tier2.min_days"):
-        fc.load_config(str(p))
-
-
-def test_load_config_tier_equal_min_days_raises(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["min_days"] = 14
-    data["tier2"]["min_days"] = 14
-    p.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="tier2.min_days"):
-        fc.load_config(str(p))
-
-
 def test_load_config_quality_out_of_range(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["continuous"]["quality"] = 99
-    p.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="quality"):
-        fc.load_config(str(p))
+        _make_config(
+            tmp_path,
+            yaml_defaults={"tier1": {"quality": 99}},
+        )
 
 
 def test_load_config_quality_negative_raises(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["motion"]["quality"] = -1
-    p.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="quality"):
-        fc.load_config(str(p))
+        _make_config(
+            tmp_path,
+            yaml_defaults={"tier1": {"motion": {"quality": -1}}},
+        )
 
 
 def test_load_config_fixed_scale_mode_requires_scale_value(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["continuous"]["scale_mode"] = "fixed"
-    data["tier1"]["continuous"]["scale_value"] = ""
-    p.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="scale_mode='fixed'"):
-        fc.load_config(str(p))
+        _make_config(
+            tmp_path,
+            yaml_defaults={"tier1": {"scale_mode": "fixed", "scale_value": ""}},
+        )
 
 
 def test_load_config_fixed_scale_mode_with_value_ok(tmp_path):
-    p = _make_options(tmp_path)
-    data = json.loads(p.read_text())
-    data["tier1"]["continuous"]["scale_mode"] = "fixed"
-    data["tier1"]["continuous"]["scale_value"] = "1280:720"
-    p.write_text(json.dumps(data))
-    cfg = fc.load_config(str(p))
-    assert cfg.tier1.continuous.scale_value == "1280:720"
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"tier1": {"scale_mode": "fixed", "scale_value": "1280:720"}},
+    )
+    cam = cfg.cameras["cam"]
+    # fixed+value applies to all types via base
+    assert cam.tier1.continuous.scale_value == "1280:720"
+    assert cam.tier1.continuous.scale_mode == "fixed"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# _resolve_type_settings
+# load_config — tier ordering validation
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_resolve_type_settings_no_override(tmp_path):
+def test_load_config_invalid_tier_ordering(tmp_path):
+    with pytest.raises(ValueError, match="tier2.min_days"):
+        _make_config(
+            tmp_path,
+            yaml_defaults={
+                "tier1": {"min_days": 30},
+                "tier2": {"min_days": 7},
+            },
+        )
+
+
+def test_load_config_tier_equal_min_days_raises(tmp_path):
+    with pytest.raises(ValueError, match="tier2.min_days"):
+        _make_config(
+            tmp_path,
+            yaml_defaults={
+                "tier1": {"min_days": 14},
+                "tier2": {"min_days": 14},
+            },
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Resolution logic — 4-layer merge
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_resolve_defaults_only(tmp_path):
+    """Camera with no overrides gets pure defaults."""
     cfg = _make_config(tmp_path)
-    ts = fc._resolve_type_settings(cfg, "cam1", 1, "motion")
+    cam = cfg.cameras["cam"]
+    ts = cam.tier1.motion
     assert ts.quality == 26
     assert ts.scale_mode == "halve"
 
 
-def test_resolve_type_settings_with_override(tmp_path):
+def test_resolve_camera_tier_base_overrides_defaults(tmp_path):
+    """Camera tier base quality overrides defaults tier base AND per-type defaults."""
     cfg = _make_config(
         tmp_path,
-        camera_overrides=[
-            {
-                "name": "front_door",
-                "tier": 1,
-                "recording_type": "object",
-                "quality": 18,
-                "scale_mode": "fixed",
-                "scale_value": "1920:1080",
+        yaml_cameras={"front_door": {"tier1": {"quality": 30}}},
+    )
+    cam = cfg.cameras["front_door"]
+    # Layer 3 (camera tier base q=30) overrides layer 2 (defaults motion q=26)
+    assert cam.tier1.motion.quality == 30
+    # Layer 3 also overrides layer 1 (defaults base q=28)
+    assert cam.tier1.continuous.quality == 30
+
+
+def test_resolve_camera_tier_type_overrides_camera_tier_base(tmp_path):
+    """Camera tier per-type override wins over camera tier base."""
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={
+            "front_door": {
+                "tier1": {
+                    "quality": 30,  # camera tier base
+                    "object": {"quality": 18},  # camera tier per-type
+                }
             }
-        ],
+        },
     )
-    ts = fc._resolve_type_settings(cfg, "front_door", 1, "object")
-    assert ts.quality == 18
-    assert ts.scale_mode == "fixed"
-    assert ts.scale_value == "1920:1080"
-    assert ts.fps_mode == "none"  # unspecified — falls back to global tier default
+    cam = cfg.cameras["front_door"]
+    assert cam.tier1.object.quality == 18  # layer 4 wins
+    assert cam.tier1.continuous.quality == 30  # layer 3 for other types
 
 
-def test_resolve_type_settings_override_scoped_to_tier(tmp_path):
-    # Override for tier 1 must not affect tier 2 for the same camera/type.
+def test_resolve_camera_tier_override_scoped_to_tier(tmp_path):
+    """Override for tier 1 must not affect tier 2."""
     cfg = _make_config(
         tmp_path,
-        camera_overrides=[
-            {"name": "front_door", "tier": 1, "recording_type": "object", "quality": 18}
-        ],
+        yaml_cameras={
+            "front_door": {"tier1": {"quality": 18}},
+        },
     )
-    ts2 = fc._resolve_type_settings(cfg, "front_door", 2, "object")
-    assert ts2.quality == 26  # global tier2 object default
+    cam = cfg.cameras["front_door"]
+    assert cam.tier1.continuous.quality == 18
+    assert cam.tier2.continuous.quality == 34  # global tier2 default
 
 
-def test_resolve_type_settings_override_scoped_to_type(tmp_path):
-    # Override for object must not affect motion for the same camera/tier.
+def test_resolve_camera_tier_override_scoped_to_type(tmp_path):
+    """Per-type override must not affect other types."""
     cfg = _make_config(
         tmp_path,
-        camera_overrides=[
-            {"name": "front_door", "tier": 1, "recording_type": "object", "quality": 18}
-        ],
+        yaml_cameras={
+            "front_door": {"tier1": {"object": {"quality": 18}}},
+        },
     )
-    ts = fc._resolve_type_settings(cfg, "front_door", 1, "motion")
-    assert ts.quality == 26  # global tier1 motion default
+    cam = cfg.cameras["front_door"]
+    assert cam.tier1.object.quality == 18
+    assert cam.tier1.motion.quality == 26  # defaults per-type
+    assert cam.tier1.continuous.quality == 28  # defaults base
+
+
+def test_resolve_defaults_per_type_then_camera_base(tmp_path):
+    """Defaults per-type scale_mode persists when camera base only overrides quality."""
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"cam1": {"tier1": {"quality": 30}}},
+    )
+    cam = cfg.cameras["cam1"]
+    # motion default has scale_mode=halve; camera base overrides quality only
+    assert cam.tier1.motion.scale_mode == "halve"
+    assert cam.tier1.motion.quality == 30
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Resolution logic — enabled / dry_run inheritance
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_camera_enabled_defaults_true(tmp_path):
+    cfg = _make_config(tmp_path, yaml_cameras={"cam1": {}})
+    assert cfg.cameras["cam1"].enabled is True
+
+
+def test_camera_enabled_override(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"cam1": {"enabled": False}},
+    )
+    assert cfg.cameras["cam1"].enabled is False
+
+
+def test_camera_dry_run_defaults_false(tmp_path):
+    cfg = _make_config(tmp_path, yaml_cameras={"cam1": {}})
+    assert cfg.cameras["cam1"].dry_run is False
+
+
+def test_camera_dry_run_override(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"cam1": {"dry_run": True}},
+    )
+    assert cfg.cameras["cam1"].dry_run is True
+
+
+def test_camera_dry_run_inherited_from_defaults(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"dry_run": True},
+        yaml_cameras={"cam1": {}},
+    )
+    assert cfg.cameras["cam1"].dry_run is True
+
+
+def test_tier_enabled_defaults_true(tmp_path):
+    cfg = _make_config(tmp_path, yaml_cameras={"cam1": {}})
+    assert cfg.cameras["cam1"].tier1.enabled is True
+    assert cfg.cameras["cam1"].tier2.enabled is True
+
+
+def test_tier_enabled_override(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"cam1": {"tier2": {"enabled": False}}},
+    )
+    assert cfg.cameras["cam1"].tier1.enabled is True
+    assert cfg.cameras["cam1"].tier2.enabled is False
+
+
+def test_tier_enabled_inherited_from_defaults(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"tier2": {"enabled": False}},
+        yaml_cameras={"cam1": {}},
+    )
+    assert cfg.cameras["cam1"].tier2.enabled is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Resolution logic — discovered cameras from Frigate DB
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_discovered_camera_gets_defaults(tmp_path):
+    """A camera in Frigate DB but not in YAML gets pure defaults."""
+    frigate_db = tmp_path / "frigate.db"
+    db = _make_frigate_db(frigate_db)
+    db.execute(
+        "INSERT INTO recordings (id, camera, path, start_time) VALUES (?, ?, ?, ?)",
+        ("r1", "discovered_cam", "/fake/path.mp4", 1000.0),
+    )
+    db.commit()
+    db.close()
+
+    cfg = _make_config(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_cameras={"configured_cam": {}},
+    )
+    assert "discovered_cam" in cfg.cameras
+    assert "configured_cam" in cfg.cameras
+    # Discovered camera gets pure defaults
+    dcam = cfg.cameras["discovered_cam"]
+    assert dcam.enabled is True
+    assert dcam.dry_run is False
+    assert dcam.tier1.continuous.quality == 28
+
+
+def test_yaml_camera_not_in_frigate_db(tmp_path):
+    """A camera in YAML but not in Frigate DB is still resolved."""
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"yaml_only_cam": {"dry_run": True}},
+    )
+    assert "yaml_only_cam" in cfg.cameras
+    assert cfg.cameras["yaml_only_cam"].dry_run is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# all_dry_run property
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_all_dry_run_all_true(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"dry_run": True},
+        yaml_cameras={"cam1": {}, "cam2": {}},
+    )
+    assert cfg.all_dry_run is True
+
+
+def test_all_dry_run_mixed(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_cameras={"cam1": {"dry_run": True}, "cam2": {"dry_run": False}},
+    )
+    assert cfg.all_dry_run is False
+
+
+def test_all_dry_run_no_cameras(tmp_path):
+    cfg = _make_config(tmp_path, yaml_cameras={})
+    assert cfg.all_dry_run is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _merge_defaults
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_merge_defaults_deep():
+    builtin = {"a": 1, "nested": {"x": 10, "y": 20}}
+    user = {"nested": {"x": 99}, "b": 2}
+    result = fc._merge_defaults(builtin, user)
+    assert result == {"a": 1, "nested": {"x": 99, "y": 20}, "b": 2}
+
+
+def test_merge_defaults_scalar_replaces():
+    builtin = {"a": {"x": 1}}
+    user = {"a": "flat"}
+    result = fc._merge_defaults(builtin, user)
+    assert result == {"a": "flat"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Missing YAML config file
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_load_config_missing_yaml_uses_builtin_defaults(tmp_path):
+    """When config.yaml doesn't exist, all cameras discovered from Frigate DB
+    get built-in defaults."""
+    frigate_db = tmp_path / "frigate.db"
+    db = _make_frigate_db(frigate_db)
+    db.execute(
+        "INSERT INTO recordings (id, camera, path, start_time) VALUES (?, ?, ?, ?)",
+        ("r1", "driveway", "/fake/path.mp4", 1000.0),
+    )
+    db.commit()
+    db.close()
+
+    (tmp_path / "recordings").mkdir()
+    opts = {
+        "encoder": "cpu",
+        "max_parallel_jobs": 1,
+        "housekeeping_interval_days": 7,
+        "frigate_db": str(frigate_db),
+        "recordings_dir": str(tmp_path / "recordings"),
+        "compress_db": str(tmp_path / "compress.db"),
+        "config_path": str(tmp_path / "nonexistent.yaml"),
+        "log_level": "DEBUG",
+    }
+    opts_path = tmp_path / "options.json"
+    opts_path.write_text(json.dumps(opts))
+
+    cfg = fc.load_config(str(opts_path))
+    assert "driveway" in cfg.cameras
+    assert cfg.cameras["driveway"].tier1.continuous.quality == 28

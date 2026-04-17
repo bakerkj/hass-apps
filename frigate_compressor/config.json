@@ -16,8 +16,8 @@
     "frigate_db": "/addon_configs/ccab4aaf_frigate-fa/frigate.db",
     "recordings_dir": "/media/frigate/recordings",
     "compress_db": "/data/compress.db",
+    "config_path": "/addon_configs/frigate_compressor/config.yaml",
     "log_level": "INFO",
-    "dry_run": true,
     "mqtt_host": "",
     "mqtt_port": 1883,
     "mqtt_username": "",
@@ -27,56 +27,7 @@
     "mqtt_client_id": "frigate-compressor",
     "mqtt_publish_interval_seconds": 60,
     "mqtt_disconnect_timeout_seconds": 300,
-    "rate_window_seconds": 300,
-    "tier1": {
-      "min_days": 7,
-      "continuous": {
-        "quality": 28,
-        "scale_mode": "none",
-        "scale_value": "",
-        "fps_mode": "none",
-        "fps_value": 1.0
-      },
-      "motion": {
-        "quality": 26,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "none",
-        "fps_value": 1.0
-      },
-      "object": {
-        "quality": 22,
-        "scale_mode": "none",
-        "scale_value": "",
-        "fps_mode": "none",
-        "fps_value": 1.0
-      }
-    },
-    "tier2": {
-      "min_days": 30,
-      "continuous": {
-        "quality": 34,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 4.0
-      },
-      "motion": {
-        "quality": 30,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 8.0
-      },
-      "object": {
-        "quality": 26,
-        "scale_mode": "halve",
-        "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 8.0
-      }
-    },
-    "camera_overrides": []
+    "rate_window_seconds": 300
   },
   "schema": {
     "encoder": "list(qsv|vaapi|nvenc|cpu)",
@@ -85,8 +36,8 @@
     "frigate_db": "str",
     "recordings_dir": "str",
     "compress_db": "str",
+    "config_path": "str",
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
-    "dry_run": "bool",
     "mqtt_host": "str?",
     "mqtt_port": "port?",
     "mqtt_username": "str?",
@@ -96,67 +47,7 @@
     "mqtt_client_id": "str?",
     "mqtt_publish_interval_seconds": "int(5,3600)?",
     "mqtt_disconnect_timeout_seconds": "int(5,3600)?",
-    "rate_window_seconds": "int(60,86400)?",
-    "tier1": {
-      "min_days": "int(1,365)",
-      "continuous": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      },
-      "motion": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      },
-      "object": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      }
-    },
-    "tier2": {
-      "min_days": "int(1,365)",
-      "continuous": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      },
-      "motion": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      },
-      "object": {
-        "quality": "int(0,51)",
-        "scale_mode": "list(none|halve|fixed|fraction)",
-        "scale_value": "str",
-        "fps_mode": "list(none|cap|fraction)",
-        "fps_value": "float(0.01,120.0)"
-      }
-    },
-    "camera_overrides": [
-      {
-        "name": "str",
-        "tier": "int(1,2)",
-        "recording_type": "list(continuous|motion|object)",
-        "quality": "int(0,51)?",
-        "scale_mode": "list(none|halve|fixed|fraction)?",
-        "scale_value": "str?",
-        "fps_mode": "list(none|cap|fraction)?",
-        "fps_value": "float(0.01,120.0)?"
-      }
-    ]
+    "rate_window_seconds": "int(60,86400)?"
   },
   "panel_icon": "mdi:video-check"
 }

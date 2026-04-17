@@ -9,88 +9,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import yaml
+
 import frigate_compressor as fc
-
-
-def _make_options(tmp_path: Path, **overrides) -> Path:
-    """Write a minimal options.json and return its path."""
-    frigate_db = Path(overrides.get("frigate_db", tmp_path / "frigate.db"))
-    recordings_dir = Path(overrides.get("recordings_dir", tmp_path / "recordings"))
-    if not frigate_db.exists():
-        frigate_db.touch()
-    if not recordings_dir.exists():
-        recordings_dir.mkdir(parents=True)
-    opts = {
-        "encoder": "cpu",
-        "max_parallel_jobs": 1,
-        "housekeeping_interval_days": 7,
-        "frigate_db": str(frigate_db),
-        "recordings_dir": str(recordings_dir),
-        "compress_db": str(tmp_path / "compress.db"),
-        "log_level": "DEBUG",
-        "dry_run": False,
-        "tier1": {
-            "min_days": 7,
-            "continuous": {
-                "quality": 28,
-                "scale_mode": "none",
-                "scale_value": "",
-                "fps_mode": "none",
-                "fps_value": 1.0,
-            },
-            "motion": {
-                "quality": 26,
-                "scale_mode": "halve",
-                "scale_value": "",
-                "fps_mode": "none",
-                "fps_value": 1.0,
-            },
-            "object": {
-                "quality": 22,
-                "scale_mode": "none",
-                "scale_value": "",
-                "fps_mode": "none",
-                "fps_value": 1.0,
-            },
-        },
-        "tier2": {
-            "min_days": 30,
-            "continuous": {
-                "quality": 34,
-                "scale_mode": "halve",
-                "scale_value": "",
-                "fps_mode": "cap",
-                "fps_value": 4.0,
-            },
-            "motion": {
-                "quality": 30,
-                "scale_mode": "halve",
-                "scale_value": "",
-                "fps_mode": "cap",
-                "fps_value": 8.0,
-            },
-            "object": {
-                "quality": 26,
-                "scale_mode": "halve",
-                "scale_value": "",
-                "fps_mode": "cap",
-                "fps_value": 8.0,
-            },
-        },
-        "camera_overrides": [],
-    }
-    opts.update(overrides)
-    p = tmp_path / "options.json"
-    p.write_text(json.dumps(opts))
-    return p
-
-
-def _make_config(tmp_path: Path, **overrides) -> fc.Config:
-    return fc.load_config(str(_make_options(tmp_path, **overrides)))
-
-
-def _open_compress_db(tmp_path: Path) -> sqlite3.Connection:
-    return fc.open_compress_db(tmp_path / "compress.db")
 
 
 def _make_frigate_db(path: Path) -> sqlite3.Connection:
@@ -122,3 +43,64 @@ def _insert_recording(conn, rid, camera, path, start_time, motion=None, objects=
         (rid, camera, path, start_time, motion, objects),
     )
     conn.commit()
+
+
+def _make_options(tmp_path: Path, **overrides) -> Path:
+    """Write options.json + config.yaml and return the options.json path.
+
+    Keyword arguments that start with ``yaml_`` are routed to the YAML
+    config file:
+
+    * ``yaml_defaults`` → ``defaults:`` block in config.yaml
+    * ``yaml_cameras`` → ``cameras:`` block in config.yaml
+      Defaults to ``{"cam": {}}`` (one camera with all defaults) so that
+      tests which don't care about cameras still get a usable config.
+
+    All other keyword arguments become top-level keys in options.json.
+    """
+    frigate_db = Path(overrides.pop("frigate_db", str(tmp_path / "frigate.db")))
+    recordings_dir = Path(overrides.pop("recordings_dir", str(tmp_path / "recordings")))
+
+    # Ensure a valid Frigate DB exists (not just a touched file — load_config
+    # calls _discover_cameras which queries the recordings table).
+    if not frigate_db.exists():
+        db = _make_frigate_db(frigate_db)
+        db.close()
+
+    if not recordings_dir.exists():
+        recordings_dir.mkdir(parents=True)
+
+    # YAML config
+    yaml_defaults = overrides.pop("yaml_defaults", None)
+    yaml_cameras = overrides.pop("yaml_cameras", {"cam": {}})
+    yaml_path = tmp_path / "config.yaml"
+    yaml_cfg: dict = {}
+    if yaml_defaults is not None:
+        yaml_cfg["defaults"] = yaml_defaults
+    if yaml_cameras is not None:
+        yaml_cfg["cameras"] = yaml_cameras
+    yaml_path.write_text(yaml.dump(yaml_cfg, default_flow_style=False))
+
+    # Options JSON (HAOS settings only)
+    opts: dict = {
+        "encoder": "cpu",
+        "max_parallel_jobs": 1,
+        "housekeeping_interval_days": 7,
+        "frigate_db": str(frigate_db),
+        "recordings_dir": str(recordings_dir),
+        "compress_db": str(tmp_path / "compress.db"),
+        "config_path": str(yaml_path),
+        "log_level": "DEBUG",
+    }
+    opts.update(overrides)
+    p = tmp_path / "options.json"
+    p.write_text(json.dumps(opts))
+    return p
+
+
+def _make_config(tmp_path: Path, **overrides) -> fc.Config:
+    return fc.load_config(str(_make_options(tmp_path, **overrides)))
+
+
+def _open_compress_db(tmp_path: Path) -> sqlite3.Connection:
+    return fc.open_compress_db(tmp_path / "compress.db")
