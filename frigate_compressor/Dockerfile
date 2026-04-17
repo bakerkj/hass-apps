@@ -13,6 +13,7 @@ ENV ADDON_VERSION=${BUILD_VERSION}
 RUN apk add --no-cache \
       python3=3.12.13-r0 \
       py3-paho-mqtt=1.6.1-r3 \
+      py3-yaml=6.0.3-r0 \
       ffmpeg=8.0.1-r1 \
       libva=2.22.0-r1 \
       intel-media-driver=25.4.6-r0 \

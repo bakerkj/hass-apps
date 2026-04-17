@@ -76,16 +76,16 @@ def test_build_fps_filter(mode, value, source_fps, expected):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _cmd(tmp_path, encoder="cpu", tier=1, camera="cam", recording_type="continuous"):
+def _cmd(tmp_path, encoder="cpu", tier=1, recording_type="continuous"):
     cfg = _make_config(tmp_path)
+    cam = cfg.cameras["cam"]
+    tier_cfg = cam.tier1 if tier == 1 else cam.tier2
+    ts = getattr(tier_cfg, recording_type)
     return fc.build_ffmpeg_cmd(
         Path("/input.mp4"),
         Path("/output.mp4"),
         encoder,
-        tier,
-        camera,
-        recording_type,
-        cfg,
+        ts,
     )
 
 
@@ -149,19 +149,19 @@ def test_build_ffmpeg_cmd_has_vf_when_fps(tmp_path):
 
 def test_build_ffmpeg_cmd_quality_tier1_object(tmp_path):
     cfg = _make_config(tmp_path)
-    cmd = fc.build_ffmpeg_cmd(
-        Path("/in.mp4"), Path("/out.mp4"), "cpu", 1, "cam", "object", cfg
-    )
+    cam = cfg.cameras["cam"]
+    ts = cam.tier1.object
+    cmd = fc.build_ffmpeg_cmd(Path("/in.mp4"), Path("/out.mp4"), "cpu", ts)
     assert "-crf" in cmd
-    assert str(cfg.tier1.object.quality) in cmd
+    assert str(ts.quality) in cmd
 
 
 def test_build_ffmpeg_cmd_quality_tier2_continuous(tmp_path):
     cfg = _make_config(tmp_path)
-    cmd = fc.build_ffmpeg_cmd(
-        Path("/in.mp4"), Path("/out.mp4"), "cpu", 2, "cam", "continuous", cfg
-    )
-    assert str(cfg.tier2.continuous.quality) in cmd
+    cam = cfg.cameras["cam"]
+    ts = cam.tier2.continuous
+    cmd = fc.build_ffmpeg_cmd(Path("/in.mp4"), Path("/out.mp4"), "cpu", ts)
+    assert str(ts.quality) in cmd
 
 
 def test_build_ffmpeg_cmd_metadata_flags(tmp_path):
@@ -175,16 +175,6 @@ def test_build_ffmpeg_cmd_copy_audio(tmp_path):
     cmd = _cmd(tmp_path)
     assert "-c:a" in cmd
     assert "copy" in cmd
-
-
-def test_build_ffmpeg_cmd_unknown_recording_type_fallback(tmp_path):
-    # Unknown recording_type falls back to continuous settings.
-    cfg = _make_config(tmp_path)
-    cmd = fc.build_ffmpeg_cmd(
-        Path("/in.mp4"), Path("/out.mp4"), "cpu", 1, "cam", "unknown_type", cfg
-    )
-    assert str(cfg.tier1.continuous.quality) in cmd
-    assert "-vf" not in cmd  # continuous has no scale/fps filters
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
