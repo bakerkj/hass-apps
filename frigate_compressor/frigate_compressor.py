@@ -84,7 +84,7 @@ SEGMENT SIZE UPDATE
 DATABASE
 ────────
   Frigate DB (/addon_configs/ccab4aaf_frigate-fa/frigate.db): read for inventory, write only segment_size
-  Compress DB (/data/compress.db):  full compression tracking, savings views
+  Compress DB (/config/compress.db):  full compression tracking, savings views
 
 FUTURE GPU MIGRATION (RTX 3090)
 ────────────────────────────────
@@ -448,7 +448,7 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
 
     If *yaml_path* is not provided, it is read from the ``config_path`` key
     in options.json (defaulting to
-    ``/addon_configs/frigate_compressor/config.yaml``).
+    ``/config/config.yaml``).
     """
     with open(options_path, "r", encoding="utf-8") as f:
         opts = json.load(f)
@@ -457,7 +457,7 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         yaml_path = str(
             opts.get(
                 "config_path",
-                "/addon_configs/frigate_compressor/config.yaml",
+                "/config/config.yaml",
             )
         )
 
@@ -523,7 +523,7 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         housekeeping_interval_days=int(opts.get("housekeeping_interval_days", 7)),
         frigate_db=frigate_db,
         recordings_dir=recordings_dir,
-        compress_db=Path(opts.get("compress_db", "/data/compress.db")),
+        compress_db=Path(opts.get("compress_db", "/config/compress.db")),
         log_level=(opts.get("log_level") or "INFO").upper(),
         cameras=cameras,
         mqtt=mqtt_cfg,
@@ -540,55 +540,118 @@ STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_SEGMENT_UPDATE_FAILED = "segment_update_failed"
 
-SCHEMA = f"""
-CREATE TABLE IF NOT EXISTS compressed_files (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    recording_id    TEXT    NOT NULL UNIQUE,
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS files (
+    recording_id    TEXT    PRIMARY KEY,
     camera          TEXT    NOT NULL,
     path            TEXT    NOT NULL,
-    tier            INTEGER NOT NULL,
-    recording_type  TEXT    NOT NULL,
-    encoder         TEXT    NOT NULL,
-    size_before     INTEGER,
-    size_after      INTEGER,
+    recording_type  TEXT,
+
+    -- Original probe (from camera, filled by probe loop)
+    codec           TEXT,
+    width           INTEGER,
+    height          INTEGER,
+    fps             REAL,
+    bitrate         INTEGER,
     duration_sec    REAL,
-    last_attempted_at TEXT    NOT NULL,  -- ISO8601, updated on every attempt
-    status          TEXT    NOT NULL,
-    error_msg       TEXT
+    file_size       INTEGER,
+    scanned_at      TEXT,
+
+    -- Tier 1 compression
+    t1_encoder      TEXT,
+    t1_width        INTEGER,
+    t1_height       INTEGER,
+    t1_fps          REAL,
+    t1_bitrate      INTEGER,
+    t1_file_size    INTEGER,
+    t1_encode_sec   REAL,
+    t1_status       TEXT,
+    t1_error_msg    TEXT,
+    t1_compressed_at TEXT,
+
+    -- Tier 2 compression
+    t2_encoder      TEXT,
+    t2_width        INTEGER,
+    t2_height       INTEGER,
+    t2_fps          REAL,
+    t2_bitrate      INTEGER,
+    t2_file_size    INTEGER,
+    t2_encode_sec   REAL,
+    t2_status       TEXT,
+    t2_error_msg    TEXT,
+    t2_compressed_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_recording_id ON compressed_files(recording_id);
-CREATE INDEX IF NOT EXISTS idx_camera       ON compressed_files(camera);
-CREATE INDEX IF NOT EXISTS idx_status       ON compressed_files(status);
+CREATE INDEX IF NOT EXISTS idx_files_camera ON files(camera);
+"""
 
+VIEWS = f"""
 CREATE VIEW IF NOT EXISTS savings_by_camera AS
 SELECT
     camera,
-    COUNT(*)                                                            AS files_compressed,
-    SUM(size_before)                                                    AS bytes_before,
-    SUM(size_after)                                                     AS bytes_after,
-    SUM(size_before - size_after)                                       AS bytes_saved,
-    ROUND(AVG(1.0 - CAST(size_after AS REAL) / size_before) * 100, 1) AS avg_reduction_pct,
-    MIN(last_attempted_at)                                              AS first_compressed,
-    MAX(last_attempted_at)                                              AS last_compressed
-FROM compressed_files
-WHERE status = '{STATUS_OK}'
-  AND size_before > 0
-  AND size_after  > 0
+    COUNT(CASE WHEN t1_status = '{STATUS_OK}' THEN 1 END)                    AS t1_files,
+    COUNT(CASE WHEN t2_status = '{STATUS_OK}' THEN 1 END)                    AS t2_files,
+    SUM(CASE WHEN t1_status = '{STATUS_OK}' THEN file_size END)              AS t1_bytes_before,
+    SUM(CASE WHEN t1_status = '{STATUS_OK}' THEN t1_file_size END)           AS t1_bytes_after,
+    SUM(CASE WHEN t2_status = '{STATUS_OK}'
+             THEN COALESCE(t1_file_size, file_size) END)                     AS t2_bytes_before,
+    SUM(CASE WHEN t2_status = '{STATUS_OK}' THEN t2_file_size END)           AS t2_bytes_after
+FROM files
+WHERE file_size > 0
 GROUP BY camera;
 
 CREATE VIEW IF NOT EXISTS recent_errors AS
-SELECT
-    camera,
-    path,
-    tier,
-    last_attempted_at,
-    error_msg
-FROM compressed_files
-WHERE status = '{STATUS_ERROR}'
-  AND last_attempted_at >= datetime('now', '-7 days')
-ORDER BY last_attempted_at DESC;
+SELECT camera, path, recording_type,
+       t1_compressed_at, t1_error_msg,
+       t2_compressed_at, t2_error_msg
+FROM files
+WHERE (t1_status = '{STATUS_ERROR}' AND t1_compressed_at >= datetime('now', '-7 days'))
+   OR (t2_status = '{STATUS_ERROR}' AND t2_compressed_at >= datetime('now', '-7 days'))
+ORDER BY COALESCE(t2_compressed_at, t1_compressed_at) DESC;
 """
+
+
+def _migrate_to_files_table(conn: sqlite3.Connection) -> None:
+    """Migrate data from the old compressed_files/probed_files tables to files."""
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "compressed_files" not in tables:
+        return  # already migrated or fresh DB
+
+    conn.executescript(
+        """
+        INSERT OR IGNORE INTO files
+            (recording_id, camera, path, recording_type, file_size,
+             t1_encoder, t1_file_size, t1_encode_sec, t1_status,
+             t1_error_msg, t1_compressed_at)
+        SELECT recording_id, camera, path, recording_type, size_before,
+               encoder, size_after, duration_sec, status,
+               error_msg, last_attempted_at
+        FROM compressed_files
+        WHERE tier = 1;
+
+        INSERT OR IGNORE INTO files
+            (recording_id, camera, path, recording_type, file_size,
+             t2_encoder, t2_file_size, t2_encode_sec, t2_status,
+             t2_error_msg, t2_compressed_at)
+        SELECT recording_id, camera, path, recording_type, size_before,
+               encoder, size_after, duration_sec, status,
+               error_msg, last_attempted_at
+        FROM compressed_files
+        WHERE tier = 2;
+
+        DROP TABLE IF EXISTS compressed_files;
+        DROP TABLE IF EXISTS probed_files;
+        DROP VIEW IF EXISTS savings_by_camera;
+        DROP VIEW IF EXISTS recent_errors;
+        """
+    )
+    conn.commit()
+    log("INFO", "Migrated compressed_files → files table")
 
 
 def open_compress_db(path: Path) -> sqlite3.Connection:
@@ -598,6 +661,9 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
+    _migrate_to_files_table(conn)
+    # Views are created after migration so they reference the final table.
+    conn.executescript(VIEWS)
     return conn
 
 
@@ -864,6 +930,88 @@ def _probe_video(filepath: Path) -> tuple[tuple[int, int] | None, float | None]:
         return None, None
 
 
+def _probe_full(filepath: Path) -> dict | None:
+    """Run ffprobe to capture codec, resolution, fps, bitrate, duration, and file size.
+
+    Returns a dict with keys: codec, width, height, fps, bitrate, duration_sec,
+    file_size.  Returns None if the file cannot be probed.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,width,height,r_frame_rate,bit_rate",
+                "-show_entries",
+                "format=duration,size",
+                "-of",
+                "default=noprint_wrappers=1",
+                str(filepath),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        data: dict[str, str] = {}
+        for line in result.stdout.strip().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                data[k.strip()] = v.strip()
+
+        info: dict = {}
+        info["codec"] = data.get("codec_name")
+
+        try:
+            info["width"] = int(data["width"])
+            info["height"] = int(data["height"])
+        except (KeyError, ValueError, TypeError):
+            info["width"] = None
+            info["height"] = None
+
+        info["fps"] = None
+        if "r_frame_rate" in data:
+            try:
+                parts = data["r_frame_rate"].split("/")
+                info["fps"] = (
+                    float(parts[0]) / float(parts[1])
+                    if len(parts) == 2
+                    else float(parts[0])
+                )
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
+
+        try:
+            info["bitrate"] = int(data["bit_rate"])
+        except (KeyError, ValueError, TypeError):
+            info["bitrate"] = None
+
+        try:
+            info["duration_sec"] = float(data["duration"])
+        except (KeyError, ValueError, TypeError):
+            info["duration_sec"] = None
+
+        try:
+            info["file_size"] = int(data["size"])
+        except (KeyError, ValueError, TypeError):
+            # Fall back to stat if ffprobe didn't report size
+            try:
+                info["file_size"] = filepath.stat().st_size
+            except OSError:
+                info["file_size"] = None
+
+        return info
+    except Exception as e:
+        log("WARNING", f"ffprobe failed for {filepath}: {e}")
+        return None
+
+
 def _build_scale_filter(
     mode: str,
     value: str,
@@ -1104,33 +1252,32 @@ def _record(
     error_msg: str | None = None,
 ) -> None:
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    t = f"t{tier}"
     with lock:
         conn.execute(
-            """
-            INSERT INTO compressed_files
-                (recording_id, camera, path, tier, recording_type, encoder,
-                 size_before, size_after, duration_sec,
-                 last_attempted_at, status, error_msg)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            f"""
+            INSERT INTO files
+                (recording_id, camera, path, recording_type, file_size,
+                 {t}_encoder, {t}_file_size, {t}_encode_sec,
+                 {t}_compressed_at, {t}_status, {t}_error_msg)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording_id) DO UPDATE SET
-                tier              = excluded.tier,
-                recording_type    = excluded.recording_type,
-                encoder           = excluded.encoder,
-                size_before       = excluded.size_before,
-                size_after        = excluded.size_after,
-                duration_sec      = excluded.duration_sec,
-                last_attempted_at = excluded.last_attempted_at,
-                status            = excluded.status,
-                error_msg         = excluded.error_msg
+                recording_type     = excluded.recording_type,
+                file_size          = COALESCE(files.file_size, excluded.file_size),
+                {t}_encoder        = excluded.{t}_encoder,
+                {t}_file_size      = excluded.{t}_file_size,
+                {t}_encode_sec     = excluded.{t}_encode_sec,
+                {t}_compressed_at  = excluded.{t}_compressed_at,
+                {t}_status         = excluded.{t}_status,
+                {t}_error_msg      = excluded.{t}_error_msg
             """,
             (
                 recording_id,
                 camera,
                 path,
-                tier,
                 recording_type,
-                encoder,
                 size_before,
+                encoder,
                 size_after,
                 duration_sec,
                 now,
@@ -1490,6 +1637,8 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     min_t1_days = _min_tier1_min_days(cfg)
     earliest_cutoff = time.time() - (min_t1_days * 86400)
 
+    _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
+
     with db_lock:
         _frigate_db_str = str(cfg.frigate_db).replace('"', "")
         compress_db.execute(
@@ -1498,17 +1647,15 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
         try:
             rows = compress_db.execute(
                 """
-                SELECT r.id, r.camera, r.path, r.start_time, r.motion, r.objects
+                SELECT r.id, r.camera, r.path, r.start_time,
+                       r.motion, r.objects,
+                       f.t1_status, f.t2_status
                 FROM   frigate_eligible.recordings r
+                LEFT JOIN files f ON f.recording_id = r.id
                 WHERE  r.start_time < ?
-                  AND  r.id NOT IN (
-                           SELECT recording_id
-                           FROM   compressed_files
-                           WHERE  status IN (?, ?)
-                       )
                 ORDER BY r.start_time ASC
                 """,
-                (earliest_cutoff, STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED),
+                (earliest_cutoff,),
             ).fetchall()
         finally:
             compress_db.execute("DETACH DATABASE frigate_eligible")
@@ -1523,12 +1670,23 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
         start_time = row["start_time"]
         age_days_sec = now - start_time
+        t1_done = row["t1_status"] in _ok_statuses
+        t2_done = row["t2_status"] in _ok_statuses
 
-        # Determine which tier applies based on this camera's cutoffs.
+        # Determine which tier needs work.
         tier: int | None = None
-        if cam_cfg.tier2.enabled and age_days_sec >= cam_cfg.tier2.min_days * 86400:
+        if (
+            cam_cfg.tier2.enabled
+            and age_days_sec >= cam_cfg.tier2.min_days * 86400
+            and t1_done
+            and not t2_done
+        ):
             tier = 2
-        elif cam_cfg.tier1.enabled and age_days_sec >= cam_cfg.tier1.min_days * 86400:
+        elif (
+            cam_cfg.tier1.enabled
+            and age_days_sec >= cam_cfg.tier1.min_days * 86400
+            and not t1_done
+        ):
             tier = 1
         if tier is None:
             continue
@@ -1609,8 +1767,10 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     # from disk and retry; on success promote to status='ok'.
     with db_lock:
         pending_seg = compress_db.execute(
-            "SELECT recording_id, camera, path FROM compressed_files WHERE status = ?",
-            (STATUS_SEGMENT_UPDATE_FAILED,),
+            """SELECT recording_id, camera, path
+               FROM files
+               WHERE t1_status = ? OR t2_status = ?""",
+            (STATUS_SEGMENT_UPDATE_FAILED, STATUS_SEGMENT_UPDATE_FAILED),
         ).fetchall()
 
     retried = promoted = 0
@@ -1644,9 +1804,21 @@ def run_housekeeping(ctx: CompressorContext) -> None:
                 frigate_rw.commit()
             with db_lock:
                 compress_db.execute(
-                    "UPDATE compressed_files SET status = ?, error_msg = NULL"
-                    " WHERE recording_id = ?",
-                    (STATUS_OK, row["recording_id"]),
+                    """UPDATE files SET
+                         t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
+                         t1_error_msg = CASE WHEN t1_status = ? THEN NULL ELSE t1_error_msg END,
+                         t2_status = CASE WHEN t2_status = ? THEN ? ELSE t2_status END,
+                         t2_error_msg = CASE WHEN t2_status = ? THEN NULL ELSE t2_error_msg END
+                       WHERE recording_id = ?""",
+                    (
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_OK,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_OK,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        row["recording_id"],
+                    ),
                 )
                 compress_db.commit()
             promoted += 1
@@ -1681,7 +1853,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
             if cfg.all_dry_run:
                 pruned = compress_db.execute(
                     """
-                    SELECT COUNT(*) FROM compressed_files
+                    SELECT COUNT(*) FROM files
                     WHERE recording_id NOT IN (
                         SELECT id FROM frigate_ro_hk.recordings
                     )
@@ -1691,7 +1863,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
                 log("INFO", "Pruning orphaned compress DB entries")
                 cursor = compress_db.execute(
                     """
-                    DELETE FROM compressed_files
+                    DELETE FROM files
                     WHERE recording_id NOT IN (
                         SELECT id FROM frigate_ro_hk.recordings
                     )
@@ -1710,36 +1882,32 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     # 4. Storage savings summary
     with db_lock:
         rows = compress_db.execute(
-            "SELECT * FROM savings_by_camera ORDER BY bytes_saved DESC"
+            "SELECT * FROM savings_by_camera ORDER BY camera"
         ).fetchall()
 
     if rows:
         log("INFO", "── Storage savings by camera")
-        total_before = total_after = total_files = 0
         log(
             "INFO",
-            f"  {'Camera':<20} {'Files':>6} {'Before':>10} {'After':>10} {'Saved':>10} {'Reduction':>10}",
+            f"  {'Camera':<20} {'T1':>5} {'T1 Before':>10} {'T1 After':>10}"
+            f" {'T2':>5} {'T2 Before':>10} {'T2 After':>10}",
         )
         log(
             "INFO",
-            f"  {'-' * 20} {'-' * 6} {'-' * 10} {'-' * 10} {'-' * 10} {'-' * 10}",
+            f"  {'-' * 20} {'-' * 5} {'-' * 10} {'-' * 10}"
+            f" {'-' * 5} {'-' * 10} {'-' * 10}",
         )
         for r in rows:
             log(
                 "INFO",
-                f"  {r['camera']:<20} {r['files_compressed']:>6} "
-                f"{_fmt(r['bytes_before']):>10} {_fmt(r['bytes_after']):>10} "
-                f"{_fmt(r['bytes_saved']):>10} {r['avg_reduction_pct']:>9.1f}%",
+                f"  {r['camera']:<20}"
+                f" {r['t1_files'] or 0:>5}"
+                f" {_fmt(r['t1_bytes_before']):>10}"
+                f" {_fmt(r['t1_bytes_after']):>10}"
+                f" {r['t2_files'] or 0:>5}"
+                f" {_fmt(r['t2_bytes_before']):>10}"
+                f" {_fmt(r['t2_bytes_after']):>10}",
             )
-            total_before += r["bytes_before"] or 0
-            total_after += r["bytes_after"] or 0
-            total_files += r["files_compressed"] or 0
-        log(
-            "INFO",
-            f"  {'TOTAL':<20} {total_files:>6} "
-            f"{_fmt(total_before):>10} {_fmt(total_after):>10} "
-            f"{_fmt(total_before - total_after):>10}",
-        )
     else:
         log("INFO", "No compression data yet")
 
@@ -1749,12 +1917,126 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     if errors:
         log("WARNING", "── Recent errors (last 7 days)")
         for err in errors:
-            log(
-                "WARNING",
-                f"  [{err['last_attempted_at']}] {err['camera']} | {err['error_msg']}",
-            )
+            ts = err["t2_compressed_at"] or err["t1_compressed_at"]
+            msg = err["t2_error_msg"] or err["t1_error_msg"]
+            log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
 
     log("INFO", "── Housekeeping complete")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROBE LOOP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PROBE_SLEEP_SEC = 10.0
+
+
+def _get_unprobed_recordings(ctx: CompressorContext) -> list[dict]:
+    """Return Frigate recordings not yet probed (missing from files or scanned_at IS NULL)."""
+    cfg = ctx.cfg
+    with ctx.db_lock:
+        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
+        ctx.compress_db.execute(
+            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_probe'
+        )
+        try:
+            rows = ctx.compress_db.execute(
+                """
+                SELECT r.id, r.camera, r.path
+                FROM   frigate_probe.recordings r
+                LEFT JOIN files f ON f.recording_id = r.id
+                WHERE  f.recording_id IS NULL
+                   OR  f.scanned_at IS NULL
+                ORDER BY r.start_time ASC
+                """,
+            ).fetchall()
+        finally:
+            ctx.compress_db.execute("DETACH DATABASE frigate_probe")
+
+    return [
+        {"recording_id": row["id"], "camera": row["camera"], "path": row["path"]}
+        for row in rows
+    ]
+
+
+def _store_probe(
+    ctx: CompressorContext,
+    recording_id: str,
+    camera: str,
+    path: str,
+    info: dict,
+) -> None:
+    """Insert or update probe results in the files table."""
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with ctx.db_lock:
+        ctx.compress_db.execute(
+            """
+            INSERT INTO files
+                (recording_id, camera, path, codec, width, height,
+                 fps, bitrate, duration_sec, file_size, scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(recording_id) DO UPDATE SET
+                codec       = excluded.codec,
+                width       = excluded.width,
+                height      = excluded.height,
+                fps         = excluded.fps,
+                bitrate     = excluded.bitrate,
+                duration_sec = excluded.duration_sec,
+                file_size   = excluded.file_size,
+                scanned_at   = excluded.scanned_at
+            """,
+            (
+                recording_id,
+                camera,
+                path,
+                info.get("codec"),
+                info.get("width"),
+                info.get("height"),
+                info.get("fps"),
+                info.get("bitrate"),
+                info.get("duration_sec"),
+                info.get("file_size"),
+                now,
+            ),
+        )
+        ctx.compress_db.commit()
+
+
+def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
+    """Continuously probe unprobed Frigate recordings.
+
+    Each cycle fetches all recordings not yet probed in ``files``, runs
+    ``_probe_full`` on each, and stores the results.  Sleeps
+    ``PROBE_SLEEP_SEC`` when fully caught up.
+    """
+    while not stopping.is_set():
+        try:
+            unprobed = _get_unprobed_recordings(ctx)
+        except Exception as e:
+            log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
+            stopping.wait(timeout=PROBE_SLEEP_SEC)
+            continue
+
+        if not unprobed:
+            stopping.wait(timeout=PROBE_SLEEP_SEC)
+            continue
+
+        log("INFO", f"Probing {len(unprobed)} recording(s)")
+        probed = 0
+        for rec in unprobed:
+            if stopping.is_set():
+                break
+            info = _probe_full(Path(rec["path"]))
+            if info is not None:
+                _store_probe(ctx, rec["recording_id"], rec["camera"], rec["path"], info)
+                probed += 1
+            else:
+                log(
+                    "DEBUG",
+                    f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
+                )
+        if probed:
+            log("INFO", f"Probed {probed} recording(s)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1851,9 +2133,8 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
 
     One ATTACH+GROUP BY query: per (camera, tier, recording_type) we get a
     files count, byte total (segment_size→bytes), and earliest start_time.
-    Tier comes from a LEFT JOIN against ``compressed_files`` — rows with no
-    match (or with status that isn't OK / segment_update_failed) are bucketed
-    as tier 0 (uncompressed).  NULL ``segment_size`` is treated as 0 bytes
+    Tier comes from a LEFT JOIN against ``files`` — determined by which
+    ``t*_status`` column is set.  Uncompressed recordings are tier 0.  NULL ``segment_size`` is treated as 0 bytes
     so a half-finalised row never crashes the aggregate.
     """
     cfg = ctx.cfg
@@ -1869,7 +2150,11 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
                 f"""
                 SELECT
                     r.camera                                                AS camera,
-                    COALESCE(c.tier, 0)                                     AS tier,
+                    CASE
+                      WHEN f.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 2
+                      WHEN f.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 1
+                      ELSE 0
+                    END                                                     AS tier,
                     CASE
                       WHEN COALESCE(r.objects, 0) > 0 THEN 'object'
                       WHEN COALESCE(r.motion,  0) > 0 THEN 'motion'
@@ -1879,9 +2164,8 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
                     SUM(COALESCE(r.segment_size, 0) * {_MB_BYTES})          AS bytes,
                     MIN(r.start_time)                                       AS oldest
                 FROM frigate_stats.recordings r
-                LEFT JOIN compressed_files c
-                  ON  c.recording_id = r.id
-                  AND c.status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                LEFT JOIN files f
+                  ON  f.recording_id = r.id
                 GROUP BY r.camera, tier, rtype
                 """
             ).fetchall()
@@ -2664,6 +2948,11 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
+
+    probe_thread = threading.Thread(
+        target=run_probe_loop, args=(ctx, stopping), daemon=True
+    )
+    probe_thread.start()
 
     publisher: MqttPublisher | None = None
     if cfg.mqtt.enabled:

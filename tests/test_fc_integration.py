@@ -191,12 +191,12 @@ def test_compress_one_real_cpu_success(tmp_path, real_video):
 
     # Compress DB row must record success.
     row = ctx.compress_db.execute(
-        "SELECT * FROM compressed_files WHERE recording_id='int_r1'"
+        "SELECT * FROM files WHERE recording_id='int_r1'"
     ).fetchone()
-    assert row["status"] == fc.STATUS_OK
-    assert row["size_before"] == size_before
-    assert row["size_after"] is not None
-    assert row["duration_sec"] is not None
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["file_size"] == size_before
+    assert row["t1_file_size"] is not None
+    assert row["t1_encode_sec"] is not None
 
     # The file on disk should still exist (was replaced in-place).
     assert rec_path.exists()
@@ -210,7 +210,7 @@ def test_compress_one_real_cpu_success(tmp_path, real_video):
         "SELECT segment_size FROM recordings WHERE id='int_r1'"
     ).fetchone()
     assert seg is not None
-    expected_mb = row["size_after"] / (1024 * 1024)
+    expected_mb = row["t1_file_size"] / (1024 * 1024)
     assert seg["segment_size"] == pytest.approx(expected_mb, rel=1e-4)
 
     _close_ctx(ctx)
@@ -253,7 +253,7 @@ def test_compress_one_real_dry_run_leaves_file_unchanged(tmp_path, real_video):
 
     # No row should have been written to the compress DB.
     row = ctx.compress_db.execute(
-        "SELECT * FROM compressed_files WHERE recording_id='dry_r1'"
+        "SELECT * FROM files WHERE recording_id='dry_r1'"
     ).fetchone()
     assert row is None
 

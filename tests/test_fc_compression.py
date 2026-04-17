@@ -213,6 +213,29 @@ def test_get_eligible_recordings_tier2_assignment(tmp_path):
     )
 
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    # Without tier 1 done, recording is eligible for tier 1 (not tier 2)
+    results = fc.get_eligible_recordings(ctx)
+    assert len(results) == 1
+    assert results[0]["tier"] == 1
+
+    # Mark tier 1 as done
+    fc._record(
+        ctx.compress_db,
+        ctx.db_lock,
+        recording_id="rec5",
+        camera="cam1",
+        path="/media/cam1/e.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+
+    # Now it should be eligible for tier 2
     results = fc.get_eligible_recordings(ctx)
     assert len(results) == 1
     assert results[0]["tier"] == 2
@@ -349,7 +372,7 @@ def _compress_one(ctx, src, *, path=None, recording_id="r1", recording_type="mot
 
 def _db_row(ctx, recording_id="r1"):
     return ctx.compress_db.execute(
-        "SELECT * FROM compressed_files WHERE recording_id=?", (recording_id,)
+        "SELECT * FROM files WHERE recording_id=?", (recording_id,)
     ).fetchone()
 
 
@@ -358,8 +381,8 @@ def test_compress_one_missing_file(tmp_path):
     result = _compress_one(ctx, src, path=str(tmp_path / "nonexistent.mp4"))
     assert result is False
     row = _db_row(ctx)
-    assert row["status"] == fc.STATUS_ERROR
-    assert "missing" in row["error_msg"]
+    assert row["t1_status"] == fc.STATUS_ERROR
+    assert "missing" in row["t1_error_msg"]
     _close_ctx(ctx)
 
 
@@ -378,9 +401,9 @@ def test_compress_one_ffmpeg_success(tmp_path):
 
     assert result is True
     row = _db_row(ctx)
-    assert row["status"] == fc.STATUS_OK
-    assert row["size_before"] == 10000
-    assert row["size_after"] == 5000
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["file_size"] == 10000
+    assert row["t1_file_size"] == 5000
     _close_ctx(ctx)
 
 
@@ -397,7 +420,7 @@ def test_compress_one_ffmpeg_failure(tmp_path):
         result = _compress_one(ctx, src)
 
     assert result is False
-    assert _db_row(ctx)["status"] == fc.STATUS_ERROR
+    assert _db_row(ctx)["t1_status"] == fc.STATUS_ERROR
     _close_ctx(ctx)
 
 
@@ -415,7 +438,7 @@ def test_compress_one_output_too_small(tmp_path):
         result = _compress_one(ctx, src)
 
     assert result is False
-    assert "small" in _db_row(ctx)["error_msg"]
+    assert "small" in _db_row(ctx)["t1_error_msg"]
     _close_ctx(ctx)
 
 
@@ -434,7 +457,7 @@ def test_compress_one_original_deleted_during_encode(tmp_path):
         result = _compress_one(ctx, src)
 
     assert result is False
-    assert "deleted" in _db_row(ctx)["error_msg"]
+    assert "deleted" in _db_row(ctx)["t1_error_msg"]
     _close_ctx(ctx)
 
 
@@ -456,7 +479,7 @@ def test_compress_one_recording_removed_from_frigate_db(tmp_path):
 
     assert result is False
     assert src.exists()  # original not replaced
-    assert "Frigate DB" in _db_row(ctx)["error_msg"]
+    assert "Frigate DB" in _db_row(ctx)["t1_error_msg"]
     frigate_rw2.close()
     _close_ctx(ctx)
 
@@ -470,8 +493,8 @@ def test_compress_one_ffmpeg_exception(tmp_path):
     assert result is False
     assert list(src.parent.glob(fc._TEMP_GLOB)) == []
     row = _db_row(ctx)
-    assert row["status"] == fc.STATUS_ERROR
-    assert "ffmpeg not found" in row["error_msg"]
+    assert row["t1_status"] == fc.STATUS_ERROR
+    assert "ffmpeg not found" in row["t1_error_msg"]
     _close_ctx(ctx)
 
 
@@ -484,7 +507,7 @@ def test_compress_one_timeout_records_duration(tmp_path):
         result = _compress_one(ctx, src)
 
     assert result is False
-    assert _db_row(ctx)["duration_sec"] is not None
+    assert _db_row(ctx)["t1_encode_sec"] is not None
     _close_ctx(ctx)
 
 
@@ -519,8 +542,8 @@ def test_compress_one_segment_size_update_fails(tmp_path):
 
         assert result is True
         row = _db_row(ctx)
-        assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
-        assert "locked" in row["error_msg"]
+        assert row["t1_status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
+        assert "locked" in row["t1_error_msg"]
     finally:
         real_rw.close()
         _close_ctx(ctx)
@@ -531,10 +554,11 @@ def test_compress_one_segment_update_failed_not_recompressed(tmp_path):
     # get_eligible_recordings — the file is already compressed.
     ctx, src = _setup_compress_one(tmp_path)
     ctx.compress_db.execute(
-        "INSERT INTO compressed_files"
-        " (recording_id, camera, path, tier, recording_type, encoder,"
-        "  size_before, size_after, duration_sec, last_attempted_at, status)"
-        " VALUES ('r1','cam1',?,1,'motion','cpu',10000,5000,1.0,datetime('now'),?)",
+        "INSERT INTO files"
+        " (recording_id, camera, path, recording_type, file_size,"
+        "  t1_encoder, t1_file_size, t1_encode_sec, t1_compressed_at, t1_status)"
+        " VALUES ('r1','cam1',?,'motion',10000,"
+        "  'cpu',5000,1.0,datetime('now'),?)",
         (str(src), fc.STATUS_SEGMENT_UPDATE_FAILED),
     )
     ctx.compress_db.commit()
@@ -613,10 +637,7 @@ def test_housekeeping_prunes_orphaned_entries(tmp_path):
     fc.run_housekeeping(ctx)
 
     remaining = {
-        r[0]
-        for r in compress_conn.execute(
-            "SELECT recording_id FROM compressed_files"
-        ).fetchall()
+        r[0] for r in compress_conn.execute("SELECT recording_id FROM files").fetchall()
     }
     assert "orphan1" not in remaining
     assert "alive1" in remaining
@@ -656,10 +677,10 @@ def test_housekeeping_retries_segment_update_failed(tmp_path):
     fc.run_housekeeping(ctx)
 
     row = compress_conn.execute(
-        "SELECT status, error_msg FROM compressed_files WHERE recording_id='seg1'"
+        "SELECT * FROM files WHERE recording_id='seg1'"
     ).fetchone()
-    assert row["status"] == fc.STATUS_OK
-    assert row["error_msg"] is None
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["t1_error_msg"] is None
 
     seg_row = ctx.frigate_rw.execute(
         "SELECT segment_size FROM recordings WHERE id='seg1'"
@@ -700,9 +721,9 @@ def test_housekeeping_segment_retry_file_missing(tmp_path):
     fc.run_housekeeping(ctx)
 
     row = compress_conn.execute(
-        "SELECT status FROM compressed_files WHERE recording_id='seg2'"
+        "SELECT * FROM files WHERE recording_id='seg2'"
     ).fetchone()
-    assert row["status"] == fc.STATUS_SEGMENT_UPDATE_FAILED  # unchanged — file gone
+    assert row["t1_status"] == fc.STATUS_SEGMENT_UPDATE_FAILED  # unchanged — file gone
 
     _close_ctx(ctx)
     frigate_conn.close()
