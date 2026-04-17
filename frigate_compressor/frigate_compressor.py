@@ -140,6 +140,7 @@ def log(level: str, msg: str) -> None:
 class TypeSettings:
     """Compression settings for one recording type within a tier."""
 
+    enabled: bool  # whether to compress this recording type
     quality: int  # CQ/CRF (0-51, lower = better quality)
     scale_mode: str  # none | halve | fixed | fraction
     scale_value: str  # fixed="1280:720", fraction="0.5"
@@ -148,6 +149,7 @@ class TypeSettings:
 
 
 _TYPE_SETTINGS_FIELDS = (
+    "enabled",
     "quality",
     "scale_mode",
     "scale_value",
@@ -319,6 +321,7 @@ def _validate_type_settings(d: dict, label: str) -> TypeSettings:
             "(e.g. '1280:720')"
         )
     return TypeSettings(
+        enabled=bool(d.get("enabled", True)),
         quality=quality,
         scale_mode=scale_mode,
         scale_value=scale_value,
@@ -1168,6 +1171,12 @@ def compress_one(
             f"[{camera}] No resolved settings for tier{tier}/{recording_type}, skipping",
         )
         return False
+    if not ts.enabled:
+        log(
+            "DEBUG",
+            f"[{camera}] Compression disabled for tier{tier}/{recording_type}, skipping",
+        )
+        return True
     dry_run = cam_cfg.dry_run
 
     def rec(
@@ -1783,6 +1792,8 @@ def _fmt(n: int | float | None) -> str:
 
 def _fmt_type(ts: TypeSettings) -> str:
     """One-line summary of a TypeSettings for startup logging."""
+    if not ts.enabled:
+        return "SKIP (compression disabled)"
     sc = f"{ts.scale_mode}({ts.scale_value})" if ts.scale_mode != "none" else "original"
     fp = f"{ts.fps_mode}({ts.fps_value})" if ts.fps_mode != "none" else "original"
     return f"q={ts.quality} scale={sc} fps={fp}"
