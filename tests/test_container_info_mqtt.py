@@ -607,3 +607,109 @@ def test_redact_options_non_sensitive_keys_unchanged():
     opts: dict[str, Any] = {"interval_seconds": 10, "log_level": "DEBUG"}
     redacted = cim.redact_options_for_log(opts)
     assert redacted == opts
+
+
+# ---------------------------------------------------------------------------
+# prune_stale_discovery
+# ---------------------------------------------------------------------------
+
+
+class _RecordingClient:
+    """Minimal mqtt.Client stub that records publish() calls."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, str, int, bool]] = []
+
+    def publish(
+        self, topic: str, payload: str = "", qos: int = 0, retain: bool = False
+    ) -> Any:
+        self.published.append((topic, payload, qos, retain))
+        return None
+
+
+def _prune(
+    retained: dict[str, set[str]], active: set[str]
+) -> tuple[int, _RecordingClient]:
+    client = _RecordingClient()
+    pruned = cim.prune_stale_discovery(
+        client,
+        "homeassistant",
+        "container_info",
+        "container-info-mqtt",
+        retained,
+        active,
+        _LOG,
+    )
+    return pruned, client
+
+
+def test_prune_no_retained_returns_zero():
+    pruned, client = _prune({}, {"foo"})
+    assert pruned == 0
+    assert client.published == []
+
+
+def test_prune_all_retained_active_returns_zero():
+    retained = {"container-info-mqtt_foo": {"cpu_percent", "summary"}}
+    pruned, client = _prune(retained, {"foo"})
+    assert pruned == 0
+    assert client.published == []
+
+
+def test_prune_single_stale_clears_all_metrics_and_availability():
+    retained = {
+        "container-info-mqtt_builder_x": {"cpu_percent", "memory_usage", "summary"},
+    }
+    pruned, client = _prune(retained, {"other"})
+    assert pruned == 1
+
+    topics = [t for (t, _, _, _) in client.published]
+    # Each metric's discovery config cleared with empty retained payload.
+    assert (
+        "homeassistant/sensor/container-info-mqtt_builder_x/cpu_percent/config"
+        in topics
+    )
+    assert (
+        "homeassistant/sensor/container-info-mqtt_builder_x/memory_usage/config"
+        in topics
+    )
+    assert "homeassistant/sensor/container-info-mqtt_builder_x/summary/config" in topics
+    # Per-slug availability cleared.
+    assert "container_info/builder_x/availability" in topics
+
+    # All publishes are empty + retained.
+    for _topic, payload, _qos, retain in client.published:
+        assert payload == ""
+        assert retain is True
+
+
+def test_prune_mix_stale_and_active_only_clears_stale():
+    retained = {
+        "container-info-mqtt_keepme": {"cpu_percent", "summary"},
+        "container-info-mqtt_builder_x": {"cpu_percent"},
+    }
+    pruned, client = _prune(retained, {"keepme"})
+    assert pruned == 1
+    topics = {t for (t, _, _, _) in client.published}
+    # Stale node's topics cleared.
+    assert (
+        "homeassistant/sensor/container-info-mqtt_builder_x/cpu_percent/config"
+        in topics
+    )
+    assert "container_info/builder_x/availability" in topics
+    # Active node's topics untouched.
+    for topic in topics:
+        assert "keepme" not in topic
+
+
+def test_prune_multiple_stale_returns_count():
+    retained = {
+        "container-info-mqtt_builder_a": {"summary"},
+        "container-info-mqtt_builder_b": {"summary"},
+        "container-info-mqtt_builder_c": {"cpu_percent", "summary"},
+    }
+    pruned, client = _prune(retained, set())
+    assert pruned == 3
+    # 3 nodes × (their metrics + 1 availability) publishes.
+    # builder_a: 1+1; builder_b: 1+1; builder_c: 2+1 = 7 total.
+    assert len(client.published) == 7
