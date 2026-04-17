@@ -957,6 +957,50 @@ def clear_discovery(
     client.publish(config_topic, "", qos=1, retain=True)
 
 
+def prune_stale_discovery(
+    client: mqtt.Client,
+    discovery_prefix: str,
+    base_topic: str,
+    device_id: str,
+    retained_configs: dict[str, set[str]],
+    active_slugs: set[str],
+    log: logging.Logger,
+) -> int:
+    """Clear retained discovery + availability for slugs not currently active.
+
+    `retained_configs` maps node_id -> set of metric_keys observed as retained
+    discovery configs on the broker for our device_id. Any node whose slug is
+    not in `active_slugs` is pruned: every metric's discovery config is cleared
+    and the per-slug availability topic is also cleared.
+
+    Returns the number of stale slugs pruned.
+    """
+    device_node_prefix = f"{device_id}_"
+    active_node_ids = {f"{device_node_prefix}{slug}" for slug in active_slugs}
+    stale_node_ids = set(retained_configs.keys()) - active_node_ids
+    if not stale_node_ids:
+        return 0
+
+    for node_id in stale_node_ids:
+        slug = node_id[len(device_node_prefix) :]
+        metric_keys = retained_configs[node_id]
+        for metric_key in metric_keys:
+            clear_discovery(client, discovery_prefix, device_id, slug, metric_key)
+        # Also clear the retained availability topic for this slug.
+        client.publish(
+            f"{base_topic}/{slug}/availability",
+            "",
+            qos=1,
+            retain=True,
+        )
+        log.info(
+            "Pruned stale discovery for slug=%s (metrics: %s)",
+            slug,
+            ", ".join(sorted(metric_keys)),
+        )
+    return len(stale_node_ids)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--options", default="/data/options.json")
@@ -1149,6 +1193,20 @@ def main() -> int:
     container_online: dict[str, bool] = {}
     health = MqttHealth()
 
+    # One-shot scan of retained discovery configs so we can prune entities for
+    # containers that no longer exist (or now match the exclude filter).
+    discovery_topic_prefix = f"{args.mqtt_discovery_prefix}/sensor/"
+    discovery_topic_suffix = "/config"
+    device_node_prefix = f"{args.client_id}_"
+    discovery_filter = f"{args.mqtt_discovery_prefix}/sensor/+/+/config"
+    retained_configs: dict[str, set[str]] = {}
+    prune_pending = {"v": True}
+    retained_subscribe_time = {"v": 0.0}
+    # Wait this long after subscribing before pruning, to let the broker flush
+    # its retained backlog. Generous to tolerate slow brokers and large
+    # retained sets without prematurely pruning live entries.
+    retained_scan_seconds = 60.0
+
     def on_connect(_client, _userdata, _flags, rc):
         if rc == 0:
             log.info("MQTT connected to %s:%d", args.mqtt_host, args.mqtt_port)
@@ -1163,6 +1221,9 @@ def main() -> int:
                     retain=True,
                 )
             _client.subscribe(f"{args.mqtt_discovery_prefix}/status", qos=1)
+            if prune_pending["v"]:
+                _client.subscribe(discovery_filter, qos=0)
+                retained_subscribe_time["v"] = time.time()
         else:
             log.error("MQTT connect failed rc=%s", rc)
 
@@ -1209,9 +1270,23 @@ def main() -> int:
     last_totals_by_container: dict[str, dict[str, float]] = {}
 
     def on_message(_client, _userdata, msg):
-        if msg.payload.decode(errors="replace").strip() == "online":
-            log.info("HA birth message received — will republish discovery")
-            needs_rediscovery["v"] = True
+        topic = msg.topic
+        # Retained discovery config under our discovery prefix.
+        if topic.startswith(discovery_topic_prefix) and topic.endswith(
+            discovery_topic_suffix
+        ):
+            middle = topic[len(discovery_topic_prefix) : -len(discovery_topic_suffix)]
+            node_id, sep, metric_key = middle.partition("/")
+            if sep and "/" not in metric_key and node_id.startswith(device_node_prefix):
+                # Empty payload = tombstone (already cleared); ignore.
+                if msg.payload:
+                    retained_configs.setdefault(node_id, set()).add(metric_key)
+            return
+        # HA birth message on the discovery status topic.
+        if topic == f"{args.mqtt_discovery_prefix}/status":
+            if msg.payload.decode(errors="replace").strip() == "online":
+                log.info("HA birth message received — will republish discovery")
+                needs_rediscovery["v"] = True
 
     client.on_message = on_message
     last_heartbeat = 0.0
@@ -1464,6 +1539,34 @@ def main() -> int:
                 )
                 container_online[stale_slug] = False
             last_totals_by_container.pop(stale_slug, None)
+
+        # One-shot prune of retained discovery for slugs that no longer exist
+        # (e.g. removed containers, or containers now matching the exclude
+        # filter). Gated on: at least one container actually seen this poll
+        # AND the retained-scan window has elapsed since subscribe — so a
+        # transient Docker failure on the very first poll cannot wipe state.
+        if (
+            prune_pending["v"]
+            and seen_slugs
+            and retained_subscribe_time["v"] > 0
+            and (now - retained_subscribe_time["v"]) >= retained_scan_seconds
+        ):
+            # Snapshot retained_configs to avoid races with the network thread.
+            retained_snapshot = {
+                node_id: set(metrics) for node_id, metrics in retained_configs.items()
+            }
+            prune_stale_discovery(
+                client,
+                args.mqtt_discovery_prefix,
+                base_topic,
+                args.client_id,
+                retained_snapshot,
+                seen_slugs,
+                log,
+            )
+            client.unsubscribe(discovery_filter)
+            retained_configs.clear()
+            prune_pending["v"] = False
 
         sleep_to_interval(loop_start_monotonic)
 
