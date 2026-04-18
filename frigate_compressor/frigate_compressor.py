@@ -32,12 +32,20 @@ SCALING: scale_qsv (GPU-native, zero-copy for QSV) / scale= (CPU fallback)
     halve    = iw/2:ih/2 — halves both dimensions
     fixed    = scale to exact WxH in scale_value e.g. "1280:720"
     fraction = multiply source dimensions by float(scale_value)
-  Per-camera overrides (camera_overrides) take precedence over tier/type defaults.
+  Per-camera overrides in config.yaml take precedence over defaults.
 
 TIER LOGIC
 ──────────
 Tier 1 (tier1.min_days → tier2.min_days): recent footage, per-type settings
 Tier 2 (tier2.min_days+): archive footage, per-type settings with harder compression
+
+CONFIGURATION
+─────────────
+  HAOS options (options.json): infrastructure settings — encoder, paths, MQTT.
+  YAML config (/config/config.yaml): camera-centric compression settings.
+    defaults block: base settings for all cameras.
+    cameras block: per-camera overrides (enabled, dry_run, tier settings).
+  Resolution order: builtin defaults → YAML defaults → camera-level → tier-level → type-level.
 
 RECORDING TYPES (within each tier)
 ───────────────────────────────────
