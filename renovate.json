@@ -18,6 +18,17 @@
     },
     {
       "customType": "regex",
+      "description": "GitHub runner versions assigned in shell scripts within workflows",
+      "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "runner=\"(?<depName>(?:ubuntu|macos|windows)-[\\w.-]+)\"",
+        "runs-on:\\s*(?<depName>(?:ubuntu|macos|windows)-[\\w.-]+)"
+      ],
+      "datasourceTemplate": "github-runners",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
