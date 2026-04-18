@@ -1,5 +1,11 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
+
+LABEL \
+    org.opencontainers.image.title="BirdNET Audio Stream" \
+    org.opencontainers.image.description="Stream ALSA microphone audio over RTSP for BirdNET using go2rtc" \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
 
 RUN set -eux; \
     apk add --no-cache \

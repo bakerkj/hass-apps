@@ -8,8 +8,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images in build.yaml and Dockerfile files",
-      "managerFilePatterns": ["/(^|/)build\\.yaml$/", "/Dockerfile$/"],
+      "description": "Home Assistant add-on base images in Dockerfiles",
+      "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
         "[\\s=](?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
       ],
