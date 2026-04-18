@@ -1217,7 +1217,7 @@ FFMPEG_STDERR_MAX_LEN = 300
 # - MAX caps the wait so that even pathological states (frigate paused,
 #   long fallback paths) re-check at least every 10 minutes instead of
 #   sleeping for hours or days at a time.
-MIN_SLEEP_SEC = 60.0
+MIN_SLEEP_SEC = 10.0
 MAX_SLEEP_SEC = 600.0
 
 
@@ -1231,9 +1231,7 @@ class CompressorContext:
 
     cfg: Config
     frigate_ro: sqlite3.Connection
-    frigate_ro_lock: threading.Lock
     frigate_rw: sqlite3.Connection
-    frigate_lock: threading.Lock
     compress_db: sqlite3.Connection | None = None
 
 
@@ -1313,6 +1311,13 @@ def compress_one(
     compress_db.row_factory = sqlite3.Row
     compress_db.execute("PRAGMA journal_mode=WAL")
     compress_db.execute("PRAGMA busy_timeout=10000")
+    frigate_ro = sqlite3.connect(
+        f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    frigate_ro.row_factory = sqlite3.Row
+    frigate_rw = sqlite3.connect(str(cfg.frigate_db), check_same_thread=False)
+    frigate_rw.row_factory = sqlite3.Row
+    frigate_rw.execute("PRAGMA busy_timeout=10000")
     try:
         return _compress_one_inner(
             recording_id,
@@ -1323,10 +1328,13 @@ def compress_one(
             encoder,
             cfg,
             compress_db,
-            ctx,
+            frigate_ro,
+            frigate_rw,
         )
     finally:
         compress_db.close()
+        frigate_ro.close()
+        frigate_rw.close()
 
 
 def _compress_one_inner(
@@ -1338,12 +1346,9 @@ def _compress_one_inner(
     encoder: str,
     cfg: Config,
     compress_db: sqlite3.Connection,
-    ctx: CompressorContext,
+    frigate_ro: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
 ) -> bool:
-    frigate_ro = ctx.frigate_ro
-    frigate_ro_lock = ctx.frigate_ro_lock
-    frigate_rw = ctx.frigate_rw
-    frigate_lock = ctx.frigate_lock
 
     # Resolve per-camera settings.
     cam_cfg = cfg.cameras.get(camera)
@@ -1450,180 +1455,176 @@ def _compress_one_inner(
 
     t_start = time.monotonic()
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
-        )
-    except subprocess.TimeoutExpired:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
+            )
+        except subprocess.TimeoutExpired:
+            duration = time.monotonic() - t_start
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg=f"timeout after {FFMPEG_TIMEOUT_SEC}s",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] ffmpeg timeout after {duration:.1f}s "
+                f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
+            )
+            return False
+        except Exception as e:
+            duration = time.monotonic() - t_start
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg=f"ffmpeg exception: {e}",
+            )
+            log(
+                "ERROR",
+                f"[{camera}] ffmpeg raised unexpected exception after {duration:.1f}s: {e}",
+            )
+            return False
+
         duration = time.monotonic() - t_start
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg=f"timeout after {FFMPEG_TIMEOUT_SEC}s",
-        )
-        log(
-            "WARNING",
-            f"[{camera}] ffmpeg timeout after {duration:.1f}s "
-            f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
-        )
-        return False
-    except Exception as e:
-        duration = time.monotonic() - t_start
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg=f"ffmpeg exception: {e}",
-        )
-        log(
-            "ERROR",
-            f"[{camera}] ffmpeg raised unexpected exception after {duration:.1f}s: {e}",
-        )
-        return False
 
-    duration = time.monotonic() - t_start
+        if result.returncode != 0:
+            err = (result.stderr or "")[:FFMPEG_STDERR_MAX_LEN].strip()
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg=err,
+            )
+            log(
+                "WARNING",
+                f"[{camera}] ffmpeg failed after {duration:.1f}s "
+                f"(rc={result.returncode}): {_display_path(filepath)}",
+            )
+            if err:
+                log("DEBUG", f"[{camera}]   stderr: {err}")
+            return False
 
-    if result.returncode != 0:
-        tmpfile.unlink(missing_ok=True)
-        err = (result.stderr or "")[:FFMPEG_STDERR_MAX_LEN].strip()
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg=err,
-        )
-        log(
-            "WARNING",
-            f"[{camera}] ffmpeg failed after {duration:.1f}s "
-            f"(rc={result.returncode}): {_display_path(filepath)}",
-        )
-        if err:
-            log("DEBUG", f"[{camera}]   stderr: {err}")
-        return False
+        if not tmpfile.exists():
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg="output missing",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] output missing after encode ({duration:.1f}s): "
+                f"{_display_path(filepath)}",
+            )
+            return False
 
-    if not tmpfile.exists():
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg="output missing",
-        )
-        log(
-            "WARNING",
-            f"[{camera}] output missing after encode ({duration:.1f}s): "
-            f"{_display_path(filepath)}",
-        )
-        return False
+        size_after = tmpfile.stat().st_size
 
-    size_after = tmpfile.stat().st_size
+        # Sanity: output must be at least 10% of original size
+        if size_after < size_before // 10:
+            rec(
+                size_before=size_before,
+                size_after=size_after,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg="output too small",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] output suspiciously small after {duration:.1f}s — "
+                f"keeping original: {_display_path(filepath)}",
+            )
+            return False
 
-    # Sanity: output must be at least 10% of original size
-    if size_after < size_before // 10:
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=size_after,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg="output too small",
-        )
-        log(
-            "WARNING",
-            f"[{camera}] output suspiciously small after {duration:.1f}s — "
-            f"keeping original: {_display_path(filepath)}",
-        )
-        return False
+        # Safety: verify the original still exists and hasn't been modified.
+        # Frigate may delete recordings during its own retention cleanup while
+        # we were encoding.  If the file changed, the encode is based on stale
+        # data.
+        if not filepath.exists():
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg="original deleted by Frigate during compression",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] original deleted during compression ({duration:.1f}s) — "
+                f"discarding output: {_display_path(filepath)}",
+            )
+            return False
 
-    # Safety: verify the original still exists and hasn't been modified.
-    # Frigate may delete recordings during its own retention cleanup while we
-    # were encoding.  If the file changed, the encode is based on stale data.
-    if not filepath.exists():
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg="original deleted by Frigate during compression",
-        )
-        log(
-            "WARNING",
-            f"[{camera}] original deleted during compression ({duration:.1f}s) — "
-            f"discarding output: {_display_path(filepath)}",
-        )
-        return False
+        current_size = filepath.stat().st_size
+        if current_size != size_before:
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg=f"original changed during compression ({size_before}→{current_size} bytes)",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] original changed during compression ({duration:.1f}s) — "
+                f"discarding output: {_display_path(filepath)}",
+            )
+            return False
 
-    current_size = filepath.stat().st_size
-    if current_size != size_before:
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg=f"original changed during compression ({size_before}→{current_size} bytes)",
-        )
-        log(
-            "WARNING",
-            f"[{camera}] original changed during compression ({duration:.1f}s) — "
-            f"discarding output: {_display_path(filepath)}",
-        )
-        return False
-
-    # Safety: confirm Frigate still has this recording in its DB.
-    # Closes the race where Frigate removes the DB row (and possibly the file)
-    # between the checks above and the atomic replace below.  Without this,
-    # we could create an orphan on disk that Frigate never cleans up.
-    with frigate_ro_lock:
+        # Safety: confirm Frigate still has this recording in its DB.
+        # Closes the race where Frigate removes the DB row (and possibly the
+        # file) between the checks above and the atomic replace below.
+        # Without this, we could create an orphan on disk that Frigate never
+        # cleans up.
         db_row = frigate_ro.execute(
             "SELECT id FROM recordings WHERE id = ?", (recording_id,)
         ).fetchone()
-    if db_row is None:
-        tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=None,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg="recording removed from Frigate DB during compression",
-        )
+        if db_row is None:
+            rec(
+                size_before=size_before,
+                size_after=None,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg="recording removed from Frigate DB during compression",
+            )
+            log(
+                "WARNING",
+                f"[{camera}] recording removed from Frigate DB during compression "
+                f"({duration:.1f}s) — discarding output to prevent orphan: "
+                f"{_display_path(filepath)}",
+            )
+            return False
+
+        # Atomically replace original.
         log(
-            "WARNING",
-            f"[{camera}] recording removed from Frigate DB during compression "
-            f"({duration:.1f}s) — discarding output to prevent orphan: "
+            "DEBUG",
+            f"[{camera}] Replacing original with compressed output: "
             f"{_display_path(filepath)}",
         )
-        return False
-
-    # Atomically replace original.  Logged at DEBUG only — the start line
-    # already named the file and the success summary follows immediately, so
-    # an INFO "Replacing..." line in between is just noise.
-    log(
-        "DEBUG",
-        f"[{camera}] Replacing original with compressed output: {_display_path(filepath)}",
-    )
-    try:
-        tmpfile.replace(filepath)
-    except Exception as e:
+        try:
+            tmpfile.replace(filepath)
+        except Exception as e:
+            rec(
+                size_before=size_before,
+                size_after=size_after,
+                duration_sec=duration,
+                status=STATUS_ERROR,
+                error_msg=f"replace failed: {e}",
+            )
+            log(
+                "ERROR",
+                f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
+            )
+            return False
+    finally:
+        # Ensure temp file is always cleaned up, even on thread cancellation.
         tmpfile.unlink(missing_ok=True)
-        rec(
-            size_before=size_before,
-            size_after=size_after,
-            duration_sec=duration,
-            status=STATUS_ERROR,
-            error_msg=f"replace failed: {e}",
-        )
-        log(
-            "ERROR",
-            f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
-        )
-        return False
 
     pct = ((size_before - size_after) / size_before * 100) if size_before else 0.0
     log(
@@ -1644,12 +1645,11 @@ def _compress_one_inner(
     seg_status = STATUS_OK
     seg_error: str | None = None
     try:
-        with frigate_lock:
-            frigate_rw.execute(
-                "UPDATE recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
-            )
-            frigate_rw.commit()
+        frigate_rw.execute(
+            "UPDATE recordings SET segment_size = ? WHERE id = ?",
+            (new_size_mb, recording_id),
+        )
+        frigate_rw.commit()
     except Exception as e:
         seg_status = STATUS_SEGMENT_UPDATE_FAILED
         seg_error = str(e)
@@ -1683,24 +1683,58 @@ def _min_tier1_min_days(cfg: Config) -> int:
     return min(days) if days else 7
 
 
+_ELIGIBLE_BATCH_SIZE = 500
+
+
 def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     """
-    Returns recordings eligible for compression that haven't been successfully
-    compressed yet.  Each result dict has keys:
+    Returns up to ``_ELIGIBLE_BATCH_SIZE`` recordings eligible for compression
+    that haven't been successfully compressed yet.  Each result dict has keys:
         recording_id, camera, path, tier, recording_type
 
-    Filters out disabled cameras and disabled tiers using per-camera config.
-    The SQL query uses the most aggressive (minimum) tier1 cutoff across all
-    enabled cameras to fetch candidates; Python-side filtering applies each
-    camera's actual cutoffs.
+    All filtering is done in SQL — camera, age, and tier completion status.
     """
     cfg = ctx.cfg
-
-    # Use the most aggressive cutoff for the SQL query to get all candidates.
-    min_t1_days = _min_tier1_min_days(cfg)
-    earliest_cutoff = time.time() - (min_t1_days * 86400)
+    now = time.time()
 
     _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
+    ok_placeholders = ",".join("?" for _ in _ok_statuses)
+
+    # Build per-camera eligibility conditions.
+    # A recording needs work if:
+    #   - tier1 enabled AND old enough AND t1 not done, OR
+    #   - tier2 enabled AND old enough AND t1 done AND t2 not done
+    cam_clauses: list[str] = []
+    params: list[str | int | float] = []
+    for name, cam in cfg.cameras.items():
+        if not cam.enabled:
+            continue
+        subclauses = []
+        sub_params: list = []
+        if cam.tier1.enabled:
+            t1_cutoff = now - (cam.tier1.min_days * 86400)
+            subclauses.append(
+                f"(r.start_time < ? AND (f.t1_status IS NULL OR f.t1_status NOT IN ({ok_placeholders})))"
+            )
+            sub_params.extend([t1_cutoff, *_ok_statuses])
+        if cam.tier2.enabled:
+            t2_cutoff = now - (cam.tier2.min_days * 86400)
+            subclauses.append(
+                f"(r.start_time < ? AND f.t1_status IN ({ok_placeholders}) AND (f.t2_status IS NULL OR f.t2_status NOT IN ({ok_placeholders})))"
+            )
+            sub_params.extend([t2_cutoff, *_ok_statuses, *_ok_statuses])
+        if not subclauses:
+            continue
+        combined = " OR ".join(subclauses)
+        cam_clauses.append(f"(r.camera = ? AND ({combined}))")
+        params.append(name)
+        params.extend(sub_params)
+
+    if not cam_clauses:
+        return []
+
+    where = " OR ".join(cam_clauses)
+    params.append(_ELIGIBLE_BATCH_SIZE)
 
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
@@ -1712,50 +1746,31 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
         )
         rows = conn.execute(
-            """
+            f"""
             SELECT r.id, r.camera, r.path, r.start_time,
                    r.motion, r.objects,
                    f.t1_status, f.t2_status
             FROM   frigate_eligible.recordings r
             LEFT JOIN files f ON f.recording_id = r.id
-            WHERE  r.start_time < ?
+            WHERE  ({where})
             ORDER BY r.start_time ASC
+            LIMIT ?
             """,
-            (earliest_cutoff,),
+            params,
         ).fetchall()
     finally:
         conn.close()
 
-    now = time.time()
     results = []
     for row in rows:
         camera = row["camera"]
-        cam_cfg = cfg.cameras.get(camera)
-        if cam_cfg is None or not cam_cfg.enabled:
-            continue
-
-        start_time = row["start_time"]
-        age_days_sec = now - start_time
         t1_done = row["t1_status"] in _ok_statuses
-        t2_done = row["t2_status"] in _ok_statuses
 
-        # Determine which tier needs work.
-        tier: int | None = None
-        if (
-            cam_cfg.tier2.enabled
-            and age_days_sec >= cam_cfg.tier2.min_days * 86400
-            and t1_done
-            and not t2_done
-        ):
+        # Determine tier — SQL guarantees eligibility, just pick which.
+        if t1_done:
             tier = 2
-        elif (
-            cam_cfg.tier1.enabled
-            and age_days_sec >= cam_cfg.tier1.min_days * 86400
-            and not t1_done
-        ):
+        else:
             tier = 1
-        if tier is None:
-            continue
 
         rtype = _recording_type(row["motion"], row["objects"])
         results.append(
@@ -1772,17 +1787,42 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
 def time_until_next_eligible(ctx: CompressorContext) -> float:
     """
-    Returns seconds until the next recording becomes eligible for tier 1
-    compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
+    Returns seconds until the next recording becomes eligible for either
+    tier 1 or tier 2 compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
 
-    Uses the minimum tier1.min_days across all enabled cameras.
     Returns ``MAX_SLEEP_SEC`` if nothing is pending.
     """
     cfg = ctx.cfg
-    min_days = _min_tier1_min_days(cfg)
-    tier1_cutoff = time.time() - (min_days * 86400)
+    now = time.time()
+    soonest = MAX_SLEEP_SEC
 
-    with ctx.frigate_ro_lock:
+    # Check tier 1: next recording aging past min_days.
+    min_t1_days = _min_tier1_min_days(cfg)
+    t1_cutoff = now - (min_t1_days * 86400)
+    row = ctx.frigate_ro.execute(
+        """
+        SELECT start_time FROM recordings
+        WHERE  start_time > ?
+        ORDER  BY start_time ASC
+        LIMIT  1
+        """,
+        (t1_cutoff,),
+    ).fetchone()
+    if row is not None:
+        eligible_at = row["start_time"] + (min_t1_days * 86400)
+        soonest = min(soonest, eligible_at - now)
+
+    # Check tier 2: next t1-compressed recording aging past tier2.min_days.
+    min_t2_days = min(
+        (
+            cam.tier2.min_days
+            for cam in cfg.cameras.values()
+            if cam.enabled and cam.tier2.enabled
+        ),
+        default=None,
+    )
+    if min_t2_days is not None:
+        t2_cutoff = now - (min_t2_days * 86400)
         row = ctx.frigate_ro.execute(
             """
             SELECT start_time FROM recordings
@@ -1790,14 +1830,13 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
             ORDER  BY start_time ASC
             LIMIT  1
             """,
-            (tier1_cutoff,),
+            (t2_cutoff,),
         ).fetchone()
+        if row is not None:
+            eligible_at = row["start_time"] + (min_t2_days * 86400)
+            soonest = min(soonest, eligible_at - now)
 
-    if row is None:
-        return MAX_SLEEP_SEC
-
-    eligible_at = row["start_time"] + (min_days * 86400)
-    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, eligible_at - time.time()))
+    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, soonest))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1808,7 +1847,6 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
 def run_housekeeping(ctx: CompressorContext) -> None:
     cfg = ctx.cfg
     frigate_rw = ctx.frigate_rw
-    frigate_lock = ctx.frigate_lock
 
     compress_db = sqlite3.connect(
         f"file:{cfg.compress_db}", uri=True, check_same_thread=False
@@ -1818,7 +1856,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     compress_db.execute("PRAGMA busy_timeout=10000")
 
     try:
-        _run_housekeeping_inner(cfg, compress_db, frigate_rw, frigate_lock)
+        _run_housekeeping_inner(cfg, compress_db, frigate_rw)
     finally:
         compress_db.close()
 
@@ -1827,7 +1865,6 @@ def _run_housekeeping_inner(
     cfg: Config,
     compress_db: sqlite3.Connection,
     frigate_rw: sqlite3.Connection,
-    frigate_lock: threading.Lock,
 ) -> None:
     log("INFO", "── Housekeeping starting")
 
@@ -1873,12 +1910,11 @@ def _run_housekeeping_inner(
                 "DEBUG",
                 f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
-            with frigate_lock:
-                frigate_rw.execute(
-                    "UPDATE recordings SET segment_size = ? WHERE id = ?",
-                    (actual_size_mb, row["recording_id"]),
-                )
-                frigate_rw.commit()
+            frigate_rw.execute(
+                "UPDATE recordings SET segment_size = ? WHERE id = ?",
+                (actual_size_mb, row["recording_id"]),
+            )
+            frigate_rw.commit()
             compress_db.execute(
                 """UPDATE files SET
                      t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
@@ -2990,9 +3026,6 @@ def main() -> int:
         log("ERROR", f"Startup aborted: {e}")
         return 1
 
-    frigate_ro_lock = threading.Lock()
-    frigate_lock = threading.Lock()
-
     log("INFO", "════════════════════════════════════════")
     log("INFO", f"Frigate Compressor v{__version__} starting")
     if cfg.all_dry_run:
@@ -3035,9 +3068,7 @@ def main() -> int:
     ctx = CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=frigate_ro_lock,
         frigate_rw=frigate_rw,
-        frigate_lock=frigate_lock,
     )
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
@@ -3122,39 +3153,46 @@ def run_main_loop(
             )
             log("INFO", f"  per-camera: {breakdown}")
 
-            with ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs) as pool:
-                futures = {
-                    pool.submit(
-                        compress_one,
-                        r["recording_id"],
-                        r["path"],
-                        r["camera"],
-                        r["tier"],
-                        r["recording_type"],
-                        encoder,
-                        ctx,
-                    ): r
-                    for r in eligible
-                    if not stopping.is_set()
-                }
-                for future in as_completed(futures):
-                    if stopping.is_set():
-                        break
-                    r = futures[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        log("ERROR", f"[{r['camera']}] unhandled error: {e}")
-            # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
-            # running jobs complete before we reach this point.
+            pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
+            futures = {
+                pool.submit(
+                    compress_one,
+                    r["recording_id"],
+                    r["path"],
+                    r["camera"],
+                    r["tier"],
+                    r["recording_type"],
+                    encoder,
+                    ctx,
+                ): r
+                for r in eligible
+                if not stopping.is_set()
+            }
+            for future in as_completed(futures):
+                if stopping.is_set():
+                    break
+                r = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    log("ERROR", f"[{r['camera']}] unhandled error: {e}")
+            if stopping.is_set():
+                pool.shutdown(wait=False, cancel_futures=True)
+            else:
+                pool.shutdown(wait=True)
 
-            # We just did real work — additional recordings may have aged
-            # into eligibility while we were busy.  Loop straight back to
-            # the top so housekeeping still runs and we re-query eligible
-            # without sleeping.  Sleeping only when truly caught up means
-            # we can never fall arbitrarily far behind a steady recording
-            # rate just because the previous pass was long.
-            continue
+            # In dry-run mode, recordings are never marked as done, so
+            # re-querying would return the same set.  Fall through to sleep.
+            if cfg.all_dry_run:
+                pass  # fall through to sleep
+            elif len(eligible) >= _ELIGIBLE_BATCH_SIZE:
+                # Full batch — there's likely more work.  Loop back
+                # immediately without sleeping.
+                continue
+            else:
+                # Partial batch — we're caught up.  Re-check in case
+                # more recordings aged in while we were busy.
+                continue
 
         # ── No work — sleep until the next recording becomes eligible ────
         if not stopping.is_set():
