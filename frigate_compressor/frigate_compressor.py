@@ -1223,15 +1223,18 @@ MAX_SLEEP_SEC = 600.0
 
 @dataclass
 class CompressorContext:
-    """Shared, per-daemon state passed to every compression worker."""
+    """Shared, per-daemon state passed to every compression worker.
+
+    Each thread opens its own SQLite connection to the compress DB (WAL mode
+    handles concurrency).  ``compress_db`` is only set in tests for convenience.
+    """
 
     cfg: Config
-    compress_db: sqlite3.Connection
-    db_lock: threading.Lock
     frigate_ro: sqlite3.Connection
     frigate_ro_lock: threading.Lock
     frigate_rw: sqlite3.Connection
     frigate_lock: threading.Lock
+    compress_db: sqlite3.Connection | None = None
 
 
 def _recording_type(motion: int | None, objects: int | None) -> str:
@@ -1245,7 +1248,6 @@ def _recording_type(motion: int | None, objects: int | None) -> str:
 
 def _record(
     conn: sqlite3.Connection,
-    lock: threading.Lock,
     *,
     recording_id: str,
     camera: str,
@@ -1261,39 +1263,38 @@ def _record(
 ) -> None:
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     t = f"t{tier}"
-    with lock:
-        conn.execute(
-            f"""
-            INSERT INTO files
-                (recording_id, camera, path, recording_type, file_size,
-                 {t}_encoder, {t}_file_size, {t}_encode_sec,
-                 {t}_compressed_at, {t}_status, {t}_error_msg)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(recording_id) DO UPDATE SET
-                recording_type     = excluded.recording_type,
-                file_size          = COALESCE(files.file_size, excluded.file_size),
-                {t}_encoder        = excluded.{t}_encoder,
-                {t}_file_size      = excluded.{t}_file_size,
-                {t}_encode_sec     = excluded.{t}_encode_sec,
-                {t}_compressed_at  = excluded.{t}_compressed_at,
-                {t}_status         = excluded.{t}_status,
-                {t}_error_msg      = excluded.{t}_error_msg
-            """,
-            (
-                recording_id,
-                camera,
-                path,
-                recording_type,
-                size_before,
-                encoder,
-                size_after,
-                duration_sec,
-                now,
-                status,
-                error_msg,
-            ),
-        )
-        conn.commit()
+    conn.execute(
+        f"""
+        INSERT INTO files
+            (recording_id, camera, path, recording_type, file_size,
+             {t}_encoder, {t}_file_size, {t}_encode_sec,
+             {t}_compressed_at, {t}_status, {t}_error_msg)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(recording_id) DO UPDATE SET
+            recording_type     = excluded.recording_type,
+            file_size          = COALESCE(files.file_size, excluded.file_size),
+            {t}_encoder        = excluded.{t}_encoder,
+            {t}_file_size      = excluded.{t}_file_size,
+            {t}_encode_sec     = excluded.{t}_encode_sec,
+            {t}_compressed_at  = excluded.{t}_compressed_at,
+            {t}_status         = excluded.{t}_status,
+            {t}_error_msg      = excluded.{t}_error_msg
+        """,
+        (
+            recording_id,
+            camera,
+            path,
+            recording_type,
+            size_before,
+            encoder,
+            size_after,
+            duration_sec,
+            now,
+            status,
+            error_msg,
+        ),
+    )
+    conn.commit()
 
 
 def compress_one(
@@ -1306,8 +1307,39 @@ def compress_one(
     ctx: CompressorContext,
 ) -> bool:
     cfg = ctx.cfg
-    compress_db = ctx.compress_db
-    db_lock = ctx.db_lock
+    compress_db = sqlite3.connect(
+        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
+    )
+    compress_db.row_factory = sqlite3.Row
+    compress_db.execute("PRAGMA journal_mode=WAL")
+    compress_db.execute("PRAGMA busy_timeout=10000")
+    try:
+        return _compress_one_inner(
+            recording_id,
+            path,
+            camera,
+            tier,
+            recording_type,
+            encoder,
+            cfg,
+            compress_db,
+            ctx,
+        )
+    finally:
+        compress_db.close()
+
+
+def _compress_one_inner(
+    recording_id: str,
+    path: str,
+    camera: str,
+    tier: int,
+    recording_type: str,
+    encoder: str,
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    ctx: CompressorContext,
+) -> bool:
     frigate_ro = ctx.frigate_ro
     frigate_ro_lock = ctx.frigate_ro_lock
     frigate_rw = ctx.frigate_rw
@@ -1344,7 +1376,6 @@ def compress_one(
     ) -> None:
         _record(
             compress_db,
-            db_lock,
             recording_id=recording_id,
             camera=camera,
             path=path,
@@ -1638,8 +1669,6 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     camera's actual cutoffs.
     """
     cfg = ctx.cfg
-    compress_db = ctx.compress_db
-    db_lock = ctx.db_lock
 
     # Use the most aggressive cutoff for the SQL query to get all candidates.
     min_t1_days = _min_tier1_min_days(cfg)
@@ -1647,26 +1676,29 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
     _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
 
-    with db_lock:
+    conn = sqlite3.connect(
+        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    try:
         _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        compress_db.execute(
+        conn.execute(
             f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
         )
-        try:
-            rows = compress_db.execute(
-                """
-                SELECT r.id, r.camera, r.path, r.start_time,
-                       r.motion, r.objects,
-                       f.t1_status, f.t2_status
-                FROM   frigate_eligible.recordings r
-                LEFT JOIN files f ON f.recording_id = r.id
-                WHERE  r.start_time < ?
-                ORDER BY r.start_time ASC
-                """,
-                (earliest_cutoff,),
-            ).fetchall()
-        finally:
-            compress_db.execute("DETACH DATABASE frigate_eligible")
+        rows = conn.execute(
+            """
+            SELECT r.id, r.camera, r.path, r.start_time,
+                   r.motion, r.objects,
+                   f.t1_status, f.t2_status
+            FROM   frigate_eligible.recordings r
+            LEFT JOIN files f ON f.recording_id = r.id
+            WHERE  r.start_time < ?
+            ORDER BY r.start_time ASC
+            """,
+            (earliest_cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
 
     now = time.time()
     results = []
@@ -1749,16 +1781,31 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
 
 def run_housekeeping(ctx: CompressorContext) -> None:
     cfg = ctx.cfg
-    compress_db = ctx.compress_db
-    db_lock = ctx.db_lock
     frigate_rw = ctx.frigate_rw
     frigate_lock = ctx.frigate_lock
 
+    compress_db = sqlite3.connect(
+        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
+    )
+    compress_db.row_factory = sqlite3.Row
+    compress_db.execute("PRAGMA journal_mode=WAL")
+    compress_db.execute("PRAGMA busy_timeout=10000")
+
+    try:
+        _run_housekeeping_inner(cfg, compress_db, frigate_rw, frigate_lock)
+    finally:
+        compress_db.close()
+
+
+def _run_housekeeping_inner(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
+    frigate_lock: threading.Lock,
+) -> None:
     log("INFO", "── Housekeeping starting")
 
     # 1. Remove leftover temp files from crashed runs.
-    # Only matches our own temp files (.tmp.{recording_id}.mp4) so active
-    # compression jobs are never interrupted — each job uses a unique name.
     temp_files = list(Path(cfg.recordings_dir).rglob(_TEMP_GLOB))
     for tmp in temp_files:
         if cfg.all_dry_run:
@@ -1770,16 +1817,12 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         log("DEBUG", "No leftover temp files found")
 
     # 2. Retry pending segment_size updates.
-    # Files whose compression succeeded but whose Frigate DB write failed are
-    # recorded as status='segment_update_failed'.  Re-read the actual file size
-    # from disk and retry; on success promote to status='ok'.
-    with db_lock:
-        pending_seg = compress_db.execute(
-            """SELECT recording_id, camera, path
-               FROM files
-               WHERE t1_status = ? OR t2_status = ?""",
-            (STATUS_SEGMENT_UPDATE_FAILED, STATUS_SEGMENT_UPDATE_FAILED),
-        ).fetchall()
+    pending_seg = compress_db.execute(
+        """SELECT recording_id, camera, path
+           FROM files
+           WHERE t1_status = ? OR t2_status = ?""",
+        (STATUS_SEGMENT_UPDATE_FAILED, STATUS_SEGMENT_UPDATE_FAILED),
+    ).fetchall()
 
     retried = promoted = 0
     for row in pending_seg:
@@ -1810,25 +1853,24 @@ def run_housekeeping(ctx: CompressorContext) -> None:
                     (actual_size_mb, row["recording_id"]),
                 )
                 frigate_rw.commit()
-            with db_lock:
-                compress_db.execute(
-                    """UPDATE files SET
-                         t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
-                         t1_error_msg = CASE WHEN t1_status = ? THEN NULL ELSE t1_error_msg END,
-                         t2_status = CASE WHEN t2_status = ? THEN ? ELSE t2_status END,
-                         t2_error_msg = CASE WHEN t2_status = ? THEN NULL ELSE t2_error_msg END
-                       WHERE recording_id = ?""",
-                    (
-                        STATUS_SEGMENT_UPDATE_FAILED,
-                        STATUS_OK,
-                        STATUS_SEGMENT_UPDATE_FAILED,
-                        STATUS_SEGMENT_UPDATE_FAILED,
-                        STATUS_OK,
-                        STATUS_SEGMENT_UPDATE_FAILED,
-                        row["recording_id"],
-                    ),
-                )
-                compress_db.commit()
+            compress_db.execute(
+                """UPDATE files SET
+                     t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
+                     t1_error_msg = CASE WHEN t1_status = ? THEN NULL ELSE t1_error_msg END,
+                     t2_status = CASE WHEN t2_status = ? THEN ? ELSE t2_status END,
+                     t2_error_msg = CASE WHEN t2_status = ? THEN NULL ELSE t2_error_msg END
+                   WHERE recording_id = ?""",
+                (
+                    STATUS_SEGMENT_UPDATE_FAILED,
+                    STATUS_OK,
+                    STATUS_SEGMENT_UPDATE_FAILED,
+                    STATUS_SEGMENT_UPDATE_FAILED,
+                    STATUS_OK,
+                    STATUS_SEGMENT_UPDATE_FAILED,
+                    row["recording_id"],
+                ),
+            )
+            compress_db.commit()
             promoted += 1
             log(
                 "INFO",
@@ -1849,38 +1891,35 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         log("DEBUG", "No pending segment_size retries")
 
     # 3. Prune compress DB rows whose recording no longer exists in Frigate's DB.
-    # Attaches the Frigate DB temporarily so a single query can cross-reference
-    # it — avoids loading two full ID sets into memory.
     pruned = 0
-    with db_lock:
-        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        compress_db.execute(
-            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
-        )
-        try:
-            if cfg.all_dry_run:
-                pruned = compress_db.execute(
-                    """
-                    SELECT COUNT(*) FROM files
-                    WHERE recording_id NOT IN (
-                        SELECT id FROM frigate_ro_hk.recordings
-                    )
-                    """
-                ).fetchone()[0]
-            else:
-                log("INFO", "Pruning orphaned compress DB entries")
-                cursor = compress_db.execute(
-                    """
-                    DELETE FROM files
-                    WHERE recording_id NOT IN (
-                        SELECT id FROM frigate_ro_hk.recordings
-                    )
-                    """
+    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
+    compress_db.execute(
+        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
+    )
+    try:
+        if cfg.all_dry_run:
+            pruned = compress_db.execute(
+                """
+                SELECT COUNT(*) FROM files
+                WHERE recording_id NOT IN (
+                    SELECT id FROM frigate_ro_hk.recordings
                 )
-                pruned = cursor.rowcount
-                compress_db.commit()
-        finally:
-            compress_db.execute("DETACH DATABASE frigate_ro_hk")
+                """
+            ).fetchone()[0]
+        else:
+            log("INFO", "Pruning orphaned compress DB entries")
+            cursor = compress_db.execute(
+                """
+                DELETE FROM files
+                WHERE recording_id NOT IN (
+                    SELECT id FROM frigate_ro_hk.recordings
+                )
+                """
+            )
+            pruned = cursor.rowcount
+            compress_db.commit()
+    finally:
+        compress_db.execute("DETACH DATABASE frigate_ro_hk")
     if pruned:
         prefix = "DRY RUN: Would prune" if cfg.all_dry_run else "Pruned"
         log("INFO", f"{prefix} {pruned} orphaned DB entries")
@@ -1888,10 +1927,9 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         log("DEBUG", "No orphaned DB entries")
 
     # 4. Storage savings summary
-    with db_lock:
-        rows = compress_db.execute(
-            "SELECT * FROM savings_by_camera ORDER BY camera"
-        ).fetchall()
+    rows = compress_db.execute(
+        "SELECT * FROM savings_by_camera ORDER BY camera"
+    ).fetchall()
 
     if rows:
         log("INFO", "── Storage savings by camera")
@@ -1920,8 +1958,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         log("INFO", "No compression data yet")
 
     # 5. Recent errors
-    with db_lock:
-        errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
+    errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
     if errors:
         log("WARNING", "── Recent errors (last 7 days)")
         for err in errors:
@@ -1939,27 +1976,31 @@ def run_housekeeping(ctx: CompressorContext) -> None:
 PROBE_SLEEP_SEC = 10.0
 
 
-def _get_unprobed_recordings(ctx: CompressorContext) -> list[dict]:
-    """Return Frigate recordings not yet probed (missing from files or scanned_at IS NULL)."""
-    cfg = ctx.cfg
-    with ctx.db_lock:
-        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        ctx.compress_db.execute(
-            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_probe'
-        )
-        try:
-            rows = ctx.compress_db.execute(
-                """
-                SELECT r.id, r.camera, r.path
-                FROM   frigate_probe.recordings r
-                LEFT JOIN files f ON f.recording_id = r.id
-                WHERE  f.recording_id IS NULL
-                   OR  f.scanned_at IS NULL
-                ORDER BY r.start_time ASC
-                """,
-            ).fetchall()
-        finally:
-            ctx.compress_db.execute("DETACH DATABASE frigate_probe")
+_PROBE_BATCH_SIZE = 5000
+
+
+def _get_unprobed_recordings(cfg: Config, conn: sqlite3.Connection) -> list[dict]:
+    """Return a batch of Frigate recordings not yet probed.
+
+    Limited to ``_PROBE_BATCH_SIZE`` rows per call to keep memory bounded.
+    """
+    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
+    conn.execute(f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_probe')
+    try:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.camera, r.path
+            FROM   frigate_probe.recordings r
+            LEFT JOIN files f ON f.recording_id = r.id
+            WHERE  f.recording_id IS NULL
+               OR  f.scanned_at IS NULL
+            ORDER BY r.start_time ASC
+            LIMIT ?
+            """,
+            (_PROBE_BATCH_SIZE,),
+        ).fetchall()
+    finally:
+        conn.execute("DETACH DATABASE frigate_probe")
 
     return [
         {"recording_id": row["id"], "camera": row["camera"], "path": row["path"]}
@@ -1968,7 +2009,7 @@ def _get_unprobed_recordings(ctx: CompressorContext) -> list[dict]:
 
 
 def _store_probe(
-    ctx: CompressorContext,
+    conn: sqlite3.Connection,
     recording_id: str,
     camera: str,
     path: str,
@@ -1976,75 +2017,95 @@ def _store_probe(
 ) -> None:
     """Insert or update probe results in the files table."""
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with ctx.db_lock:
-        ctx.compress_db.execute(
-            """
-            INSERT INTO files
-                (recording_id, camera, path, codec, width, height,
-                 fps, bitrate, duration_sec, file_size, scanned_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(recording_id) DO UPDATE SET
-                codec       = excluded.codec,
-                width       = excluded.width,
-                height      = excluded.height,
-                fps         = excluded.fps,
-                bitrate     = excluded.bitrate,
-                duration_sec = excluded.duration_sec,
-                file_size   = excluded.file_size,
-                scanned_at   = excluded.scanned_at
-            """,
-            (
-                recording_id,
-                camera,
-                path,
-                info.get("codec"),
-                info.get("width"),
-                info.get("height"),
-                info.get("fps"),
-                info.get("bitrate"),
-                info.get("duration_sec"),
-                info.get("file_size"),
-                now,
-            ),
-        )
-        ctx.compress_db.commit()
+    conn.execute(
+        """
+        INSERT INTO files
+            (recording_id, camera, path, codec, width, height,
+             fps, bitrate, duration_sec, file_size, scanned_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(recording_id) DO UPDATE SET
+            codec       = excluded.codec,
+            width       = excluded.width,
+            height      = excluded.height,
+            fps         = excluded.fps,
+            bitrate     = excluded.bitrate,
+            duration_sec = excluded.duration_sec,
+            file_size   = excluded.file_size,
+            scanned_at   = excluded.scanned_at
+        """,
+        (
+            recording_id,
+            camera,
+            path,
+            info.get("codec"),
+            info.get("width"),
+            info.get("height"),
+            info.get("fps"),
+            info.get("bitrate"),
+            info.get("duration_sec"),
+            info.get("file_size"),
+            now,
+        ),
+    )
+    conn.commit()
 
 
 def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
     """Continuously probe unprobed Frigate recordings.
 
-    Each cycle fetches all recordings not yet probed in ``files``, runs
-    ``_probe_full`` on each, and stores the results.  Sleeps
+    Each cycle fetches a batch of recordings not yet probed in ``files``,
+    runs ``_probe_full`` on each, and stores the results.  Sleeps
     ``PROBE_SLEEP_SEC`` when fully caught up.
+
+    Opens its own read-write connection to the compress DB so it never
+    contends with the compression loop.  WAL mode allows
+    concurrent readers and a single writer with busy_timeout handling
+    contention.
     """
-    while not stopping.is_set():
-        try:
-            unprobed = _get_unprobed_recordings(ctx)
-        except Exception as e:
-            log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
-            stopping.wait(timeout=PROBE_SLEEP_SEC)
-            continue
+    probe_conn = sqlite3.connect(
+        f"file:{ctx.cfg.compress_db}", uri=True, check_same_thread=False
+    )
+    probe_conn.row_factory = sqlite3.Row
+    probe_conn.execute("PRAGMA journal_mode=WAL")
+    probe_conn.execute("PRAGMA busy_timeout=10000")
 
-        if not unprobed:
-            stopping.wait(timeout=PROBE_SLEEP_SEC)
-            continue
+    try:
+        while not stopping.is_set():
+            try:
+                unprobed = _get_unprobed_recordings(ctx.cfg, probe_conn)
+            except Exception as e:
+                log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
+                stopping.wait(timeout=PROBE_SLEEP_SEC)
+                continue
 
-        log("INFO", f"Probing {len(unprobed)} recording(s)")
-        probed = 0
-        for rec in unprobed:
-            if stopping.is_set():
-                break
-            info = _probe_full(Path(rec["path"]))
-            if info is not None:
-                _store_probe(ctx, rec["recording_id"], rec["camera"], rec["path"], info)
-                probed += 1
-            else:
-                log(
-                    "DEBUG",
-                    f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
-                )
-        if probed:
-            log("INFO", f"Probed {probed} recording(s)")
+            if not unprobed:
+                stopping.wait(timeout=PROBE_SLEEP_SEC)
+                continue
+
+            log("INFO", f"Probing {len(unprobed)} recording(s)")
+            probed = 0
+            for rec in unprobed:
+                if stopping.is_set():
+                    break
+                info = _probe_full(Path(rec["path"]))
+                if info is not None:
+                    _store_probe(
+                        probe_conn,
+                        rec["recording_id"],
+                        rec["camera"],
+                        rec["path"],
+                        info,
+                    )
+                    probed += 1
+                else:
+                    log(
+                        "DEBUG",
+                        f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
+                    )
+            if probed:
+                log("INFO", f"Probed {probed} recording(s)")
+    finally:
+        probe_conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2142,43 +2203,50 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
     One ATTACH+GROUP BY query: per (camera, tier, recording_type) we get a
     files count, byte total (segment_size→bytes), and earliest start_time.
     Tier comes from a LEFT JOIN against ``files`` — determined by which
-    ``t*_status`` column is set.  Uncompressed recordings are tier 0.  NULL ``segment_size`` is treated as 0 bytes
-    so a half-finalised row never crashes the aggregate.
+    ``t*_status`` column is set.  Uncompressed recordings are tier 0.
+    NULL ``segment_size`` is treated as 0 bytes so a half-finalised row
+    never crashes the aggregate.
+
+    Opens its own read-only connection so it never contends
+    with the probe or compression loops.
     """
     cfg = ctx.cfg
     now = time.time()
 
-    with ctx.db_lock:
+    conn = sqlite3.connect(
+        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    try:
         _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        ctx.compress_db.execute(
+        conn.execute(
             f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_stats'
         )
-        try:
-            rows = ctx.compress_db.execute(
-                f"""
-                SELECT
-                    r.camera                                                AS camera,
-                    CASE
-                      WHEN f.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 2
-                      WHEN f.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 1
-                      ELSE 0
-                    END                                                     AS tier,
-                    CASE
-                      WHEN COALESCE(r.objects, 0) > 0 THEN 'object'
-                      WHEN COALESCE(r.motion,  0) > 0 THEN 'motion'
-                      ELSE                                  'continuous'
-                    END                                                     AS rtype,
-                    COUNT(*)                                                AS files,
-                    SUM(COALESCE(r.segment_size, 0) * {_MB_BYTES})          AS bytes,
-                    MIN(r.start_time)                                       AS oldest
-                FROM frigate_stats.recordings r
-                LEFT JOIN files f
-                  ON  f.recording_id = r.id
-                GROUP BY r.camera, tier, rtype
-                """
-            ).fetchall()
-        finally:
-            ctx.compress_db.execute("DETACH DATABASE frigate_stats")
+        rows = conn.execute(
+            f"""
+            SELECT
+                r.camera                                                AS camera,
+                CASE
+                  WHEN f.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 2
+                  WHEN f.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 1
+                  ELSE 0
+                END                                                     AS tier,
+                CASE
+                  WHEN COALESCE(r.objects, 0) > 0 THEN 'object'
+                  WHEN COALESCE(r.motion,  0) > 0 THEN 'motion'
+                  ELSE                                  'continuous'
+                END                                                     AS rtype,
+                COUNT(*)                                                AS files,
+                SUM(COALESCE(r.segment_size, 0) * {_MB_BYTES})          AS bytes,
+                MIN(r.start_time)                                       AS oldest
+            FROM frigate_stats.recordings r
+            LEFT JOIN files f
+              ON  f.recording_id = r.id
+            GROUP BY r.camera, tier, rtype
+            """
+        ).fetchall()
+    finally:
+        conn.close()
 
     cameras: dict[str, dict] = {}
     top_total_bytes = 0
@@ -2894,7 +2962,6 @@ def main() -> int:
         log("ERROR", f"Startup aborted: {e}")
         return 1
 
-    db_lock = threading.Lock()
     frigate_ro_lock = threading.Lock()
     frigate_lock = threading.Lock()
 
@@ -2939,8 +3006,6 @@ def main() -> int:
 
     ctx = CompressorContext(
         cfg=cfg,
-        compress_db=compress_db,
-        db_lock=db_lock,
         frigate_ro=frigate_ro,
         frigate_ro_lock=frigate_ro_lock,
         frigate_rw=frigate_rw,

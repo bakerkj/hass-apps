@@ -115,12 +115,11 @@ def _make_ctx(
     frigate_rw.row_factory = sqlite3.Row
     return fc.CompressorContext(
         cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
         frigate_ro=frigate_ro,
         frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
         frigate_lock=threading.Lock(),
+        compress_db=compress_conn,
     )
 
 

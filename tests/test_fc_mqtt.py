@@ -71,12 +71,11 @@ def _make_stats_ctx(tmp_path: Path) -> tuple[fc.CompressorContext, sqlite3.Conne
 
     ctx = fc.CompressorContext(
         cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
         frigate_ro=frigate_ro,
         frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
         frigate_lock=threading.Lock(),
+        compress_db=compress_conn,
     )
     return ctx, frigate_conn
 
@@ -99,7 +98,6 @@ def _record_compressed(
     """Insert a row into compress DB so collect_frigate_stats sees it as compressed."""
     fc._record(
         ctx.compress_db,
-        ctx.db_lock,
         recording_id=rid,
         camera=camera,
         path=f"/media/{camera}/{rid}.mp4",

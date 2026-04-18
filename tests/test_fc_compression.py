@@ -43,12 +43,11 @@ def _make_eligible_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides
     frigate_rw.row_factory = sqlite3.Row
     return fc.CompressorContext(
         cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
         frigate_ro=frigate_ro,
         frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
         frigate_lock=threading.Lock(),
+        compress_db=compress_conn,
     )
 
 
@@ -62,12 +61,11 @@ def _make_compress_one_ctx(tmp_path, src: Path, frigate_db: Path):
     frigate_rw.row_factory = sqlite3.Row
     return fc.CompressorContext(
         cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
         frigate_ro=frigate_ro,
         frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
         frigate_lock=threading.Lock(),
+        compress_db=compress_conn,
     )
 
 
@@ -87,12 +85,11 @@ def _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn=None):
     frigate_rw.row_factory = sqlite3.Row
     return fc.CompressorContext(
         cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
         frigate_ro=frigate_ro,
         frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
         frigate_lock=threading.Lock(),
+        compress_db=compress_conn,
     )
 
 
@@ -156,7 +153,6 @@ def test_get_eligible_recordings_skips_already_done(tmp_path):
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
     fc._record(
         ctx.compress_db,
-        ctx.db_lock,
         recording_id="rec3",
         camera="cam1",
         path="/media/cam1/c.mp4",
@@ -184,7 +180,6 @@ def test_get_eligible_recordings_retries_errored(tmp_path):
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
     fc._record(
         ctx.compress_db,
-        ctx.db_lock,
         recording_id="rec4",
         camera="cam1",
         path="/media/cam1/d.mp4",
@@ -222,7 +217,6 @@ def test_get_eligible_recordings_tier2_assignment(tmp_path):
     # Mark tier 1 as done
     fc._record(
         ctx.compress_db,
-        ctx.db_lock,
         recording_id="rec5",
         camera="cam1",
         path="/media/cam1/e.mp4",
@@ -597,12 +591,10 @@ def test_housekeeping_prunes_orphaned_entries(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     compress_conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
 
     # Row in compress DB with no matching Frigate recording — should be pruned.
     fc._record(
         compress_conn,
-        lock,
         recording_id="orphan1",
         camera="cam1",
         path="/media/cam1/gone.mp4",
@@ -620,7 +612,6 @@ def test_housekeeping_prunes_orphaned_entries(tmp_path):
     )
     fc._record(
         compress_conn,
-        lock,
         recording_id="alive1",
         camera="cam1",
         path="/media/cam1/alive.mp4",
@@ -659,7 +650,6 @@ def test_housekeeping_retries_segment_update_failed(tmp_path):
     compress_conn = _open_compress_db(tmp_path)
     fc._record(
         compress_conn,
-        threading.Lock(),
         recording_id="seg1",
         camera="cam1",
         path=str(rec_path),
@@ -703,7 +693,6 @@ def test_housekeeping_segment_retry_file_missing(tmp_path):
     compress_conn = _open_compress_db(tmp_path)
     fc._record(
         compress_conn,
-        threading.Lock(),
         recording_id="seg2",
         camera="cam1",
         path="/nonexistent/clip.mp4",
