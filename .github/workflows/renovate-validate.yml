@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Schema validation
         run:
@@ -30,10 +30,10 @@ jobs:
         env:
           LOG_LEVEL: debug
         run: |
-          output=$(npx --package renovate@43.129.0 -- renovate --dry-run --platform=local 2>&1 || true)
+          npx --package renovate@43.129.0 -- renovate --dry-run --platform=local 2>&1 | tee renovate-dry-run.log || true
 
           # Check for datasource lookup failures
-          errors=$(echo "$output" | grep -i "no-result\|failed to look up" | grep -v "python-version" || true)
+          errors=$(grep -i "no-result\|failed to look up" renovate-dry-run.log | grep -v "python-version" || true)
           if [ -n "$errors" ]; then
             echo "::error::Renovate datasource lookup failures detected:"
             echo "$errors"
