@@ -129,6 +129,15 @@ def _close_ctx(ctx: fc.CompressorContext) -> None:
     ctx.frigate_rw.close()
 
 
+def _probe_and_store(
+    ctx: fc.CompressorContext, recording_id: str, camera: str, path: Path
+) -> None:
+    """Run a real ffprobe and store the result so compress_one can proceed."""
+    info = fc._probe_full(path)
+    assert info is not None, f"ffprobe failed for {path}"
+    fc._store_probe(ctx.compress_db, recording_id, camera, str(path), info)
+
+
 # ---------------------------------------------------------------------------
 # _probe_video — real ffprobe against a known video
 # ---------------------------------------------------------------------------
@@ -175,6 +184,7 @@ def test_compress_one_real_cpu_success(tmp_path, real_video):
     frigate_conn.close()
 
     ctx = _make_ctx(tmp_path, frigate_db)
+    _probe_and_store(ctx, "int_r1", "cam1", rec_path)
 
     result = fc.compress_one(
         recording_id="int_r1",
@@ -233,6 +243,7 @@ def test_compress_one_real_dry_run_leaves_file_unchanged(tmp_path, real_video):
     frigate_conn.close()
 
     ctx = _make_ctx(tmp_path, frigate_db, dry_run=True)
+    _probe_and_store(ctx, "dry_r1", "cam1", rec_path)
 
     result = fc.compress_one(
         recording_id="dry_r1",
@@ -250,11 +261,12 @@ def test_compress_one_real_dry_run_leaves_file_unchanged(tmp_path, real_video):
     assert rec_path.stat().st_size == original_size
     assert rec_path.stat().st_mtime == original_mtime
 
-    # No row should have been written to the compress DB.
+    # Probe row exists but no compression fields should be set.
     row = ctx.compress_db.execute(
         "SELECT * FROM files WHERE recording_id='dry_r1'"
     ).fetchone()
-    assert row is None
+    assert row is not None
+    assert row["t1_status"] is None
 
     # Frigate DB segment_size must remain NULL (never written).
     seg = ctx.frigate_rw.execute(
@@ -281,6 +293,7 @@ def test_compress_one_real_no_temp_files_left_after_success(tmp_path, real_video
     frigate_conn.close()
 
     ctx = _make_ctx(tmp_path, frigate_db)
+    _probe_and_store(ctx, "tmp_r1", "cam1", rec_path)
 
     fc.compress_one(
         recording_id="tmp_r1",
@@ -324,6 +337,7 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
     frigate_conn.close()
 
     ctx = _make_ctx(tmp_path, frigate_db)
+    _probe_and_store(ctx, "scale_r1", "cam1", rec_path)
 
     result = fc.compress_one(
         recording_id="scale_r1",
@@ -366,6 +380,7 @@ def test_compress_one_fps_cap_produces_capped_fps(tmp_path, real_video):
     frigate_conn.close()
 
     ctx = _make_ctx(tmp_path, frigate_db)
+    _probe_and_store(ctx, "fps_r1", "cam1", rec_path)
 
     result = fc.compress_one(
         recording_id="fps_r1",
