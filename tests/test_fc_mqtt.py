@@ -72,9 +72,7 @@ def _make_stats_ctx(tmp_path: Path) -> tuple[fc.CompressorContext, sqlite3.Conne
     ctx = fc.CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
         compress_db=compress_conn,
     )
     return ctx, frigate_conn

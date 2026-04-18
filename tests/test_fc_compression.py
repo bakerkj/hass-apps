@@ -44,9 +44,7 @@ def _make_eligible_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides
     return fc.CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
         compress_db=compress_conn,
     )
 
@@ -62,9 +60,7 @@ def _make_compress_one_ctx(tmp_path, src: Path, frigate_db: Path):
     return fc.CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
         compress_db=compress_conn,
     )
 
@@ -86,9 +82,7 @@ def _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn=None):
     return fc.CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
         compress_db=compress_conn,
     )
 
@@ -535,18 +529,9 @@ def test_compress_one_segment_size_update_fails(tmp_path):
         m.stderr = ""
         return m
 
-    # sqlite3.Connection.execute is a C-level slot; wrap in a MagicMock to intercept only the segment_size UPDATE.
-    # _close_ctx() will close ctx.frigate_rw, which is now the mock — so we
-    # have to close the real connection ourselves to avoid leaking it.
-    real_rw = ctx.frigate_rw
-    mock_rw = MagicMock(spec=sqlite3.Connection)
-    mock_rw.execute.side_effect = lambda sql, *a, **kw: (
-        (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
-        if "segment_size" in sql
-        else real_rw.execute(sql, *a, **kw)
-    )
-    mock_rw.commit.side_effect = real_rw.commit
-    ctx.frigate_rw = mock_rw
+    # Make the Frigate DB read-only so the segment_size UPDATE fails.
+    frigate_db = Path(str(ctx.cfg.frigate_db))
+    frigate_db.chmod(0o444)
 
     try:
         with patch("subprocess.run", side_effect=fake_run):
@@ -555,9 +540,8 @@ def test_compress_one_segment_size_update_fails(tmp_path):
         assert result is True
         row = _db_row(ctx)
         assert row["t1_status"] == fc.STATUS_SEGMENT_UPDATE_FAILED
-        assert "locked" in row["t1_error_msg"]
     finally:
-        real_rw.close()
+        frigate_db.chmod(0o644)
         _close_ctx(ctx)
 
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -116,9 +115,7 @@ def _make_ctx(
     return fc.CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
         frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
         compress_db=compress_conn,
     )
 
