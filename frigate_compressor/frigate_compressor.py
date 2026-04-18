@@ -1526,21 +1526,53 @@ def _compress_one_inner(
 
         size_after = tmpfile.stat().st_size
 
-        # Sanity: output must be at least 10% of original size
-        if size_after < size_before // 10:
-            rec(
-                size_before=size_before,
-                size_after=size_after,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg="output too small",
-            )
+        # Sanity: for very small output (<3% of original), run ffprobe
+        # to verify the output is a valid video with matching duration.
+        if size_after * 100 < size_before * 3:
+            out_info = _probe_full(tmpfile)
+            src_info_full = _probe_full(filepath)
+            if out_info is None:
+                rec(
+                    size_before=size_before,
+                    size_after=size_after,
+                    duration_sec=duration,
+                    status=STATUS_ERROR,
+                    error_msg="output too small and ffprobe failed",
+                )
+                log(
+                    "WARNING",
+                    f"[{camera}] output small and invalid after {duration:.1f}s — "
+                    f"keeping original: {_display_path(filepath)}",
+                )
+                return False
+            # Verify duration matches within 1 second.
+            if (
+                src_info_full is not None
+                and src_info_full.get("duration_sec")
+                and out_info.get("duration_sec")
+                and abs(src_info_full["duration_sec"] - out_info["duration_sec"]) > 1.0
+            ):
+                rec(
+                    size_before=size_before,
+                    size_after=size_after,
+                    duration_sec=duration,
+                    status=STATUS_ERROR,
+                    error_msg=f"output too small and duration mismatch "
+                    f"({src_info_full['duration_sec']:.1f}s vs {out_info['duration_sec']:.1f}s)",
+                )
+                log(
+                    "WARNING",
+                    f"[{camera}] output small and duration mismatch "
+                    f"({src_info_full['duration_sec']:.1f}s vs {out_info['duration_sec']:.1f}s) — "
+                    f"keeping original: {_display_path(filepath)}",
+                )
+                return False
             log(
-                "WARNING",
-                f"[{camera}] output suspiciously small after {duration:.1f}s — "
-                f"keeping original: {_display_path(filepath)}",
+                "DEBUG",
+                f"[{camera}] output small ({size_after * 100 // size_before}% of "
+                f"original) but valid ({out_info.get('duration_sec', '?')}s): "
+                f"{_display_path(filepath)}",
             )
-            return False
 
         # Safety: verify the original still exists and hasn't been modified.
         # Frigate may delete recordings during its own retention cleanup while
