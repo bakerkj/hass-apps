@@ -434,7 +434,12 @@ def test_compress_one_output_too_small(tmp_path):
     ctx, src = _setup_compress_one(tmp_path)
 
     def fake_run(cmd, **kwargs):
-        Path(cmd[-1]).write_bytes(b"z" * 5)  # less than 10% of 10000
+        if cmd[0] == "ffmpeg":
+            # Write a tiny file — less than 3% of 10000 bytes.
+            Path(cmd[-1]).write_bytes(b"z" * 5)
+        elif cmd[0] == "ffprobe":
+            # Return failure for ffprobe on the tiny file.
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="")
         m = MagicMock()
         m.returncode = 0
         m.stderr = ""
@@ -444,7 +449,47 @@ def test_compress_one_output_too_small(tmp_path):
         result = _compress_one(ctx, src)
 
     assert result is False
-    assert "small" in _db_row(ctx)["t1_error_msg"]
+    row = _db_row(ctx)
+    assert row["t1_error_msg"] is not None
+    assert "small" in row["t1_error_msg"] or "ffprobe" in row["t1_error_msg"]
+    _close_ctx(ctx)
+
+
+def test_compress_one_output_small_but_valid(tmp_path):
+    """Output <3% of original but ffprobe confirms valid video with matching duration."""
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "ffmpeg":
+            # Write a small file — less than 3% of 10000 bytes.
+            Path(cmd[-1]).write_bytes(b"y" * 200)
+        elif cmd[0] == "ffprobe":
+            # Return valid probe results with matching duration.
+            m = MagicMock()
+            m.returncode = 0
+            m.stderr = ""
+            m.stdout = (
+                "codec_name=h264\n"
+                "width=1920\n"
+                "height=1080\n"
+                "r_frame_rate=20/1\n"
+                "bit_rate=100000\n"
+                "duration=10.0\n"
+                "size=200\n"
+            )
+            return m
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_one(ctx, src)
+
+    assert result is True
+    row = _db_row(ctx)
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["t1_file_size"] == 200
     _close_ctx(ctx)
 
 
