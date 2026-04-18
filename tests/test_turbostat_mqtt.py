@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import subprocess
 
 import turbostat_mqtt as tm
 
@@ -320,3 +321,585 @@ def test_build_discovery_payloads_empty_cols():
         expire_after_s=120,
     )
     assert payloads == {}
+
+
+# ---------------------------------------------------------------------------
+# log
+# ---------------------------------------------------------------------------
+
+
+def test_log_debug_skipped_when_min_level_info(capsys):
+    tm.log("DEBUG", "should not appear", min_level="INFO")
+    assert capsys.readouterr().out == ""
+
+
+def test_log_info_printed_when_min_level_info(capsys):
+    tm.log("INFO", "hello", min_level="INFO")
+    out = capsys.readouterr().out
+    assert "[INFO] hello" in out
+
+
+def test_log_warning_printed_when_min_level_info(capsys):
+    tm.log("WARNING", "warn msg", min_level="INFO")
+    out = capsys.readouterr().out
+    assert "[WARNING] warn msg" in out
+
+
+def test_log_error_printed_when_min_level_warning(capsys):
+    tm.log("ERROR", "err msg", min_level="WARNING")
+    out = capsys.readouterr().out
+    assert "[ERROR] err msg" in out
+
+
+def test_log_info_skipped_when_min_level_warning(capsys):
+    tm.log("INFO", "should not appear", min_level="WARNING")
+    assert capsys.readouterr().out == ""
+
+
+def test_log_debug_printed_when_min_level_debug(capsys):
+    tm.log("DEBUG", "dbg msg", min_level="DEBUG")
+    out = capsys.readouterr().out
+    assert "[DEBUG] dbg msg" in out
+
+
+# ---------------------------------------------------------------------------
+# MqttHealth
+# ---------------------------------------------------------------------------
+
+
+def test_mqtt_health_initial_state():
+    h = tm.MqttHealth()
+    assert h.connected is False
+    assert h.last_connect_ok == 0.0
+    assert h.last_disconnect == 0.0
+    assert h.last_state_publish_ok == 0.0
+
+
+# ---------------------------------------------------------------------------
+# mqtt_publish
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_client(rc=0):
+    """Return a mock MQTT client whose publish() returns an info object."""
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    info = MagicMock()
+    info.rc = rc
+    client.publish.return_value = info
+    return client
+
+
+def test_mqtt_publish_success():
+    client = _make_mock_client(rc=0)
+    health = tm.MqttHealth()
+    result = tm.mqtt_publish(
+        client,
+        "test/topic",
+        "payload",
+        qos=0,
+        retain=False,
+        log_level="INFO",
+        health=health,
+        mark_state=False,
+    )
+    assert result is True
+    client.publish.assert_called_once_with(
+        "test/topic", payload="payload", qos=0, retain=False
+    )
+
+
+def test_mqtt_publish_success_mark_state_updates_health():
+    client = _make_mock_client(rc=0)
+    health = tm.MqttHealth()
+    assert health.last_state_publish_ok == 0.0
+    result = tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=1,
+        retain=True,
+        log_level="INFO",
+        health=health,
+        mark_state=True,
+    )
+    assert result is True
+    assert health.last_state_publish_ok > 0.0
+
+
+def test_mqtt_publish_success_no_mark_state_leaves_health():
+    client = _make_mock_client(rc=0)
+    health = tm.MqttHealth()
+    tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=0,
+        retain=False,
+        log_level="INFO",
+        health=health,
+        mark_state=False,
+    )
+    assert health.last_state_publish_ok == 0.0
+
+
+def test_mqtt_publish_failure_rc():
+    client = _make_mock_client(rc=4)  # non-zero rc
+    health = tm.MqttHealth()
+    result = tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=0,
+        retain=False,
+        log_level="INFO",
+        health=health,
+    )
+    assert result is False
+
+
+def test_mqtt_publish_exception():
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.publish.side_effect = ConnectionError("boom")
+    health = tm.MqttHealth()
+    result = tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=0,
+        retain=False,
+        log_level="INFO",
+        health=health,
+    )
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# connect_mqtt_with_retry
+# ---------------------------------------------------------------------------
+
+
+def test_connect_mqtt_with_retry_success_first_try():
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.connect.return_value = None  # success, no exception
+    tm.connect_mqtt_with_retry(client, "localhost", 1883, "INFO")
+    client.connect.assert_called_once_with("localhost", 1883, keepalive=60)
+
+
+def test_connect_mqtt_with_retry_retries_then_succeeds():
+    from unittest.mock import MagicMock, patch
+
+    client = MagicMock()
+    client.connect.side_effect = [
+        ConnectionRefusedError("refused"),
+        OSError("network down"),
+        None,  # success on third attempt
+    ]
+    with patch("turbostat_mqtt.time.sleep") as mock_sleep:
+        tm.connect_mqtt_with_retry(client, "broker", 1883, "INFO")
+
+    assert client.connect.call_count == 3
+    # First retry delay=5, second retry delay=10 (5*2)
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_any_call(5)
+    mock_sleep.assert_any_call(10)
+
+
+def test_connect_mqtt_with_retry_delay_caps_at_60():
+    from unittest.mock import MagicMock, patch
+
+    client = MagicMock()
+    # Fail 6 times: delays should be 5, 10, 20, 40, 60, 60
+    client.connect.side_effect = [OSError("fail") for _ in range(6)] + [None]
+    with patch("turbostat_mqtt.time.sleep") as mock_sleep:
+        tm.connect_mqtt_with_retry(client, "broker", 1883, "INFO")
+
+    assert client.connect.call_count == 7
+    delays = [c.args[0] for c in mock_sleep.call_args_list]
+    assert delays == [5, 10, 20, 40, 60, 60]
+
+
+# ---------------------------------------------------------------------------
+# start_turbostat
+# ---------------------------------------------------------------------------
+
+
+def test_start_turbostat_command_construction():
+    from unittest.mock import patch, MagicMock
+
+    mock_proc = MagicMock()
+    with patch("turbostat_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        result = tm.start_turbostat(10.0)
+
+    assert result is mock_proc
+    mock_popen.assert_called_once_with(
+        [
+            "turbostat",
+            "--Summary",
+            "--quiet",
+            "--enable",
+            "all",
+            "--interval",
+            "10.0",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+
+def test_start_turbostat_fractional_interval():
+    from unittest.mock import patch, MagicMock
+
+    mock_proc = MagicMock()
+    with patch("turbostat_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        result = tm.start_turbostat(2.5)
+
+    assert result is mock_proc
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[-1] == "2.5"
+    assert cmd[0] == "turbostat"
+
+
+# ---------------------------------------------------------------------------
+# mqtt_publish — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_mqtt_publish_failure_rc_does_not_mark_state():
+    client = _make_mock_client(rc=4)
+    health = tm.MqttHealth()
+    tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=0,
+        retain=False,
+        log_level="INFO",
+        health=health,
+        mark_state=True,
+    )
+    assert health.last_state_publish_ok == 0.0
+
+
+def test_mqtt_publish_exception_does_not_mark_state():
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.publish.side_effect = RuntimeError("boom")
+    health = tm.MqttHealth()
+    result = tm.mqtt_publish(
+        client,
+        "t",
+        "p",
+        qos=1,
+        retain=True,
+        log_level="INFO",
+        health=health,
+        mark_state=True,
+    )
+    assert result is False
+    assert health.last_state_publish_ok == 0.0
+
+
+def test_mqtt_publish_with_retain_and_qos1():
+    client = _make_mock_client(rc=0)
+    health = tm.MqttHealth()
+    result = tm.mqtt_publish(
+        client,
+        "avail/topic",
+        "online",
+        qos=1,
+        retain=True,
+        log_level="DEBUG",
+        health=health,
+    )
+    assert result is True
+    client.publish.assert_called_once_with(
+        "avail/topic",
+        payload="online",
+        qos=1,
+        retain=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# guess_meta — additional branches
+# ---------------------------------------------------------------------------
+
+
+def test_guess_meta_gfx_percent():
+    unit, dc, icon, sdp = tm.guess_meta("GFX%")
+    assert unit == "%"
+    assert icon == "mdi:percent"
+
+
+def test_guess_meta_temp_in_name():
+    unit, dc, icon, sdp = tm.guess_meta("SomeTemp")
+    assert unit == "°C"
+    assert dc == "temperature"
+
+
+def test_guess_meta_per_s_in_name():
+    unit, dc, icon, sdp = tm.guess_meta("Ops/s")
+    assert unit == "1/s"
+
+
+def test_guess_meta_trailing_s():
+    unit, dc, icon, sdp = tm.guess_meta("rate_s")
+    assert unit == "1/s"
+
+
+def test_guess_meta_seconds_exact():
+    unit, dc, icon, sdp = tm.guess_meta("seconds")
+    assert unit == "s"
+    assert sdp == 1
+
+
+def test_guess_meta_sec_exact():
+    unit, dc, icon, sdp = tm.guess_meta("sec")
+    assert unit == "s"
+
+
+def test_guess_meta_joule_single_j():
+    unit, dc, icon, sdp = tm.guess_meta("CorJ")
+    assert unit == "J"
+
+
+def test_guess_meta_nmi():
+    # "nmi" doesn't have "irq" in it but is otherwise unknown
+    unit, dc, icon, sdp = tm.guess_meta("NMI")
+    assert unit is None
+    assert sdp == 2
+
+
+# ---------------------------------------------------------------------------
+# friendly_name — more coverage
+# ---------------------------------------------------------------------------
+
+
+def test_friendly_name_cpu_percent():
+    assert tm.friendly_name("CPU%") == "CPU Busy"
+
+
+def test_friendly_name_core_tmp():
+    assert tm.friendly_name("CoreTmp") == "CPU Core Temperature"
+
+
+def test_friendly_name_tsc_mhz():
+    assert tm.friendly_name("TSC_MHz") == "CPU Time Stamp Counter Frequency"
+
+
+def test_friendly_name_avg_mhz():
+    assert tm.friendly_name("Avg_MHz") == "CPU Average Frequency"
+
+
+def test_friendly_name_ram_watt():
+    assert tm.friendly_name("RAMWatt") == "CPU DRAM Power"
+
+
+def test_friendly_name_gfx_watt():
+    assert tm.friendly_name("GFXWatt") == "CPU iGPU Power"
+
+
+def test_friendly_name_gfx_c0():
+    assert tm.friendly_name("GFX%C0") == "GPU C0 (Active)"
+
+
+def test_friendly_name_pkg_c_states():
+    assert tm.friendly_name("Pkg%pc7") == "CPU Package C7 Residency"
+    assert tm.friendly_name("Pkg%pc9") == "CPU Package C9 Residency"
+    assert tm.friendly_name("Pkg%pc10") == "CPU Package C10 Residency"
+
+
+def test_friendly_name_cpu_c_states():
+    assert tm.friendly_name("CPU%c1") == "CPU C1 Residency"
+    assert tm.friendly_name("CPU%c6") == "CPU C6 Residency"
+    assert tm.friendly_name("CPU%c7") == "CPU C7 Residency"
+
+
+def test_friendly_name_lpi():
+    assert tm.friendly_name("CPU%LPI") == "CPU Low Power Idle Residency"
+    assert tm.friendly_name("SYS%LPI") == "System Low Power Idle Residency"
+
+
+def test_friendly_name_gpu_freq():
+    assert tm.friendly_name("GFXAMHz") == "GPU Frequency (Actual)"
+    assert tm.friendly_name("GFXMHz") == "GPU Frequency (Requested)"
+
+
+def test_friendly_name_ipc():
+    assert tm.friendly_name("IPC") == "Instructions per Cycle"
+
+
+def test_friendly_name_smi():
+    assert tm.friendly_name("SMI") == "System Management Interrupt Rate"
+
+
+def test_friendly_name_nmi():
+    assert tm.friendly_name("NMI") == "Non-maskable Interrupt Rate"
+
+
+def test_friendly_name_acpi():
+    assert tm.friendly_name("C1ACPI%") == "ACPI C1 Residency"
+    assert tm.friendly_name("C2ACPI%") == "ACPI C2 Residency"
+    assert tm.friendly_name("C3ACPI%") == "ACPI C3 Residency"
+
+
+def test_friendly_name_poll():
+    assert tm.friendly_name("POLL%") == "CPU Polling Time"
+
+
+def test_friendly_name_gfx_rc6():
+    assert tm.friendly_name("GFX%rc6") == "GPU RC6 Residency"
+
+
+def test_friendly_name_llc():
+    assert tm.friendly_name("LLCkRPS") == "CPU Last-Level Cache References"
+    assert tm.friendly_name("LLC%hi") == "CPU Last-Level Cache Hit Rate"
+    assert tm.friendly_name("LLC%hit") == "CPU Last-Level Cache Hit Rate"
+
+
+def test_friendly_name_totl_any_cpugfx():
+    assert tm.friendly_name("Totl%C0") == "CPU Total C0 (Active)"
+    assert tm.friendly_name("Any%C0") == "CPU Any Core C0 (Active)"
+    assert tm.friendly_name("CPUGFX%") == "CPU+GPU C0 (Active)"
+
+
+# ---------------------------------------------------------------------------
+# build_discovery_payloads — more variations
+# ---------------------------------------------------------------------------
+
+
+def test_build_discovery_payloads_percent_col():
+    cols = {"Busy%": "busy_pct"}
+    payloads = tm.build_discovery_payloads(
+        discovery_prefix="ha",
+        device_id="ts",
+        device_name="TS",
+        state_topic="ts/state",
+        base_topic="ts",
+        availability_topic="ts/avail",
+        cols=cols,
+        expire_after_s=90,
+    )
+    key = "ha/sensor/ts/busy_pct/config"
+    assert key in payloads
+    p = payloads[key]
+    assert p["unit_of_measurement"] == "%"
+    assert "device_class" not in p
+    assert p["suggested_display_precision"] == 1
+    assert p["availability_topic"] == "ts/avail"
+    assert p["state_topic"] == "ts/busy_pct/state"
+    assert p["json_attributes_topic"] == "ts/state"
+
+
+def test_build_discovery_payloads_temperature_col():
+    cols = {"PkgTmp": "pkgtmp"}
+    payloads = tm.build_discovery_payloads(
+        discovery_prefix="ha",
+        device_id="ts",
+        device_name="TS",
+        state_topic="ts/state",
+        base_topic="ts",
+        availability_topic="ts/avail",
+        cols=cols,
+        expire_after_s=120,
+    )
+    p = list(payloads.values())[0]
+    assert p["device_class"] == "temperature"
+    assert p["unit_of_measurement"] == "°C"
+
+
+def test_build_discovery_payloads_multiple_cols_share_device():
+    cols = {"PkgWatt": "pkgwatt", "CorWatt": "corwatt", "PkgTmp": "pkgtmp"}
+    payloads = tm.build_discovery_payloads(
+        discovery_prefix="ha",
+        device_id="ts",
+        device_name="TS",
+        state_topic="ts/state",
+        base_topic="ts",
+        availability_topic="ts/avail",
+        cols=cols,
+        expire_after_s=120,
+    )
+    devices = [p["device"] for p in payloads.values()]
+    # All should reference the same device dict
+    assert all(d["identifiers"] == ["ts"] for d in devices)
+    assert all(d["name"] == "TS" for d in devices)
+
+
+# ---------------------------------------------------------------------------
+# TurbostatParser — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_parser_consecutive_headers_replace():
+    """Two header lines in a row: second replaces first."""
+    p = tm.TurbostatParser()
+    p.parse_line("A B C\n")
+    assert p.header == ["A", "B", "C"]
+    p.parse_line("X Y\n")
+    assert p.header == ["X", "Y"]
+
+
+def test_parser_mixed_numeric_text_is_data():
+    """A line with some text and some numbers after header is data if counts match."""
+    p = tm.TurbostatParser()
+    # Header must be all non-numeric
+    p.parse_line("Name Value\n")
+    # A line where at least one token is numeric is treated as data
+    result = p.parse_line("cpu0 42\n")
+    assert result is not None
+    _, values, _ = result
+    assert values == {"Name": "cpu0", "Value": "42"}
+
+
+def test_parser_plus_sign_number():
+    p = tm.TurbostatParser()
+    p.parse_line("A\n")
+    result = p.parse_line("+3.14\n")
+    assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# log — edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_log_unknown_level_treated_as_info(capsys):
+    # Unknown levels default to order 20 (same as INFO)
+    tm.log("CUSTOM", "custom msg", min_level="INFO")
+    out = capsys.readouterr().out
+    assert "[CUSTOM] custom msg" in out
+
+
+def test_log_unknown_min_level_treated_as_info(capsys):
+    tm.log("ERROR", "err msg", min_level="BOGUS")
+    out = capsys.readouterr().out
+    assert "[ERROR] err msg" in out
+
+
+# ---------------------------------------------------------------------------
+# sanitize_key — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_key_special_chars():
+    assert tm.sanitize_key("A@B#C") == "a_b_c"
+
+
+def test_sanitize_key_empty_string():
+    assert tm.sanitize_key("") == ""
+
+
+def test_sanitize_key_all_special():
+    result = tm.sanitize_key("@#$")
+    assert result == ""

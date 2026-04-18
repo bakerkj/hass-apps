@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import subprocess
+from datetime import datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -713,3 +715,683 @@ def test_prune_multiple_stale_returns_count():
     # 3 nodes × (their metrics + 1 availability) publishes.
     # builder_a: 1+1; builder_b: 1+1; builder_c: 2+1 = 7 total.
     assert len(client.published) == 7
+
+
+# ---------------------------------------------------------------------------
+# metric_value
+# ---------------------------------------------------------------------------
+
+
+def test_metric_value_cpu_percent_number_type():
+    container: dict[str, Any] = {"cpu_percent": 42.5}
+    result = cim.metric_value(container, "cpu_percent")
+    assert result == pytest.approx(42.5)
+
+
+def test_metric_value_cpu_percent_string_coerced():
+    container: dict[str, Any] = {"cpu_percent": "12.3"}
+    result = cim.metric_value(container, "cpu_percent")
+    assert result == pytest.approx(12.3)
+
+
+def test_metric_value_container_status_string_type():
+    # container_status is not in METRIC_DEFS — cpuset_cpus is a string type
+    container: dict[str, Any] = {"cpuset_cpus": "0-3"}
+    result = cim.metric_value(container, "cpuset_cpus")
+    assert result == "0-3"
+
+
+def test_metric_value_cpu_shares_integer_type():
+    container: dict[str, Any] = {"cpu_shares": 1024}
+    result = cim.metric_value(container, "cpu_shares")
+    assert result == 1024
+
+
+def test_metric_value_integer_type_from_float():
+    container: dict[str, Any] = {"blkio_weight": 500.9}
+    result = cim.metric_value(container, "blkio_weight")
+    assert result == 500
+
+
+def test_metric_value_unknown_key_returns_none():
+    container: dict[str, Any] = {"cpu_percent": 42.5}
+    result = cim.metric_value(container, "nonexistent_metric")
+    assert result is None
+
+
+def test_metric_value_missing_data_returns_none():
+    container: dict[str, Any] = {}
+    result = cim.metric_value(container, "cpu_percent")
+    assert result is None
+
+
+def test_metric_value_fallback_path():
+    # network_rx_total has paths: [("network", "cumulative_rx"), ("network_rx_total",)]
+    # First path missing, second path present.
+    container: dict[str, Any] = {"network_rx_total": 9999.0}
+    result = cim.metric_value(container, "network_rx_total")
+    assert result == pytest.approx(9999.0)
+
+
+def test_metric_value_first_path_wins():
+    # Both paths present — first one should be used.
+    container: dict[str, Any] = {
+        "network": {"cumulative_rx": 1111.0},
+        "network_rx_total": 2222.0,
+    }
+    result = cim.metric_value(container, "network_rx_total")
+    assert result == pytest.approx(1111.0)
+
+
+# ---------------------------------------------------------------------------
+# cmd_error
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_error_stderr_preferred():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="stdout msg", stderr="stderr msg"
+    )
+    assert cim.cmd_error(proc) == "stderr msg"
+
+
+def test_cmd_error_stdout_fallback():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="stdout msg", stderr=""
+    )
+    assert cim.cmd_error(proc) == "stdout msg"
+
+
+def test_cmd_error_both_empty():
+    proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+    assert cim.cmd_error(proc) == ""
+
+
+def test_cmd_error_none_stderr():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="fallback", stderr=None
+    )
+    assert cim.cmd_error(proc) == "fallback"
+
+
+def test_cmd_error_strips_whitespace():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="  error  \n"
+    )
+    assert cim.cmd_error(proc) == "error"
+
+
+# ---------------------------------------------------------------------------
+# parse_docker_timestamp
+# ---------------------------------------------------------------------------
+
+
+def test_parse_docker_timestamp_full_iso8601():
+    result = cim.parse_docker_timestamp("2026-01-15T10:30:00.123456789Z")
+    assert result is not None
+    assert isinstance(result, float)
+    # Verify it parses to roughly the right time (Jan 15, 2026 10:30 UTC).
+    dt = datetime.utcfromtimestamp(result)
+    assert dt.year == 2026
+    assert dt.month == 1
+    assert dt.day == 15
+    assert dt.hour == 10
+    assert dt.minute == 30
+
+
+def test_parse_docker_timestamp_timezone_offset():
+    result = cim.parse_docker_timestamp("2026-01-15T10:30:00.123456+05:00")
+    assert result is not None
+    # 10:30 +05:00 = 05:30 UTC
+    dt = datetime.utcfromtimestamp(result)
+    assert dt.hour == 5
+    assert dt.minute == 30
+
+
+def test_parse_docker_timestamp_truncated_fractional():
+    result = cim.parse_docker_timestamp("2026-01-15T10:30:00.12Z")
+    assert result is not None
+    assert isinstance(result, float)
+
+
+def test_parse_docker_timestamp_no_fractional():
+    result = cim.parse_docker_timestamp("2026-01-15T10:30:00Z")
+    assert result is not None
+    dt = datetime.utcfromtimestamp(result)
+    assert dt.year == 2026
+    assert dt.second == 0
+
+
+def test_parse_docker_timestamp_no_tz():
+    # No timezone suffix — treated as UTC.
+    result = cim.parse_docker_timestamp("2026-01-15T10:30:00")
+    assert result is not None
+
+
+def test_parse_docker_timestamp_invalid_string():
+    assert cim.parse_docker_timestamp("not-a-timestamp") is None
+
+
+def test_parse_docker_timestamp_empty_string():
+    assert cim.parse_docker_timestamp("") is None
+
+
+# ---------------------------------------------------------------------------
+# load_options_file
+# ---------------------------------------------------------------------------
+
+
+def test_load_options_file_valid_json(tmp_path):
+    opts_file = tmp_path / "options.json"
+    opts_file.write_text(json.dumps({"mqtt_host": "broker.local", "mqtt_port": 1883}))
+    ap = argparse.ArgumentParser()
+    result = cim.load_options_file(str(opts_file), ap)
+    assert result["mqtt_host"] == "broker.local"
+    assert result["mqtt_port"] == 1883
+
+
+def test_load_options_file_nested_options_key(tmp_path):
+    opts_file = tmp_path / "options.json"
+    # When the payload has an "options" key and no top-level OPTION_KEYS,
+    # load_options_file should unwrap to the nested dict.
+    opts_file.write_text(
+        json.dumps({"options": {"mqtt_host": "nested.local", "interval_seconds": 30}})
+    )
+    ap = argparse.ArgumentParser()
+    result = cim.load_options_file(str(opts_file), ap)
+    assert result["mqtt_host"] == "nested.local"
+    assert result["interval_seconds"] == 30
+
+
+def test_load_options_file_top_level_wins_over_nested(tmp_path):
+    # If top-level keys are already OPTION_KEYS, the "options" key is NOT unwrapped.
+    opts_file = tmp_path / "options.json"
+    opts_file.write_text(
+        json.dumps(
+            {
+                "mqtt_host": "top.local",
+                "options": {"mqtt_host": "nested.local"},
+            }
+        )
+    )
+    ap = argparse.ArgumentParser()
+    result = cim.load_options_file(str(opts_file), ap)
+    assert result["mqtt_host"] == "top.local"
+
+
+# ---------------------------------------------------------------------------
+# MqttHealth
+# ---------------------------------------------------------------------------
+
+
+def test_mqtt_health_defaults():
+    h = cim.MqttHealth()
+    assert h.connected is False
+    assert h.last_connect_ok == 0.0
+    assert h.last_disconnect == 0.0
+
+
+def test_mqtt_health_mutable():
+    h = cim.MqttHealth()
+    h.connected = True
+    h.last_connect_ok = 123.456
+    h.last_disconnect = 789.0
+    assert h.connected is True
+    assert h.last_connect_ok == 123.456
+    assert h.last_disconnect == 789.0
+
+
+# ---------------------------------------------------------------------------
+# publish_discovery
+# ---------------------------------------------------------------------------
+
+
+def test_publish_discovery_basic_payload():
+    client = _RecordingClient()
+    metric_def = cim.METRIC_DEFS["cpu_percent"]
+    cim.publish_discovery(
+        client,
+        "homeassistant",
+        "container-info-mqtt",
+        "container_info",
+        "my_app",
+        "My App",
+        "cpu_percent",
+        metric_def,
+        120,
+    )
+    assert len(client.published) == 1
+    topic, payload_str, qos, retain = client.published[0]
+    assert topic == "homeassistant/sensor/container-info-mqtt_my_app/cpu_percent/config"
+    assert qos == 1
+    assert retain is True
+
+    payload = json.loads(payload_str)
+    assert payload["name"] == "CPU Usage"
+    assert payload["has_entity_name"] is True
+    assert payload["unique_id"] == "container-info-mqtt_my_app_cpu_percent"
+    assert payload["state_topic"] == "container_info/my_app/cpu_percent/state"
+    assert payload["availability_topic"] == "container_info/my_app/availability"
+    assert payload["payload_available"] == "online"
+    assert payload["payload_not_available"] == "offline"
+    assert payload["expire_after"] == 120
+    assert payload["unit_of_measurement"] == "%"
+    assert payload["icon"] == "mdi:chip"
+    assert payload["state_class"] == "measurement"
+    assert payload["suggested_display_precision"] == 1
+    assert payload["device"]["identifiers"] == ["container-info-mqtt_my_app"]
+    assert payload["device"]["name"] == "Container My App"
+    assert payload["device"]["manufacturer"] == "Docker"
+    assert payload["device"]["model"] == "Container"
+
+
+def test_publish_discovery_no_optional_fields():
+    """Metric def without unit/icon/device_class/state_class omits those keys."""
+    client = _RecordingClient()
+    minimal_def: dict[str, Any] = {"name": "Custom", "paths": [("custom",)]}
+    cim.publish_discovery(
+        client,
+        "ha",
+        "dev",
+        "base",
+        "slug",
+        "Slug",
+        "custom",
+        minimal_def,
+        60,
+    )
+    payload = json.loads(client.published[0][1])
+    assert "unit_of_measurement" not in payload
+    assert "icon" not in payload
+    assert "device_class" not in payload
+    assert "state_class" not in payload
+    assert "suggested_display_precision" not in payload
+
+
+def test_publish_discovery_expire_after_minimum_clamp():
+    """expire_after is clamped to at least 5."""
+    client = _RecordingClient()
+    metric_def = {"name": "Test", "paths": [("t",)]}
+    cim.publish_discovery(
+        client,
+        "ha",
+        "dev",
+        "base",
+        "slug",
+        "Slug",
+        "t",
+        metric_def,
+        1,
+    )
+    payload = json.loads(client.published[0][1])
+    assert payload["expire_after"] == 5
+
+
+def test_publish_discovery_with_device_class():
+    """Metric def with device_class includes it in the payload."""
+    client = _RecordingClient()
+    metric_def = cim.METRIC_DEFS["memory_usage"]
+    cim.publish_discovery(
+        client,
+        "ha",
+        "dev",
+        "base",
+        "mem_slug",
+        "Mem",
+        "memory_usage",
+        metric_def,
+        60,
+    )
+    payload = json.loads(client.published[0][1])
+    assert payload["device_class"] == "data_size"
+
+
+# ---------------------------------------------------------------------------
+# publish_summary_discovery
+# ---------------------------------------------------------------------------
+
+
+def test_publish_summary_discovery_payload():
+    client = _RecordingClient()
+    cim.publish_summary_discovery(
+        client,
+        "homeassistant",
+        "container-info-mqtt",
+        "container_info",
+        "my_app",
+        "My App",
+        120,
+    )
+    assert len(client.published) == 1
+    topic, payload_str, qos, retain = client.published[0]
+    assert topic == "homeassistant/sensor/container-info-mqtt_my_app/summary/config"
+    assert qos == 1
+    assert retain is True
+
+    payload = json.loads(payload_str)
+    assert payload["name"] == "Summary"
+    assert payload["has_entity_name"] is True
+    assert payload["unique_id"] == "container-info-mqtt_my_app_summary"
+    assert payload["default_entity_id"] == "sensor.container_my_app_summary"
+    assert payload["state_topic"] == "container_info/my_app/summary/state"
+    assert (
+        payload["json_attributes_topic"] == "container_info/my_app/summary/attributes"
+    )
+    assert payload["availability_topic"] == "container_info/my_app/availability"
+    assert payload["expire_after"] == 120
+    assert payload["icon"] == "mdi:table"
+    assert payload["device"]["identifiers"] == ["container-info-mqtt_my_app"]
+    assert payload["device"]["name"] == "Container My App"
+
+
+def test_publish_summary_discovery_expire_clamp():
+    client = _RecordingClient()
+    cim.publish_summary_discovery(
+        client,
+        "ha",
+        "dev",
+        "base",
+        "slug",
+        "Slug",
+        2,
+    )
+    payload = json.loads(client.published[0][1])
+    assert payload["expire_after"] == 5
+
+
+# ---------------------------------------------------------------------------
+# clear_discovery
+# ---------------------------------------------------------------------------
+
+
+def test_clear_discovery_publishes_empty_retained():
+    client = _RecordingClient()
+    cim.clear_discovery(
+        client,
+        "homeassistant",
+        "container-info-mqtt",
+        "my_app",
+        "cpu_percent",
+    )
+    assert len(client.published) == 1
+    topic, payload, qos, retain = client.published[0]
+    assert topic == "homeassistant/sensor/container-info-mqtt_my_app/cpu_percent/config"
+    assert payload == ""
+    assert qos == 1
+    assert retain is True
+
+
+def test_clear_discovery_different_metric():
+    client = _RecordingClient()
+    cim.clear_discovery(client, "ha", "dev", "slug", "summary")
+    topic = client.published[0][0]
+    assert topic == "ha/sensor/dev_slug/summary/config"
+
+
+# ---------------------------------------------------------------------------
+# compute_rate_metrics — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rate_metrics_dt_zero_no_rates():
+    """When timestamps are identical (dt == 0), no rates are computed."""
+    totals: dict[str, dict[str, float]] = {}
+    c1: dict[str, Any] = {"network_rx_total": 1000, "network_tx_total": 200}
+    cim.compute_rate_metrics("s", c1, 1000.0, totals)
+    c2: dict[str, Any] = {"network_rx_total": 2000, "network_tx_total": 400}
+    rates = cim.compute_rate_metrics("s", c2, 1000.0, totals)  # same ts
+    assert rates == {}
+
+
+def test_compute_rate_metrics_no_totals_clears_entry():
+    """When container has no total metrics, slug is removed from totals dict."""
+    totals: dict[str, dict[str, float]] = {}
+    c1: dict[str, Any] = {"network_rx_total": 1000}
+    cim.compute_rate_metrics("s", c1, 1000.0, totals)
+    assert "s" in totals
+
+    c2: dict[str, Any] = {}  # no totals at all
+    cim.compute_rate_metrics("s", c2, 1010.0, totals)
+    assert "s" not in totals
+
+
+def test_compute_rate_metrics_partial_metrics():
+    """Only metrics present in both calls produce rates."""
+    totals: dict[str, dict[str, float]] = {}
+    c1: dict[str, Any] = {"network_rx_total": 1000, "io_read_total": 500}
+    cim.compute_rate_metrics("s", c1, 100.0, totals)
+    # Second call only has network_rx_total
+    c2: dict[str, Any] = {"network_rx_total": 2000}
+    rates = cim.compute_rate_metrics("s", c2, 110.0, totals)
+    assert "network_rx_rate" in rates
+    assert rates["network_rx_rate"] == pytest.approx(100.0)
+    assert "io_read_rate" not in rates
+
+
+# ---------------------------------------------------------------------------
+# redact_options_for_log — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_redact_options_whitespace_only_password_not_hidden():
+    opts: dict[str, Any] = {"mqtt_password": "   "}
+    redacted = cim.redact_options_for_log(opts)
+    assert redacted["mqtt_password"] == "   "
+
+
+def test_redact_options_no_keys():
+    assert cim.redact_options_for_log({}) == {}
+
+
+def test_redact_options_original_not_mutated():
+    opts: dict[str, Any] = {"mqtt_password": "secret", "mqtt_host": "broker"}
+    redacted = cim.redact_options_for_log(opts)
+    assert opts["mqtt_password"] == "secret"
+    assert redacted["mqtt_password"] == "***"
+
+
+# ---------------------------------------------------------------------------
+# fetch_stats_by_id (sync wrapper)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_stats_by_id_empty_list():
+    result = cim.fetch_stats_by_id([], 10, _LOG)
+    assert result == {}
+
+
+def test_fetch_stats_by_id_delegates_to_async():
+    """Mock the async helper and verify the sync wrapper calls it."""
+    fake_result = {"abc123": {"cpu_percent": 42.0}}
+    with patch(
+        "container_info_mqtt._fetch_stats_by_id_async",
+        return_value=fake_result,
+    ) as mock_async:
+        result = cim.fetch_stats_by_id(["abc123"], 10, _LOG)
+    assert result == fake_result
+    mock_async.assert_called_once_with(["abc123"], 10, _LOG)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_stats_by_id_async
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_stats_by_id_async_empty():
+    import asyncio
+
+    result = asyncio.run(cim._fetch_stats_by_id_async([], 10, _LOG))
+    assert result == {}
+
+
+def test_fetch_stats_by_id_async_single_container():
+    import asyncio
+
+    fake_payload = {
+        "cpu_stats": {
+            "cpu_usage": {"total_usage": 200_000_000},
+            "system_cpu_usage": 2_000_000_000,
+            "online_cpus": 2,
+        },
+        "precpu_stats": {
+            "cpu_usage": {"total_usage": 100_000_000},
+            "system_cpu_usage": 1_000_000_000,
+        },
+        "memory_stats": {"usage": 1048576},
+        "networks": {"eth0": {"rx_bytes": 500, "tx_bytes": 100}},
+    }
+    with patch("container_info_mqtt.docker_api_get_json", return_value=fake_payload):
+        result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
+    assert "abc123" in result
+    assert result["abc123"]["cpu_percent"] == pytest.approx(20.0)
+    assert result["abc123"]["memory_usage"] == 1048576
+    assert result["abc123"]["network_rx_total"] == pytest.approx(500.0)
+    assert result["abc123"]["network_tx_total"] == pytest.approx(100.0)
+
+
+def test_fetch_stats_by_id_async_exception_skips():
+    import asyncio
+
+    with patch(
+        "container_info_mqtt.docker_api_get_json",
+        side_effect=RuntimeError("fail"),
+    ):
+        result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
+    assert result == {}
+
+
+def test_fetch_stats_by_id_async_bad_payload_type():
+    import asyncio
+
+    with patch("container_info_mqtt.docker_api_get_json", return_value="not a dict"):
+        result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# fetch_inspect_by_id
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_inspect_by_id_empty_list():
+    result = cim.fetch_inspect_by_id([], 10, _LOG)
+    assert result == {}
+
+
+def test_fetch_inspect_by_id_parses_state_and_host_config():
+    inspect_payload = json.dumps(
+        [
+            {
+                "Id": "abc123",
+                "State": {
+                    "Status": "running",
+                    "StartedAt": "2026-01-15T10:30:00.000000000Z",
+                },
+                "HostConfig": {
+                    "CpusetCpus": "0-3",
+                    "CpuShares": 1024,
+                    "BlkioWeight": 500,
+                },
+            }
+        ]
+    )
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=inspect_payload, stderr=""
+    )
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        result = cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+    assert "abc123" in result
+    info = result["abc123"]
+    assert info["status"] == "running"
+    assert info["cpuset_cpus"] == "0-3"
+    assert info["cpu_shares"] == 1024
+    assert info["blkio_weight"] == 500
+    assert isinstance(info["started_at"], float)
+
+
+def test_fetch_inspect_by_id_failure_raises():
+    proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        with pytest.raises(RuntimeError, match="docker inspect failed"):
+            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+
+
+def test_fetch_inspect_by_id_invalid_json_raises():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="not json", stderr=""
+    )
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        with pytest.raises(RuntimeError, match="invalid JSON"):
+            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+
+
+def test_fetch_inspect_by_id_non_list_raises():
+    proc = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout='{"not": "a list"}', stderr=""
+    )
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        with pytest.raises(RuntimeError, match="unexpected payload"):
+            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+
+
+# ---------------------------------------------------------------------------
+# run_cmd
+# ---------------------------------------------------------------------------
+
+
+def test_run_cmd_file_not_found_raises():
+    with pytest.raises(RuntimeError, match="command not found"):
+        cim.run_cmd(["__nonexistent_binary__"], 5)
+
+
+def test_run_cmd_timeout_raises():
+    with pytest.raises(RuntimeError, match="timed out"):
+        cim.run_cmd(["sleep", "60"], 1)
+
+
+# ---------------------------------------------------------------------------
+# UnixSocketHTTPConnection
+# ---------------------------------------------------------------------------
+
+
+def test_unix_socket_http_connection_min_timeout():
+    conn = cim.UnixSocketHTTPConnection("/tmp/test.sock", 0)
+    assert conn.timeout == 1  # clamped to at least 1
+
+
+# ---------------------------------------------------------------------------
+# fetch_ps_containers — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_ps_empty_output():
+    proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        result = cim.fetch_ps_containers(10, _LOG)
+    assert result == []
+
+
+def test_fetch_ps_skips_invalid_json_lines():
+    stdout = "not json\n" + json.dumps(
+        {"ID": "abc", "Names": "good", "Status": "Up", "State": "running"}
+    )
+    proc = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        result = cim.fetch_ps_containers(10, _LOG)
+    assert len(result) == 1
+    assert result[0]["name"] == "good"
+
+
+def test_fetch_ps_failure_raises():
+    proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        with pytest.raises(RuntimeError, match="docker ps failed"):
+            cim.fetch_ps_containers(10, _LOG)
+
+
+def test_fetch_ps_skips_missing_id():
+    row = json.dumps({"Names": "noname", "Status": "Up", "State": "running"})
+    proc = subprocess.CompletedProcess(args=[], returncode=0, stdout=row, stderr="")
+    with patch("container_info_mqtt.run_cmd", return_value=proc):
+        result = cim.fetch_ps_containers(10, _LOG)
+    assert result == []
