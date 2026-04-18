@@ -1217,7 +1217,7 @@ FFMPEG_STDERR_MAX_LEN = 300
 # - MAX caps the wait so that even pathological states (frigate paused,
 #   long fallback paths) re-check at least every 10 minutes instead of
 #   sleeping for hours or days at a time.
-MIN_SLEEP_SEC = 60.0
+MIN_SLEEP_SEC = 10.0
 MAX_SLEEP_SEC = 600.0
 
 
@@ -1683,24 +1683,58 @@ def _min_tier1_min_days(cfg: Config) -> int:
     return min(days) if days else 7
 
 
+_ELIGIBLE_BATCH_SIZE = 500
+
+
 def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     """
-    Returns recordings eligible for compression that haven't been successfully
-    compressed yet.  Each result dict has keys:
+    Returns up to ``_ELIGIBLE_BATCH_SIZE`` recordings eligible for compression
+    that haven't been successfully compressed yet.  Each result dict has keys:
         recording_id, camera, path, tier, recording_type
 
-    Filters out disabled cameras and disabled tiers using per-camera config.
-    The SQL query uses the most aggressive (minimum) tier1 cutoff across all
-    enabled cameras to fetch candidates; Python-side filtering applies each
-    camera's actual cutoffs.
+    All filtering is done in SQL — camera, age, and tier completion status.
     """
     cfg = ctx.cfg
-
-    # Use the most aggressive cutoff for the SQL query to get all candidates.
-    min_t1_days = _min_tier1_min_days(cfg)
-    earliest_cutoff = time.time() - (min_t1_days * 86400)
+    now = time.time()
 
     _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
+    ok_placeholders = ",".join("?" for _ in _ok_statuses)
+
+    # Build per-camera eligibility conditions.
+    # A recording needs work if:
+    #   - tier1 enabled AND old enough AND t1 not done, OR
+    #   - tier2 enabled AND old enough AND t1 done AND t2 not done
+    cam_clauses: list[str] = []
+    params: list[str | int | float] = []
+    for name, cam in cfg.cameras.items():
+        if not cam.enabled:
+            continue
+        subclauses = []
+        sub_params: list = []
+        if cam.tier1.enabled:
+            t1_cutoff = now - (cam.tier1.min_days * 86400)
+            subclauses.append(
+                f"(r.start_time < ? AND (f.t1_status IS NULL OR f.t1_status NOT IN ({ok_placeholders})))"
+            )
+            sub_params.extend([t1_cutoff, *_ok_statuses])
+        if cam.tier2.enabled:
+            t2_cutoff = now - (cam.tier2.min_days * 86400)
+            subclauses.append(
+                f"(r.start_time < ? AND f.t1_status IN ({ok_placeholders}) AND (f.t2_status IS NULL OR f.t2_status NOT IN ({ok_placeholders})))"
+            )
+            sub_params.extend([t2_cutoff, *_ok_statuses, *_ok_statuses])
+        if not subclauses:
+            continue
+        combined = " OR ".join(subclauses)
+        cam_clauses.append(f"(r.camera = ? AND ({combined}))")
+        params.append(name)
+        params.extend(sub_params)
+
+    if not cam_clauses:
+        return []
+
+    where = " OR ".join(cam_clauses)
+    params.append(_ELIGIBLE_BATCH_SIZE)
 
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
@@ -1712,50 +1746,31 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
         )
         rows = conn.execute(
-            """
+            f"""
             SELECT r.id, r.camera, r.path, r.start_time,
                    r.motion, r.objects,
                    f.t1_status, f.t2_status
             FROM   frigate_eligible.recordings r
             LEFT JOIN files f ON f.recording_id = r.id
-            WHERE  r.start_time < ?
+            WHERE  ({where})
             ORDER BY r.start_time ASC
+            LIMIT ?
             """,
-            (earliest_cutoff,),
+            params,
         ).fetchall()
     finally:
         conn.close()
 
-    now = time.time()
     results = []
     for row in rows:
         camera = row["camera"]
-        cam_cfg = cfg.cameras.get(camera)
-        if cam_cfg is None or not cam_cfg.enabled:
-            continue
-
-        start_time = row["start_time"]
-        age_days_sec = now - start_time
         t1_done = row["t1_status"] in _ok_statuses
-        t2_done = row["t2_status"] in _ok_statuses
 
-        # Determine which tier needs work.
-        tier: int | None = None
-        if (
-            cam_cfg.tier2.enabled
-            and age_days_sec >= cam_cfg.tier2.min_days * 86400
-            and t1_done
-            and not t2_done
-        ):
+        # Determine tier — SQL guarantees eligibility, just pick which.
+        if t1_done:
             tier = 2
-        elif (
-            cam_cfg.tier1.enabled
-            and age_days_sec >= cam_cfg.tier1.min_days * 86400
-            and not t1_done
-        ):
+        else:
             tier = 1
-        if tier is None:
-            continue
 
         rtype = _recording_type(row["motion"], row["objects"])
         results.append(
@@ -1772,16 +1787,18 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
 def time_until_next_eligible(ctx: CompressorContext) -> float:
     """
-    Returns seconds until the next recording becomes eligible for tier 1
-    compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
+    Returns seconds until the next recording becomes eligible for either
+    tier 1 or tier 2 compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
 
-    Uses the minimum tier1.min_days across all enabled cameras.
     Returns ``MAX_SLEEP_SEC`` if nothing is pending.
     """
     cfg = ctx.cfg
-    min_days = _min_tier1_min_days(cfg)
-    tier1_cutoff = time.time() - (min_days * 86400)
+    now = time.time()
+    soonest = MAX_SLEEP_SEC
 
+    # Check tier 1: next recording aging past min_days.
+    min_t1_days = _min_tier1_min_days(cfg)
+    t1_cutoff = now - (min_t1_days * 86400)
     with ctx.frigate_ro_lock:
         row = ctx.frigate_ro.execute(
             """
@@ -1790,14 +1807,38 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
             ORDER  BY start_time ASC
             LIMIT  1
             """,
-            (tier1_cutoff,),
+            (t1_cutoff,),
         ).fetchone()
+    if row is not None:
+        eligible_at = row["start_time"] + (min_t1_days * 86400)
+        soonest = min(soonest, eligible_at - now)
 
-    if row is None:
-        return MAX_SLEEP_SEC
+    # Check tier 2: next t1-compressed recording aging past tier2.min_days.
+    min_t2_days = min(
+        (
+            cam.tier2.min_days
+            for cam in cfg.cameras.values()
+            if cam.enabled and cam.tier2.enabled
+        ),
+        default=None,
+    )
+    if min_t2_days is not None:
+        t2_cutoff = now - (min_t2_days * 86400)
+        with ctx.frigate_ro_lock:
+            row = ctx.frigate_ro.execute(
+                """
+                SELECT start_time FROM recordings
+                WHERE  start_time > ?
+                ORDER  BY start_time ASC
+                LIMIT  1
+                """,
+                (t2_cutoff,),
+            ).fetchone()
+        if row is not None:
+            eligible_at = row["start_time"] + (min_t2_days * 86400)
+            soonest = min(soonest, eligible_at - now)
 
-    eligible_at = row["start_time"] + (min_days * 86400)
-    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, eligible_at - time.time()))
+    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, soonest))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3148,13 +3189,18 @@ def run_main_loop(
             # ThreadPoolExecutor.__exit__ calls shutdown(wait=True), so all
             # running jobs complete before we reach this point.
 
-            # We just did real work — additional recordings may have aged
-            # into eligibility while we were busy.  Loop straight back to
-            # the top so housekeeping still runs and we re-query eligible
-            # without sleeping.  Sleeping only when truly caught up means
-            # we can never fall arbitrarily far behind a steady recording
-            # rate just because the previous pass was long.
-            continue
+            # In dry-run mode, recordings are never marked as done, so
+            # re-querying would return the same set.  Fall through to sleep.
+            if cfg.all_dry_run:
+                pass  # fall through to sleep
+            elif len(eligible) >= _ELIGIBLE_BATCH_SIZE:
+                # Full batch — there's likely more work.  Loop back
+                # immediately without sleeping.
+                continue
+            else:
+                # Partial batch — we're caught up.  Re-check in case
+                # more recordings aged in while we were busy.
+                continue
 
         # ── No work — sleep until the next recording becomes eligible ────
         if not stopping.is_set():
