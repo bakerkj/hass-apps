@@ -134,10 +134,11 @@ def test_build_ffmpeg_cmd_no_vf_when_no_filters(tmp_path):
 
 
 def test_build_ffmpeg_cmd_has_vf_when_scale(tmp_path):
-    # tier1 motion: scale_mode=halve → -vf present
-    cmd = _cmd(tmp_path, encoder="cpu", tier=1, recording_type="motion")
+    # tier2 continuous: scale_mode=fixed → -vf present with scale
+    cmd = _cmd(tmp_path, encoder="cpu", tier=2, recording_type="continuous")
     assert "-vf" in cmd
-    assert "scale" in cmd[cmd.index("-vf") + 1]
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "scale" in vf
 
 
 def test_build_ffmpeg_cmd_has_vf_when_fps(tmp_path):

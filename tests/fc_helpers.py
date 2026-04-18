@@ -73,8 +73,43 @@ def _make_options(tmp_path: Path, **overrides) -> Path:
     # YAML config — test defaults enable cameras and disable dry_run so
     # compression tests work out of the box.  Production built-in defaults
     # are the opposite (enabled=False, dry_run=True) for safety.
-    _test_defaults = {"enabled": True, "dry_run": False}
-    yaml_defaults = overrides.pop("yaml_defaults", _test_defaults)
+    _test_defaults = {
+        "enabled": True,
+        "dry_run": False,
+        "tier1": {
+            "enabled": True,
+            "min_days": 8,
+            "quality": 30,
+            "object": {"quality": 24},
+        },
+        "tier2": {
+            "enabled": True,
+            "min_days": 30,
+            "quality": 34,
+            "scale_mode": "fixed",
+            "scale_value": "1280:720",
+            "fps_mode": "cap",
+            "fps_value": 4,
+            "motion": {"quality": 30, "scale_value": "1600:900"},
+            "object": {"quality": 26, "scale_mode": "none", "fps_value": 8},
+        },
+    }
+    _sentinel = object()
+    yaml_defaults_override = overrides.pop("yaml_defaults", _sentinel)
+    if yaml_defaults_override is _sentinel:
+        # Not provided → use test defaults.
+        yaml_defaults = _test_defaults
+    elif yaml_defaults_override is None:
+        # Explicitly None → no defaults (test pure builtins).
+        yaml_defaults = None
+    elif isinstance(yaml_defaults_override, dict):
+        # Dict → merge over test defaults.
+        import copy
+
+        yaml_defaults = copy.deepcopy(_test_defaults)
+        yaml_defaults.update(yaml_defaults_override)
+    else:
+        yaml_defaults = yaml_defaults_override
     yaml_cameras = overrides.pop("yaml_cameras", {"cam": {}})
     yaml_path = tmp_path / "config.yaml"
     yaml_cfg: dict = {}
