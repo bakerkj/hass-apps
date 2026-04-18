@@ -1,8 +1,14 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
 ENV ADDON_VERSION=${BUILD_VERSION}
+
+LABEL \
+    org.opencontainers.image.title="Frigate Compressor" \
+    org.opencontainers.image.description="Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age." \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
 
 # Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
 # second pulls onevpl-intel-gpu from Alpine edge/testing because Alpine 3.23

@@ -1,5 +1,11 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
+
+LABEL \
+    org.opencontainers.image.title="Turbostat to MQTT" \
+    org.opencontainers.image.description="Runs turbostat and publishes to MQTT." \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
 
 # turbostat is part of linux-tools on Alpine
 RUN apk add --no-cache \

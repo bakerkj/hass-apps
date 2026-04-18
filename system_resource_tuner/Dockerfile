@@ -1,5 +1,11 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
+
+LABEL \
+    org.opencontainers.image.title="System Resource Tuner" \
+    org.opencontainers.image.description="Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled." \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache \
   python3=3.12.13-r0 \

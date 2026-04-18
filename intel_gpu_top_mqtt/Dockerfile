@@ -1,5 +1,11 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
+
+LABEL \
+    org.opencontainers.image.title="Intel GPU Top MQTT (Discovery)" \
+    org.opencontainers.image.description="Runs intel_gpu_top and publishes Intel GPU metrics to MQTT (separate topics per sensor) with Home Assistant discovery + attributes." \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
 
 # Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
 # second pulls igt-gpu-tools (provides intel_gpu_top) from Alpine
