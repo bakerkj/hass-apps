@@ -349,6 +349,24 @@ def _setup_compress_one(tmp_path):
     frigate_conn.close()
 
     ctx = _make_compress_one_ctx(tmp_path, src, frigate_db)
+
+    # Insert probe data so compress_one doesn't skip the file.
+    fc._store_probe(
+        ctx.compress_db,
+        "r1",
+        "cam1",
+        str(src),
+        {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "fps": 20.0,
+            "bitrate": 5000000,
+            "duration_sec": 10.0,
+            "file_size": 10000,
+        },
+    )
+
     return ctx, src
 
 
@@ -548,12 +566,12 @@ def test_compress_one_segment_update_failed_not_recompressed(tmp_path):
     # get_eligible_recordings — the file is already compressed.
     ctx, src = _setup_compress_one(tmp_path)
     ctx.compress_db.execute(
-        "INSERT INTO files"
-        " (recording_id, camera, path, recording_type, file_size,"
-        "  t1_encoder, t1_file_size, t1_encode_sec, t1_compressed_at, t1_status)"
-        " VALUES ('r1','cam1',?,'motion',10000,"
-        "  'cpu',5000,1.0,datetime('now'),?)",
-        (str(src), fc.STATUS_SEGMENT_UPDATE_FAILED),
+        "UPDATE files SET"
+        " recording_type='motion', file_size=10000,"
+        " t1_encoder='cpu', t1_file_size=5000, t1_encode_sec=1.0,"
+        " t1_compressed_at=datetime('now'), t1_status=?"
+        " WHERE recording_id='r1'",
+        (fc.STATUS_SEGMENT_UPDATE_FAILED,),
     )
     ctx.compress_db.commit()
 

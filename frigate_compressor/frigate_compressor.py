@@ -1206,7 +1206,7 @@ _TEMP_PREFIX = ".tmp."
 _TEMP_GLOB = ".tmp.*.mp4"
 
 # Max wall-clock seconds to allow a single ffmpeg encode job to run.
-FFMPEG_TIMEOUT_SEC = 300
+FFMPEG_TIMEOUT_SEC = 30
 
 # Max bytes of ffmpeg stderr text stored in the compress DB error_msg column.
 FFMPEG_STDERR_MAX_LEN = 300
@@ -1403,6 +1403,34 @@ def _compress_one_inner(
         return False
 
     size_before = filepath.stat().st_size
+
+    # Require probe data before compressing.
+    probe_row = compress_db.execute(
+        "SELECT width, height, fps FROM files WHERE recording_id = ?",
+        (recording_id,),
+    ).fetchone()
+    if not probe_row or not probe_row["width"] or not probe_row["height"]:
+        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
+        return False
+
+    src_fps = f"@{probe_row['fps']:.0f}fps" if probe_row["fps"] else ""
+    src_info = f"{probe_row['width']}x{probe_row['height']}{src_fps} "
+
+    # Format target settings for log messages.
+    tgt_res = ""
+    if ts.scale_mode != "none" and ts.scale_value:
+        tgt_res = ts.scale_value.replace(":", "x")
+    elif ts.scale_mode == "halve":
+        tgt_res = "halve"
+    tgt_fps = ""
+    if ts.fps_mode != "none":
+        v = ts.fps_value
+        tgt_fps = f"@{int(v)}" if v == int(v) else f"@{v}"
+    if tgt_res or tgt_fps:
+        tgt_info = f"→{tgt_res}{tgt_fps} q{ts.quality}"
+    else:
+        tgt_info = f"→q{ts.quality}"
+
     # Temp file is named .tmp.{recording_id}.mp4 — unique per job, easy to
     # identify as a temp file by housekeeping without affecting other jobs.
     tmpfile = filepath.parent / f"{_TEMP_PREFIX}{recording_id}.mp4"
@@ -1415,8 +1443,8 @@ def _compress_one_inner(
         # Emit a single self-contained INFO line here instead.
         log(
             "INFO",
-            f"[{camera}] DRY RUN tier={tier} type={recording_type} "
-            f"{_display_path(filepath)} ({_fmt(size_before)})",
+            f"[{camera}] DRY RUN t{tier}:{recording_type[:4]} "
+            f"{_display_path(filepath)} {src_info}{tgt_info} {_fmt(size_before)}",
         )
         return True
 
@@ -1597,14 +1625,12 @@ def _compress_one_inner(
         )
         return False
 
-    saved = size_before - size_after
-    pct = (saved / size_before * 100) if size_before else 0.0
+    pct = ((size_before - size_after) / size_before * 100) if size_before else 0.0
     log(
         "INFO",
-        f"[{camera}] tier={tier} type={recording_type} "
-        f"{_display_path(filepath)} "
-        f"{_fmt(size_before)} → {_fmt(size_after)} "
-        f"(saved {_fmt(saved)} / {pct:.1f}%, {duration:.1f}s)",
+        f"[{camera}] t{tier}:{recording_type[:4]} "
+        f"{_display_path(filepath)} {src_info}{tgt_info} "
+        f"{_fmt(size_before)}→{_fmt(size_after)} -{pct:.0f}% {duration:.1f}s",
     )
 
     # Update segment_size in Frigate's DB (MB, float).
@@ -2082,7 +2108,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                 stopping.wait(timeout=PROBE_SLEEP_SEC)
                 continue
 
-            log("INFO", f"Probing {len(unprobed)} recording(s)")
+            log("DEBUG", f"Probing {len(unprobed)} recording(s)")
             probed = 0
             for rec in unprobed:
                 if stopping.is_set():
@@ -2103,7 +2129,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                         f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
                     )
             if probed:
-                log("INFO", f"Probed {probed} recording(s)")
+                log("DEBUG", f"Probed {probed} recording(s)")
     finally:
         probe_conn.close()
 
@@ -2114,18 +2140,20 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
 
 
 def _display_path(filepath: Path) -> str:
-    """Format a Frigate recording path for compact log display.
+    """Format a Frigate recording path as a compact timestamp.
 
     Frigate stores recordings as
-    ``<recordings_dir>/YYYY-MM-DD/HH/<camera>/MM.SS.mp4``.  The bare filename
-    (e.g. ``38.11.mp4``) is meaningless without the date and hour, so we
-    return ``YYYY-MM-DD/HH/MM.SS.mp4``.  The camera is already shown as a
-    log prefix, so we omit it to avoid redundancy.  Falls back to the bare
-    filename if the path is shorter than expected.
+    ``<recordings_dir>/YYYY-MM-DD/HH/<camera>/MM.SS.mp4``.
+    Returns ``YYYYMMDDHHmmss`` (e.g. ``20260418130103``).  The camera is
+    already shown as a log prefix.  Falls back to the bare filename if
+    the path is shorter than expected.
     """
     parts = filepath.parts
     if len(parts) >= 4:
-        return f"{parts[-4]}/{parts[-3]}/{parts[-1]}"
+        date = parts[-4].replace("-", "")  # YYYY-MM-DD → YYYYMMDD
+        hour = parts[-3]  # HH
+        mm_ss = filepath.stem.replace(".", "")  # MM.SS → MMSS
+        return f"{date}{hour}{mm_ss}"
     return filepath.name
 
 
