@@ -14,7 +14,7 @@
     "include_metrics": "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,io_read_rate,io_write_rate,uptime_seconds",
     "summary_metrics": "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,io_read_rate,io_write_rate,uptime_seconds,cpu_shares,cpuset_cpus,blkio_weight",
     "container_include_regex": "",
-    "container_exclude_regex": "^builder_",
+    "container_exclude_regex": "^(?:addon_(?:[0-9a-f]+_)?)?builder_",
     "mqtt_host": "core-mosquitto",
     "mqtt_port": 1883,
     "mqtt_username": "container-info-write",

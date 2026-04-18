@@ -1060,7 +1060,10 @@ def main() -> int:
         args.container_include_regex, "container_include_regex", "", str
     )
     args.container_exclude_regex = resolve(
-        args.container_exclude_regex, "container_exclude_regex", "^builder_", str
+        args.container_exclude_regex,
+        "container_exclude_regex",
+        "^(?:addon_(?:[0-9a-f]+_)?)?builder_",
+        str,
     )
 
     args.mqtt_host = resolve(args.mqtt_host, "mqtt_host", "core-mosquitto", str)
