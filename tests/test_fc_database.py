@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import sqlite3
-import threading
 
 import pytest
 
@@ -154,10 +153,8 @@ def test_check_frigate_schema_raises_on_multiple_missing_columns(tmp_path):
 
 def test_record_inserts_tier1_row(tmp_path):
     conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/front/a.mp4",
@@ -181,10 +178,8 @@ def test_record_inserts_tier1_row(tmp_path):
 
 def test_record_inserts_tier2_row(tmp_path):
     conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/front/a.mp4",
@@ -206,11 +201,9 @@ def test_record_inserts_tier2_row(tmp_path):
 
 def test_record_tier1_then_tier2_preserves_both(tmp_path):
     conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
     # Tier 1
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/a.mp4",
@@ -225,7 +218,6 @@ def test_record_tier1_then_tier2_preserves_both(tmp_path):
     # Tier 2
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/a.mp4",
@@ -250,10 +242,8 @@ def test_record_tier1_then_tier2_preserves_both(tmp_path):
 
 def test_record_upserts_same_tier_on_retry(tmp_path):
     conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/a.mp4",
@@ -268,7 +258,6 @@ def test_record_upserts_same_tier_on_retry(tmp_path):
     )
     fc._record(
         conn,
-        lock,
         recording_id="abc123",
         camera="front",
         path="/media/a.mp4",
@@ -288,10 +277,8 @@ def test_record_upserts_same_tier_on_retry(tmp_path):
 
 def test_record_error_with_message(tmp_path):
     conn = _open_compress_db(tmp_path)
-    lock = threading.Lock()
     fc._record(
         conn,
-        lock,
         recording_id="xyz",
         camera="back",
         path="/media/b.mp4",

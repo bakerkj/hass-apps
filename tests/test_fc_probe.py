@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import sqlite3
-import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -103,6 +102,16 @@ def test_probe_full_file_size_fallback(tmp_path):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class _ProbeTestCtx:
+    """Lightweight test context holding cfg + compress_db for probe tests."""
+
+    def __init__(self, cfg, compress_db, frigate_ro, frigate_rw):
+        self.cfg = cfg
+        self.compress_db = compress_db
+        self.frigate_ro = frigate_ro
+        self.frigate_rw = frigate_rw
+
+
 def _make_probe_ctx(tmp_path, frigate_db, compress_conn=None):
     if compress_conn is None:
         compress_conn = _open_compress_db(tmp_path)
@@ -111,15 +120,7 @@ def _make_probe_ctx(tmp_path, frigate_db, compress_conn=None):
     frigate_ro.row_factory = sqlite3.Row
     frigate_rw = sqlite3.connect(str(frigate_db))
     frigate_rw.row_factory = sqlite3.Row
-    return fc.CompressorContext(
-        cfg=cfg,
-        compress_db=compress_conn,
-        db_lock=threading.Lock(),
-        frigate_ro=frigate_ro,
-        frigate_ro_lock=threading.Lock(),
-        frigate_rw=frigate_rw,
-        frigate_lock=threading.Lock(),
-    )
+    return _ProbeTestCtx(cfg, compress_conn, frigate_ro, frigate_rw)
 
 
 def test_get_unprobed_returns_all_when_none_probed(tmp_path):
@@ -129,7 +130,7 @@ def test_get_unprobed_returns_all_when_none_probed(tmp_path):
     _insert_recording(frigate_conn, "r2", "cam1", "/path/b.mp4", time.time())
 
     ctx = _make_probe_ctx(tmp_path, frigate_db)
-    unprobed = fc._get_unprobed_recordings(ctx)
+    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
     assert len(unprobed) == 2
     ids = {r["recording_id"] for r in unprobed}
     assert ids == {"r1", "r2"}
@@ -156,7 +157,7 @@ def test_get_unprobed_skips_already_probed(tmp_path):
     )
     ctx.compress_db.commit()
 
-    unprobed = fc._get_unprobed_recordings(ctx)
+    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
     assert len(unprobed) == 1
     assert unprobed[0]["recording_id"] == "r2"
 
@@ -179,7 +180,7 @@ def test_get_unprobed_returns_empty_when_all_probed(tmp_path):
     )
     ctx.compress_db.commit()
 
-    unprobed = fc._get_unprobed_recordings(ctx)
+    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
     assert unprobed == []
 
     ctx.compress_db.close()
@@ -207,7 +208,7 @@ def test_store_probe_writes_row(tmp_path):
         "duration_sec": 10.0,
         "file_size": 6250000,
     }
-    fc._store_probe(ctx, "r1", "cam1", "/path/a.mp4", info)
+    fc._store_probe(ctx.compress_db, "r1", "cam1", "/path/a.mp4", info)
 
     row = ctx.compress_db.execute(
         "SELECT * FROM files WHERE recording_id = 'r1'"
@@ -250,8 +251,8 @@ def test_store_probe_replaces_on_conflict(tmp_path):
         "file_size": 200,
     }
 
-    fc._store_probe(ctx, "r1", "cam1", "/path/a.mp4", info1)
-    fc._store_probe(ctx, "r1", "cam1", "/path/a.mp4", info2)
+    fc._store_probe(ctx.compress_db, "r1", "cam1", "/path/a.mp4", info1)
+    fc._store_probe(ctx.compress_db, "r1", "cam1", "/path/a.mp4", info2)
 
     rows = ctx.compress_db.execute(
         "SELECT * FROM files WHERE recording_id = 'r1'"
