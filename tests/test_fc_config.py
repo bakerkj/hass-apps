@@ -58,7 +58,7 @@ def test_load_config_defaults(tmp_path):
     assert cfg.max_parallel_jobs == 1
     assert "cam" in cfg.cameras
     cam = cfg.cameras["cam"]
-    assert cam.tier1.min_days == 7
+    assert cam.tier1.min_days == 8
     assert cam.tier2.min_days == 30
     assert cam.enabled is True
     assert cam.dry_run is False
@@ -75,10 +75,11 @@ def test_builtin_defaults_are_safe(tmp_path):
 def test_load_config_tier1_type_settings(tmp_path):
     cfg = _make_config(tmp_path)
     cam = cfg.cameras["cam"]
-    assert cam.tier1.continuous.quality == 28
+    assert cam.tier1.continuous.quality == 30
     assert cam.tier1.continuous.scale_mode == "none"
-    assert cam.tier1.motion.scale_mode == "halve"
-    assert cam.tier1.object.quality == 22
+    assert cam.tier1.motion.quality == 30
+    assert cam.tier1.motion.scale_mode == "none"
+    assert cam.tier1.object.quality == 24
 
 
 def test_load_config_tier2_type_settings(tmp_path):
@@ -86,7 +87,14 @@ def test_load_config_tier2_type_settings(tmp_path):
     cam = cfg.cameras["cam"]
     assert cam.tier2.continuous.fps_mode == "cap"
     assert cam.tier2.continuous.fps_value == 4.0
-    assert cam.tier2.motion.fps_value == 8.0
+    assert cam.tier2.continuous.scale_mode == "fixed"
+    assert cam.tier2.continuous.scale_value == "1280:720"
+    assert cam.tier2.motion.quality == 30
+    assert cam.tier2.motion.scale_value == "1600:900"
+    assert cam.tier2.motion.fps_value == 4.0
+    assert cam.tier2.object.quality == 26
+    assert cam.tier2.object.scale_mode == "none"
+    assert cam.tier2.object.fps_value == 8.0
 
 
 def test_load_config_paths(tmp_path):
@@ -168,21 +176,21 @@ def test_resolve_defaults_only(tmp_path):
     cfg = _make_config(tmp_path)
     cam = cfg.cameras["cam"]
     ts = cam.tier1.motion
-    assert ts.quality == 26
-    assert ts.scale_mode == "halve"
+    assert ts.quality == 30
+    assert ts.scale_mode == "none"
 
 
 def test_resolve_camera_tier_base_overrides_defaults(tmp_path):
     """Camera tier base quality overrides defaults tier base AND per-type defaults."""
     cfg = _make_config(
         tmp_path,
-        yaml_cameras={"front_door": {"tier1": {"quality": 30}}},
+        yaml_cameras={"front_door": {"tier1": {"quality": 28}}},
     )
     cam = cfg.cameras["front_door"]
-    # Layer 3 (camera tier base q=30) overrides layer 2 (defaults motion q=26)
-    assert cam.tier1.motion.quality == 30
-    # Layer 3 also overrides layer 1 (defaults base q=28)
-    assert cam.tier1.continuous.quality == 30
+    # Layer 3 (camera tier base q=28) overrides layer 2 (defaults motion q=30)
+    assert cam.tier1.motion.quality == 28
+    # Layer 3 also overrides layer 1 (defaults base q=30)
+    assert cam.tier1.continuous.quality == 28
 
 
 def test_resolve_camera_tier_type_overrides_camera_tier_base(tmp_path):
@@ -226,20 +234,20 @@ def test_resolve_camera_tier_override_scoped_to_type(tmp_path):
     )
     cam = cfg.cameras["front_door"]
     assert cam.tier1.object.quality == 18
-    assert cam.tier1.motion.quality == 26  # defaults per-type
-    assert cam.tier1.continuous.quality == 28  # defaults base
+    assert cam.tier1.motion.quality == 30  # defaults base (no per-type override)
+    assert cam.tier1.continuous.quality == 30  # defaults base
 
 
 def test_resolve_defaults_per_type_then_camera_base(tmp_path):
-    """Defaults per-type scale_mode persists when camera base only overrides quality."""
+    """Camera base quality override applies to all types that don't have their own."""
     cfg = _make_config(
         tmp_path,
-        yaml_cameras={"cam1": {"tier1": {"quality": 30}}},
+        yaml_cameras={"cam1": {"tier1": {"quality": 28}}},
     )
     cam = cfg.cameras["cam1"]
-    # motion default has scale_mode=halve; camera base overrides quality only
-    assert cam.tier1.motion.scale_mode == "halve"
-    assert cam.tier1.motion.quality == 30
+    # motion inherits scale_mode=none from tier base; camera base overrides quality
+    assert cam.tier1.motion.scale_mode == "none"
+    assert cam.tier1.motion.quality == 28
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -333,7 +341,7 @@ def test_discovered_camera_gets_defaults(tmp_path):
     dcam = cfg.cameras["discovered_cam"]
     assert dcam.enabled is True
     assert dcam.dry_run is False
-    assert dcam.tier1.continuous.quality == 28
+    assert dcam.tier1.continuous.quality == 30
 
 
 def test_yaml_camera_not_in_frigate_db(tmp_path):
@@ -425,4 +433,6 @@ def test_load_config_missing_yaml_uses_builtin_defaults(tmp_path):
 
     cfg = fc.load_config(str(opts_path))
     assert "driveway" in cfg.cameras
-    assert cfg.cameras["driveway"].tier1.continuous.quality == 28
+    # No YAML → builtin defaults → quality=0, tiers disabled
+    assert cfg.cameras["driveway"].tier1.continuous.quality == 0
+    assert cfg.cameras["driveway"].tier1.enabled is False

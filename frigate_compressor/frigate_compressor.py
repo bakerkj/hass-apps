@@ -272,37 +272,26 @@ _BUILTIN_DEFAULTS: dict = {
     "enabled": False,
     "dry_run": True,
     "tier1": {
-        "enabled": True,
+        "enabled": False,
         "min_days": 7,
-        "quality": 28,
+        "quality": 0,
         "scale_mode": "none",
         "scale_value": "",
         "fps_mode": "none",
         "fps_value": 1.0,
-        "motion": {
-            "quality": 26,
-            "scale_mode": "halve",
-        },
-        "object": {
-            "quality": 22,
-        },
+        "motion": {},
+        "object": {},
     },
     "tier2": {
-        "enabled": True,
+        "enabled": False,
         "min_days": 30,
-        "quality": 34,
-        "scale_mode": "halve",
+        "quality": 0,
+        "scale_mode": "none",
         "scale_value": "",
-        "fps_mode": "cap",
-        "fps_value": 4.0,
-        "motion": {
-            "quality": 30,
-            "fps_value": 8.0,
-        },
-        "object": {
-            "quality": 26,
-            "fps_value": 8.0,
-        },
+        "fps_mode": "none",
+        "fps_value": 1.0,
+        "motion": {},
+        "object": {},
     },
 }
 
@@ -517,13 +506,24 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         cam_block = yaml_cameras.get(name)  # None for discovered-only cameras
         cameras[name] = _resolve_camera(name, defaults, cam_block)
 
-    # Per-camera tier ordering validation.
+    # Per-camera validation.
     for name, cam_cfg in cameras.items():
         if cam_cfg.tier2.min_days <= cam_cfg.tier1.min_days:
             raise ValueError(
                 f"Camera '{name}': tier2.min_days ({cam_cfg.tier2.min_days}) must be "
                 f"greater than tier1.min_days ({cam_cfg.tier1.min_days})"
             )
+        # Require quality to be explicitly configured for enabled tiers.
+        for tier_num, tier_cfg in [(1, cam_cfg.tier1), (2, cam_cfg.tier2)]:
+            if not tier_cfg.enabled:
+                continue
+            for rtype in _RECORDING_TYPES:
+                ts: TypeSettings = getattr(tier_cfg, rtype)
+                if ts.enabled and ts.quality <= 0:
+                    raise ValueError(
+                        f"Camera '{name}' tier{tier_num}/{rtype}: quality must be "
+                        f"set explicitly in config.yaml (got {ts.quality})"
+                    )
 
     return Config(
         encoder=opts.get("encoder", "qsv"),

@@ -315,8 +315,8 @@ def test_compress_one_real_no_temp_files_left_after_success(tmp_path, real_video
 
 def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video):
     """
-    Tier-1 motion settings use halve scale mode by default.
-    Compressing a 64×64 video should produce a 32×32 output.
+    Halve scale mode should produce output at half resolution.
+    Compressing a 64×64 video with halve should produce 32×32.
     """
     rec_path = _copy_video(real_video, tmp_path / "recordings" / "cam1" / "clip.mp4")
 
@@ -333,7 +333,32 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
     )
     frigate_conn.close()
 
-    ctx = _make_ctx(tmp_path, frigate_db)
+    opts = _make_options(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_defaults={
+            "dry_run": False,
+            "tier1": {
+                "enabled": True,
+                "min_days": 8,
+                "quality": 30,
+                "motion": {"scale_mode": "halve"},
+                "object": {"quality": 24},
+            },
+        },
+    )
+    cfg = fc.load_config(str(opts))
+    compress_conn = _open_compress_db(tmp_path)
+    frigate_ro = sqlite3.connect(str(frigate_db))
+    frigate_ro.row_factory = sqlite3.Row
+    frigate_rw = sqlite3.connect(str(frigate_db))
+    frigate_rw.row_factory = sqlite3.Row
+    ctx = fc.CompressorContext(
+        cfg=cfg,
+        frigate_ro=frigate_ro,
+        frigate_rw=frigate_rw,
+        compress_db=compress_conn,
+    )
     _probe_and_store(ctx, "scale_r1", "cam1", rec_path)
 
     result = fc.compress_one(
@@ -341,7 +366,7 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
         path=str(rec_path),
         camera="cam1",
         tier=1,
-        recording_type="motion",  # default: halve scale
+        recording_type="motion",
         encoder="cpu",
         ctx=ctx,
     )
