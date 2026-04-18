@@ -30,7 +30,7 @@ jobs:
         env:
           LOG_LEVEL: debug
         run: |
-          output=$(npx --package renovate@43.129.0 -- renovate --dry-run --platform=local 2>&1)
+          output=$(npx --package renovate@43.129.0 -- renovate --dry-run --platform=local 2>&1 || true)
 
           # Check for datasource lookup failures
           errors=$(echo "$output" | grep -i "no-result\|failed to look up" | grep -v "python-version" || true)
