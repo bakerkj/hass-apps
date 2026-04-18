@@ -64,6 +64,14 @@ def test_load_config_defaults(tmp_path):
     assert cam.dry_run is False
 
 
+def test_builtin_defaults_are_safe(tmp_path):
+    """Without any YAML defaults, built-in defaults must not compress anything."""
+    cfg = _make_config(tmp_path, yaml_defaults=None)
+    cam = cfg.cameras["cam"]
+    assert cam.enabled is False
+    assert cam.dry_run is True
+
+
 def test_load_config_tier1_type_settings(tmp_path):
     cfg = _make_config(tmp_path)
     cam = cfg.cameras["cam"]
