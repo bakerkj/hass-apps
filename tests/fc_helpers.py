@@ -70,8 +70,11 @@ def _make_options(tmp_path: Path, **overrides) -> Path:
     if not recordings_dir.exists():
         recordings_dir.mkdir(parents=True)
 
-    # YAML config
-    yaml_defaults = overrides.pop("yaml_defaults", None)
+    # YAML config — test defaults enable cameras and disable dry_run so
+    # compression tests work out of the box.  Production built-in defaults
+    # are the opposite (enabled=False, dry_run=True) for safety.
+    _test_defaults = {"enabled": True, "dry_run": False}
+    yaml_defaults = overrides.pop("yaml_defaults", _test_defaults)
     yaml_cameras = overrides.pop("yaml_cameras", {"cam": {}})
     yaml_path = tmp_path / "config.yaml"
     yaml_cfg: dict = {}

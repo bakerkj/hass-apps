@@ -261,8 +261,8 @@ class Config:
 # These are used when no config.yaml exists or when fields are omitted.
 
 _BUILTIN_DEFAULTS: dict = {
-    "enabled": True,
-    "dry_run": False,
+    "enabled": False,
+    "dry_run": True,
     "tier1": {
         "enabled": True,
         "min_days": 7,
