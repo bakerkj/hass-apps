@@ -1870,11 +1870,12 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             f"""
             SELECT r.id, r.camera, r.path, r.start_time,
                    r.motion, r.objects,
-                   f.t1_status, f.t2_status
+                   CASE WHEN f.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                        THEN 2 ELSE 1 END AS tier
             FROM   frigate_eligible.recordings r
             LEFT JOIN files f ON f.recording_id = r.id
             WHERE  ({where})
-            ORDER BY r.start_time ASC
+            ORDER BY tier ASC, r.start_time ASC
             LIMIT ?
             """,
             params,
@@ -1882,25 +1883,15 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     finally:
         conn.close()
 
-    _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
     results = []
     for row in rows:
-        camera = row["camera"]
-        t1_done = row["t1_status"] in _ok_statuses
-
-        # Determine tier — SQL guarantees eligibility, just pick which.
-        if t1_done:
-            tier = 2
-        else:
-            tier = 1
-
         rtype = _recording_type(row["motion"], row["objects"])
         results.append(
             {
                 "recording_id": row["id"],
-                "camera": camera,
+                "camera": row["camera"],
                 "path": row["path"],
-                "tier": tier,
+                "tier": int(row["tier"]),
                 "recording_type": rtype,
             }
         )

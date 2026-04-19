@@ -254,6 +254,45 @@ def test_get_eligible_recordings_object_type(tmp_path):
     frigate_conn.close()
 
 
+def test_get_eligible_recordings_orders_tier1_before_tier2(tmp_path):
+    """Tier 1 work always precedes tier 2 work in the batch, even when the
+    tier-2 candidate is older — drains the bigger storage win first."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+
+    # Older recording: t1 already done → eligible for tier 2.
+    _insert_recording(
+        frigate_conn, "old-t2", "cam1", "/m/old.mp4", time.time() - 60 * 86400
+    )
+    # Newer recording: t1 not done → eligible for tier 1.
+    _insert_recording(
+        frigate_conn, "new-t1", "cam1", "/m/new.mp4", time.time() - 10 * 86400
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    fc._record(
+        ctx.compress_db,
+        recording_id="old-t2",
+        camera="cam1",
+        path="/m/old.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+
+    results = fc.get_eligible_recordings(ctx)
+    # Tier 1 first despite being newer; tier 2 second despite being older.
+    assert [r["recording_id"] for r in results] == ["new-t1", "old-t2"]
+    assert [r["tier"] for r in results] == [1, 2]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # time_until_next_eligible
 # ═══════════════════════════════════════════════════════════════════════════════
