@@ -6,7 +6,7 @@ Integration tests for frigate_compressor — runs real FFmpeg and ffprobe.
 
 These tests require ffmpeg and ffprobe on PATH.  They exercise the full
 compress_one() pipeline without mocking subprocess, verifying that:
-  - _probe_video() correctly parses a real MP4
+  - _probe() correctly parses a real MP4
   - compress_one() produces a valid, smaller MP4 on disk
   - Frigate DB segment_size is updated after success
   - dry_run mode leaves files untouched
@@ -130,31 +130,30 @@ def _probe_and_store(
     ctx: fc.CompressorContext, recording_id: str, camera: str, path: Path
 ) -> None:
     """Run a real ffprobe and store the result so compress_one can proceed."""
-    info = fc._probe_full(path)
+    info = fc._probe(path)
     assert info is not None, f"ffprobe failed for {path}"
     fc._store_probe(ctx.compress_db, recording_id, camera, str(path), info)
 
 
 # ---------------------------------------------------------------------------
-# _probe_video — real ffprobe against a known video
+# _probe — real ffprobe against a known video
 # ---------------------------------------------------------------------------
 
 
-def test_probe_video_returns_correct_dimensions(real_video):
-    dims, fps = fc._probe_video(real_video)
-    assert dims == (64, 64)
+def test_probe_returns_correct_dimensions(real_video):
+    info = fc._probe(real_video)
+    assert fc._probe_dims(info) == (64, 64)
 
 
-def test_probe_video_returns_correct_fps(real_video):
-    _, fps = fc._probe_video(real_video)
-    assert fps is not None
-    assert abs(fps - 10.0) < 0.5
+def test_probe_returns_correct_fps(real_video):
+    info = fc._probe(real_video)
+    assert info["fps"] is not None
+    assert abs(info["fps"] - 10.0) < 0.5
 
 
-def test_probe_video_nonexistent_file(tmp_path):
-    dims, fps = fc._probe_video(tmp_path / "no_such_file.mp4")
-    assert dims is None
-    assert fps is None
+def test_probe_nonexistent_file(tmp_path):
+    info = fc._probe(tmp_path / "no_such_file.mp4")
+    assert info is None
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +207,8 @@ def test_compress_one_real_cpu_success(tmp_path, real_video):
     assert rec_path.exists()
 
     # The replaced file must be a valid MP4 readable by ffprobe.
-    dims, fps = fc._probe_video(rec_path)
-    assert dims is not None, "replaced file is not a valid video"
+    info = fc._probe(rec_path)
+    assert fc._probe_dims(info) is not None, "replaced file is not a valid video"
 
     # Frigate DB segment_size should have been updated.
     seg = ctx.frigate_rw.execute(
@@ -372,7 +371,7 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
     )
 
     assert result is True
-    dims, _ = fc._probe_video(rec_path)
+    dims = fc._probe_dims(fc._probe(rec_path))
     assert dims == (32, 32), f"expected 32×32 after halve, got {dims}"
 
     _close_ctx(ctx)
@@ -415,7 +414,7 @@ def test_compress_one_fps_cap_produces_capped_fps(tmp_path, real_video):
     )
 
     assert result is True
-    _, fps = fc._probe_video(rec_path)
+    fps = fc._probe(rec_path)["fps"]
     assert fps is not None
     assert fps <= 4.5, f"expected fps ≤ 4, got {fps}"
 

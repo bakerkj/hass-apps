@@ -22,7 +22,7 @@ from fc_helpers import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# _probe_full
+# _probe
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -34,7 +34,7 @@ def _fake_probe_result(stdout: str, returncode: int = 0) -> MagicMock:
     return m
 
 
-def test_probe_full_valid(tmp_path):
+def test_probe_valid(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"fake")
     stdout = (
@@ -47,7 +47,7 @@ def test_probe_full_valid(tmp_path):
         "size=6562500\n"
     )
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        info = fc._probe_full(f)
+        info = fc._probe(f)
     assert info is not None
     assert info["codec"] == "h264"
     assert info["width"] == 1920
@@ -58,12 +58,12 @@ def test_probe_full_valid(tmp_path):
     assert info["file_size"] == 6562500
 
 
-def test_probe_full_missing_fields(tmp_path):
+def test_probe_missing_fields(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"fake")
     stdout = "codec_name=h264\nwidth=1920\nheight=1080\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        info = fc._probe_full(f)
+        info = fc._probe(f)
     assert info is not None
     assert info["codec"] == "h264"
     assert info["fps"] is None
@@ -71,28 +71,28 @@ def test_probe_full_missing_fields(tmp_path):
     assert info["duration_sec"] is None
 
 
-def test_probe_full_nonzero_returncode(tmp_path):
+def test_probe_nonzero_returncode(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"fake")
     with patch("subprocess.run", return_value=_fake_probe_result("", returncode=1)):
-        info = fc._probe_full(f)
+        info = fc._probe(f)
     assert info is None
 
 
-def test_probe_full_empty_output(tmp_path):
+def test_probe_empty_output(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"fake")
     with patch("subprocess.run", return_value=_fake_probe_result("")):
-        info = fc._probe_full(f)
+        info = fc._probe(f)
     assert info is None
 
 
-def test_probe_full_file_size_fallback(tmp_path):
+def test_probe_file_size_fallback(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"x" * 1234)
     stdout = "codec_name=h264\nwidth=640\nheight=480\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        info = fc._probe_full(f)
+        info = fc._probe(f)
     assert info is not None
     assert info["file_size"] == 1234
 

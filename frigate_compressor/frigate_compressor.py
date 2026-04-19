@@ -883,71 +883,28 @@ def check_encoder_works(encoder: str) -> tuple[bool, str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _probe_video(filepath: Path) -> tuple[tuple[int, int] | None, float | None]:
-    """
-    Single ffprobe call that returns (dims, fps) from the MP4 container header.
-    dims = (width, height) or None
-    fps  = float or None
-    Lightweight — reads container metadata only, no frame decoding.
-    """
+def _parse_fps(fps_str: str | None) -> float | None:
+    """Parse ffprobe's r_frame_rate (e.g. '30/1' or '29.97') to a float."""
+    if not fps_str:
+        return None
     try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height,r_frame_rate",
-                "-of",
-                "default=noprint_wrappers=1",
-                str(filepath),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None, None
-
-        data: dict[str, str] = {}
-        for line in result.stdout.strip().splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                data[k.strip()] = v.strip()
-
-        dims: tuple[int, int] | None = None
-        fps: float | None = None
-
-        if "width" in data and "height" in data:
-            try:
-                dims = (int(data["width"]), int(data["height"]))
-            except (ValueError, TypeError):
-                pass
-
-        if "r_frame_rate" in data:
-            try:
-                parts = data["r_frame_rate"].split("/")
-                fps = (
-                    float(parts[0]) / float(parts[1])
-                    if len(parts) == 2
-                    else float(parts[0])
-                )
-            except (ValueError, TypeError, ZeroDivisionError):
-                pass
-
-        return dims, fps
-    except Exception as e:
-        log("WARNING", f"ffprobe failed for {filepath}: {e}")
-        return None, None
+        parts = fps_str.split("/")
+        if len(parts) == 2:
+            return float(parts[0]) / float(parts[1])
+        return float(parts[0])
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
-def _probe_full(filepath: Path) -> dict | None:
-    """Run ffprobe to capture codec, resolution, fps, bitrate, duration, and file size.
+def _probe(filepath: Path) -> dict | None:
+    """Run ffprobe to capture all container-level metadata in one call.
 
-    Returns a dict with keys: codec, width, height, fps, bitrate, duration_sec,
-    file_size.  Returns None if the file cannot be probed.
+    Returns a dict with keys: codec, width, height, fps, bitrate,
+    duration_sec, file_size.  Any individual key may be None if ffprobe
+    didn't report that field.  Returns None if the file can't be probed.
+
+    Reads the container header only — no frame decoding, so the cost is
+    one fork + a sub-millisecond ffprobe read regardless of file size.
     """
     try:
         result = subprocess.run(
@@ -969,60 +926,47 @@ def _probe_full(filepath: Path) -> dict | None:
             text=True,
             timeout=10,
         )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-
-        data: dict[str, str] = {}
-        for line in result.stdout.strip().splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                data[k.strip()] = v.strip()
-
-        info: dict = {}
-        info["codec"] = data.get("codec_name")
-
-        try:
-            info["width"] = int(data["width"])
-            info["height"] = int(data["height"])
-        except (KeyError, ValueError, TypeError):
-            info["width"] = None
-            info["height"] = None
-
-        info["fps"] = None
-        if "r_frame_rate" in data:
-            try:
-                parts = data["r_frame_rate"].split("/")
-                info["fps"] = (
-                    float(parts[0]) / float(parts[1])
-                    if len(parts) == 2
-                    else float(parts[0])
-                )
-            except (ValueError, TypeError, ZeroDivisionError):
-                pass
-
-        try:
-            info["bitrate"] = int(data["bit_rate"])
-        except (KeyError, ValueError, TypeError):
-            info["bitrate"] = None
-
-        try:
-            info["duration_sec"] = float(data["duration"])
-        except (KeyError, ValueError, TypeError):
-            info["duration_sec"] = None
-
-        try:
-            info["file_size"] = int(data["size"])
-        except (KeyError, ValueError, TypeError):
-            # Fall back to stat if ffprobe didn't report size
-            try:
-                info["file_size"] = filepath.stat().st_size
-            except OSError:
-                info["file_size"] = None
-
-        return info
     except Exception as e:
         log("WARNING", f"ffprobe failed for {filepath}: {e}")
         return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    data: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            data[k.strip()] = v.strip()
+
+    def _try(key: str, parser):
+        try:
+            return parser(data[key])
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    info: dict = {
+        "codec": data.get("codec_name"),
+        "width": _try("width", int),
+        "height": _try("height", int),
+        "fps": _parse_fps(data.get("r_frame_rate")),
+        "bitrate": _try("bit_rate", int),
+        "duration_sec": _try("duration", float),
+        "file_size": _try("size", int),
+    }
+    if info["file_size"] is None:
+        # Fall back to stat if ffprobe didn't report size.
+        try:
+            info["file_size"] = filepath.stat().st_size
+        except OSError:
+            pass
+    return info
+
+
+def _probe_dims(info: dict | None) -> tuple[int, int] | None:
+    """Pull (width, height) from a ``_probe`` result, or None if missing."""
+    if not info or info.get("width") is None or info.get("height") is None:
+        return None
+    return (info["width"], info["height"])
 
 
 def _build_scale_filter(
@@ -1150,7 +1094,9 @@ def build_ffmpeg_cmd(
     source_fps: float | None = None
 
     if need_dims or need_fps:
-        source_dims, source_fps = _probe_video(input_path)
+        info = _probe(input_path)
+        source_dims = _probe_dims(info)
+        source_fps = (info or {}).get("fps")
 
     fps_filter = _build_fps_filter(ts.fps_mode, ts.fps_value, source_fps)
     scale = _build_scale_filter(ts.scale_mode, ts.scale_value, encoder, source_dims)
@@ -1571,8 +1517,8 @@ def _compress_one_inner(
         # Sanity: for very small output (<3% of original), run ffprobe
         # to verify the output is a valid video with matching duration.
         if size_after * 100 < size_before * 3:
-            out_info = _probe_full(tmpfile)
-            src_info_full = _probe_full(filepath)
+            out_info = _probe(tmpfile)
+            src_info_full = _probe(filepath)
             if out_info is None:
                 rec(
                     size_before=size_before,
@@ -1797,16 +1743,23 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     return " OR ".join(cam_clauses), params
 
 
+def _attach_frigate_ro(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
+    """ATTACH the Frigate DB to ``conn`` read-only under the given alias.
+
+    Centralizes the path escaping so any future change to the URI format
+    happens in one place rather than four.
+    """
+    db_path = str(cfg.frigate_db).replace('"', "")
+    conn.execute(f'ATTACH DATABASE "file:{db_path}?mode=ro" AS {alias}')
+
+
 def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
     """Open a read-only compress-db connection with frigate.recordings attached."""
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    conn.execute(
-        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
-    )
+    _attach_frigate_ro(conn, cfg, "frigate_eligible")
     return conn
 
 
@@ -1933,14 +1886,8 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         compress_db.close()
 
 
-def _run_housekeeping_inner(
-    cfg: Config,
-    compress_db: sqlite3.Connection,
-    frigate_rw: sqlite3.Connection,
-) -> None:
-    log("INFO", "── Housekeeping starting")
-
-    # 1. Remove leftover temp files from crashed runs.
+def _hk_remove_temp_files(cfg: Config) -> None:
+    """Remove leftover temp files from crashed compression runs."""
     temp_files = list(Path(cfg.recordings_dir).rglob(_TEMP_GLOB))
     for tmp in temp_files:
         if cfg.all_dry_run:
@@ -1951,7 +1898,13 @@ def _run_housekeeping_inner(
     if not temp_files:
         log("DEBUG", "No leftover temp files found")
 
-    # 2. Retry pending segment_size updates.
+
+def _hk_retry_segment_updates(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
+) -> None:
+    """Retry segment_size updates that failed during prior compress runs."""
     pending_seg = compress_db.execute(
         """SELECT recording_id, camera, path
            FROM files
@@ -2024,12 +1977,11 @@ def _run_housekeeping_inner(
     else:
         log("DEBUG", "No pending segment_size retries")
 
-    # 3. Prune compress DB rows whose recording no longer exists in Frigate's DB.
+
+def _hk_prune_orphaned(cfg: Config, compress_db: sqlite3.Connection) -> None:
+    """Drop compress_db rows whose recording is no longer in Frigate's DB."""
     pruned = 0
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    compress_db.execute(
-        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
-    )
+    _attach_frigate_ro(compress_db, cfg, "frigate_ro_hk")
     try:
         if cfg.all_dry_run:
             pruned = compress_db.execute(
@@ -2060,46 +2012,61 @@ def _run_housekeeping_inner(
     else:
         log("DEBUG", "No orphaned DB entries")
 
-    # 4. Storage savings summary
+
+def _hk_log_savings_summary(compress_db: sqlite3.Connection) -> None:
+    """Print the storage-savings table by camera."""
     rows = compress_db.execute(
         "SELECT * FROM savings_by_camera ORDER BY camera"
     ).fetchall()
-
-    if rows:
-        log("INFO", "── Storage savings by camera")
-        log(
-            "INFO",
-            f"  {'Camera':<20} {'T1':>5} {'T1 Before':>10} {'T1 After':>10}"
-            f" {'T2':>5} {'T2 Before':>10} {'T2 After':>10}",
-        )
-        log(
-            "INFO",
-            f"  {'-' * 20} {'-' * 5} {'-' * 10} {'-' * 10}"
-            f" {'-' * 5} {'-' * 10} {'-' * 10}",
-        )
-        for r in rows:
-            log(
-                "INFO",
-                f"  {r['camera']:<20}"
-                f" {r['t1_files'] or 0:>5}"
-                f" {_fmt(r['t1_bytes_before']):>10}"
-                f" {_fmt(r['t1_bytes_after']):>10}"
-                f" {r['t2_files'] or 0:>5}"
-                f" {_fmt(r['t2_bytes_before']):>10}"
-                f" {_fmt(r['t2_bytes_after']):>10}",
-            )
-    else:
+    if not rows:
         log("INFO", "No compression data yet")
+        return
+    log("INFO", "── Storage savings by camera")
+    log(
+        "INFO",
+        f"  {'Camera':<20} {'T1':>5} {'T1 Before':>10} {'T1 After':>10}"
+        f" {'T2':>5} {'T2 Before':>10} {'T2 After':>10}",
+    )
+    log(
+        "INFO",
+        f"  {'-' * 20} {'-' * 5} {'-' * 10} {'-' * 10} {'-' * 5} {'-' * 10} {'-' * 10}",
+    )
+    for r in rows:
+        log(
+            "INFO",
+            f"  {r['camera']:<20}"
+            f" {r['t1_files'] or 0:>5}"
+            f" {_fmt(r['t1_bytes_before']):>10}"
+            f" {_fmt(r['t1_bytes_after']):>10}"
+            f" {r['t2_files'] or 0:>5}"
+            f" {_fmt(r['t2_bytes_before']):>10}"
+            f" {_fmt(r['t2_bytes_after']):>10}",
+        )
 
-    # 5. Recent errors
+
+def _hk_log_recent_errors(compress_db: sqlite3.Connection) -> None:
+    """Print the most recent compression errors (last 7 days, up to 20)."""
     errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
-    if errors:
-        log("WARNING", "── Recent errors (last 7 days)")
-        for err in errors:
-            ts = err["t2_compressed_at"] or err["t1_compressed_at"]
-            msg = err["t2_error_msg"] or err["t1_error_msg"]
-            log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
+    if not errors:
+        return
+    log("WARNING", "── Recent errors (last 7 days)")
+    for err in errors:
+        ts = err["t2_compressed_at"] or err["t1_compressed_at"]
+        msg = err["t2_error_msg"] or err["t1_error_msg"]
+        log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
 
+
+def _run_housekeeping_inner(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
+) -> None:
+    log("INFO", "── Housekeeping starting")
+    _hk_remove_temp_files(cfg)
+    _hk_retry_segment_updates(cfg, compress_db, frigate_rw)
+    _hk_prune_orphaned(cfg, compress_db)
+    _hk_log_savings_summary(compress_db)
+    _hk_log_recent_errors(compress_db)
     log("INFO", "── Housekeeping complete")
 
 
@@ -2118,8 +2085,7 @@ def _get_unprobed_recordings(cfg: Config, conn: sqlite3.Connection) -> list[dict
 
     Limited to ``_PROBE_BATCH_SIZE`` rows per call to keep memory bounded.
     """
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    conn.execute(f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_probe')
+    _attach_frigate_ro(conn, cfg, "frigate_probe")
     try:
         rows = conn.execute(
             """
@@ -2188,7 +2154,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
     """Continuously probe unprobed Frigate recordings.
 
     Each cycle fetches a batch of recordings not yet probed in ``files``,
-    runs ``_probe_full`` on each, and stores the results.  Sleeps
+    runs ``_probe`` on each, and stores the results.  Sleeps
     ``PROBE_SLEEP_SEC`` when fully caught up.
 
     Opens its own read-write connection to the compress DB so it never
@@ -2221,7 +2187,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
             for rec in unprobed:
                 if stopping.is_set():
                     break
-                info = _probe_full(Path(rec["path"]))
+                info = _probe(Path(rec["path"]))
                 if info is not None:
                     _store_probe(
                         probe_conn,
@@ -2280,7 +2246,6 @@ def _fmt(n: int | float | None, width: int = 0) -> str:
         else:
             s = f"{n:.1f}PB"
     return s.rjust(width) if width else s
-    return f"{n:.1f}PB"
 
 
 def _fmt_type(ts: TypeSettings) -> str:
@@ -2360,10 +2325,7 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
     )
     conn.row_factory = sqlite3.Row
     try:
-        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        conn.execute(
-            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_stats'
-        )
+        _attach_frigate_ro(conn, cfg, "frigate_stats")
         rows = conn.execute(
             f"""
             SELECT
