@@ -3424,12 +3424,14 @@ def run_main_loop(
 
         if eligible:
             suffix = " (DRY RUN — skipping ffmpeg)" if cfg.all_dry_run else ""
-            log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
             camera_counts = Counter(r["camera"] for r in eligible)
             breakdown = ", ".join(
                 f"{cam}={n}" for cam, n in sorted(camera_counts.items())
             )
-            log("INFO", f"  per-camera: {breakdown}")
+            log(
+                "INFO",
+                f"Found {len(eligible)} recording(s) to compress{suffix} ({breakdown})",
+            )
 
             pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
