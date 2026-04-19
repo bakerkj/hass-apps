@@ -769,7 +769,6 @@ def test_run_main_loop_sleeps_one_window_after_partial_batch(monkeypatch, tmp_pa
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
     eligible_calls = {"n": 0}
-    wait_timeouts: list[float | None] = []
 
     def fake_eligible(_ctx):
         eligible_calls["n"] += 1
@@ -777,13 +776,15 @@ def test_run_main_loop_sleeps_one_window_after_partial_batch(monkeypatch, tmp_pa
 
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    # Skip per-file throttle pacing so we observe only the post-batch sleep.
+    monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
 
     stopping = threading.Event()
     real_wait = stopping.wait
+    wait_timeouts: list[float | None] = []
 
     def fake_wait(timeout=None):
         wait_timeouts.append(timeout)
-        # End the loop the first time it tries to sleep so the test terminates.
         stopping.set()
         return real_wait(timeout=0)
 
@@ -807,7 +808,6 @@ def test_run_main_loop_continues_immediately_on_full_batch(monkeypatch, tmp_path
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
     eligible_calls = {"n": 0}
-    wait_timeouts: list[float | None] = []
 
     def fake_eligible(_ctx):
         eligible_calls["n"] += 1
@@ -818,9 +818,11 @@ def test_run_main_loop_continues_immediately_on_full_batch(monkeypatch, tmp_path
 
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
 
     stopping = threading.Event()
     real_wait = stopping.wait
+    wait_timeouts: list[float | None] = []
 
     def fake_wait(timeout=None):
         wait_timeouts.append(timeout)
@@ -881,47 +883,24 @@ def test_run_main_loop_sleeps_one_window_when_no_work(monkeypatch, tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# throttle (count-based: workload + EWMA)
+# throttle (target = len(eligible))
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_throttle_target_zero_when_no_workload(monkeypatch, tmp_path):
-    """workload=0 → _effective_throttle_target returns 0 (limiter disabled)."""
+def test_run_main_loop_sets_target_to_batch_size(monkeypatch, tmp_path):
+    """The throttle target is set to ``len(eligible)`` files/min — exactly
+    the work in the current batch over one minute.  No lookahead, no
+    separate workload measurement."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 0.0)
-    assert fc._effective_throttle_target(ctx) == 0.0
-
-    _close_ctx(ctx)
-    frigate_conn.close()
-
-
-def test_throttle_target_equals_workload(monkeypatch, tmp_path):
-    """target = workload (1:1; no overhead multiplier)."""
-    frigate_db = tmp_path / "frigate.db"
-    frigate_conn = _make_frigate_db(frigate_db)
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
-
-    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 40.0)
-    assert fc._effective_throttle_target(ctx) == pytest.approx(40.0)
-
-    _close_ctx(ctx)
-    frigate_conn.close()
-
-
-def test_run_main_loop_refreshes_throttle_target_on_first_iteration(
-    monkeypatch, tmp_path
-):
-    """The main loop forces a throttle refresh on the first iteration so the
-    limiter leaves its initial 0 (= disabled) state."""
-    frigate_db = tmp_path / "frigate.db"
-    frigate_conn = _make_frigate_db(frigate_db)
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
-
-    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 50.0)
-    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(
+        fc,
+        "get_eligible_recordings",
+        lambda _ctx: [_eligible_row(f"r{i}") for i in range(7)],
+    )
+    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -933,67 +912,35 @@ def test_run_main_loop_refreshes_throttle_target_on_first_iteration(
     monkeypatch.setattr(stopping, "wait", fake_wait)
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # target = workload = 50
-    assert ctx.rate_limiter.target_per_min == pytest.approx(50.0)
+    assert ctx.rate_limiter.target_per_min == 7
 
     _close_ctx(ctx)
     frigate_conn.close()
 
 
-def test_run_main_loop_throttle_refresh_is_gated_by_cadence(monkeypatch, tmp_path):
-    """Throttle target is only recomputed every _THROTTLE_WINDOW_SEC.  Catchup
-    iterations (full batch → continue immediately) happen back-to-back without
-    sleeping; the throttle should not re-fire on each one."""
+def test_run_main_loop_target_unchanged_when_no_work(monkeypatch, tmp_path):
+    """An empty batch leaves the limiter target alone (no DB query needed)."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    target_calls = {"n": 0}
-
-    def fake_target(_ctx):
-        target_calls["n"] += 1
-        return 50.0
-
-    monkeypatch.setattr(fc, "_effective_throttle_target", fake_target)
-
-    eligible_calls = {"n": 0}
-
-    def fake_eligible(_ctx):
-        eligible_calls["n"] += 1
-        # Pass 1: full batch (forces continue).  Pass 2: empty (forces sleep).
-        if eligible_calls["n"] == 1:
-            return [_eligible_row(f"r{i}") for i in range(fc._ELIGIBLE_BATCH_SIZE)]
-        return []
-
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
-    # Disable per-file throttling so the catchup batch finishes instantly,
-    # keeping mocked time inside the 60s gate.
-    ctx.rate_limiter.set_target(0)
-    monkeypatch.setattr(fc.RateLimiter, "set_target", lambda self, target_per_min: None)
-
-    t = {"now": 1000.0}
-    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
+    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
 
     stopping = threading.Event()
     real_wait = stopping.wait
 
     def fake_wait(timeout=None):
-        if timeout is not None:
-            t["now"] += timeout
-        if timeout is not None and timeout >= fc._THROTTLE_WINDOW_SEC:
-            stopping.set()
+        stopping.set()
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
+
+    # Pre-set a sentinel target AFTER the limiter is otherwise idle; the
+    # loop must not overwrite it on the empty pass.
+    ctx.rate_limiter.set_target(123.0)
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # Throttle target was computed exactly once across both iterations —
-    # pass 2 is in the same wall-clock tick as pass 1 (catchup continues
-    # immediately, no time advanced), well inside the 60s gate.
-    assert target_calls["n"] == 1
-    # And both eligibility queries did fire (catchup re-queried).
-    assert eligible_calls["n"] == 2
+    assert ctx.rate_limiter.target_per_min == pytest.approx(123.0)
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -1064,15 +1011,11 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
 
     def fake_eligible(_ctx):
         eligible_calls["n"] += 1
-        return (
-            [_eligible_row("r1"), _eligible_row("r2"), _eligible_row("r3")]
-            if eligible_calls["n"] == 1
-            else []
-        )
+        # Pass 1: 6 files → target=6/min → interval=10s.  Pass 2: empty.
+        if eligible_calls["n"] == 1:
+            return [_eligible_row(f"r{i}") for i in range(6)]
+        return []
 
-    # Pin the inline target update to 30/min so we can verify per-file pacing
-    # at a known rate (interval=2s).
-    monkeypatch.setattr(fc, "_effective_throttle_target", lambda _ctx: 30.0)
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
 
@@ -1093,74 +1036,16 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
 
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # 3 files at target=30/min → interval=2.0s.  First file: no wait.
-    # Next two: 2.0s each.  Then trailing _THROTTLE_WINDOW_SEC post-batch sleep.
+    # 6 files at target=6/min → interval=10s.  First file: no wait.
+    # Next five: 10s each.  Then trailing _THROTTLE_WINDOW_SEC post-batch sleep.
     throttle_sleeps = [s for s in sleeps if s != fc._THROTTLE_WINDOW_SEC]
-    assert len(throttle_sleeps) == 2
+    assert len(throttle_sleeps) == 5
     for s in throttle_sleeps:
-        assert s == pytest.approx(2.0, abs=0.05)
+        assert s == pytest.approx(10.0, abs=0.05)
     assert sleeps[-1] == fc._THROTTLE_WINDOW_SEC
 
     _close_ctx(ctx)
     frigate_conn.close()
-
-
-def test_measure_workload_per_min_counts_backlog_plus_incoming(tmp_path):
-    """Workload includes backlog (already past line) AND incoming next minute.
-    Done recordings excluded."""
-    frigate_db = tmp_path / "frigate.db"
-    conn = _make_frigate_db(frigate_db)
-    now = time.time()
-    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
-    cam_name = next(iter(cfg.cameras))
-    t1_min_days = cfg.cameras[cam_name].tier1.min_days
-
-    # 4 backlog + 3 about to cross within 60s = 7.
-    for i in range(4):
-        _insert_recording(
-            conn,
-            f"backlog-{i}",
-            cam_name,
-            f"/tmp/back-{i}.mp4",
-            start_time=now - (t1_min_days + 1) * 86400 - i * 60,
-        )
-    for i in range(3):
-        _insert_recording(
-            conn,
-            f"incoming-{i}",
-            cam_name,
-            f"/tmp/inc-{i}.mp4",
-            start_time=now - t1_min_days * 86400 + (i + 1) * 10,
-        )
-    # One done recording — must NOT count.
-    _insert_recording(
-        conn,
-        "done-1",
-        cam_name,
-        "/tmp/done.mp4",
-        start_time=now - (t1_min_days + 2) * 86400,
-    )
-    conn.close()
-
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
-    fc._record(
-        ctx.compress_db,
-        recording_id="done-1",
-        camera=cam_name,
-        path="/tmp/done.mp4",
-        tier=1,
-        recording_type="continuous",
-        encoder="cpu",
-        size_before=1000,
-        size_after=500,
-        duration_sec=1.0,
-        status=fc.STATUS_OK,
-    )
-
-    # 7 / 1 min = 7/min.
-    workload = fc.measure_workload_per_min(ctx)
-    assert workload == pytest.approx(7.0, abs=0.01)
-    _close_ctx(ctx)
 
 
 def test_rate_limiter_paces_concurrent_callers(monkeypatch):

@@ -1216,31 +1216,27 @@ FFMPEG_TIMEOUT_SEC = 30
 # Max bytes of ffmpeg stderr text stored in the compress DB error_msg column.
 FFMPEG_STDERR_MAX_LEN = 300
 
-# Throttle target is workload (files/min), where workload counts every
-# recording needing compression in the next minute (backlog already past
-# the line + incoming about to cross).  When backlog is large the target
-# far exceeds GPU capacity so the rate limiter never sleeps (full-speed
-# catchup, e.g. 100k backlog → target ~100k/min vs ~170/min capacity).
-# Once the queue drains, target settles to the steady-state inflow rate.
-# Empirical testing showed file size barely predicts encode time (r=0.33,
-# R²=0.11 over 6k samples), so a count-based throttle gets us essentially
-# the same accuracy with less complexity.
+# Throttle target is set per batch to ``len(eligible)`` files/min — that
+# is, "process the work we have in roughly one minute".  When backlog is
+# large the eligible query hits ``_ELIGIBLE_BATCH_SIZE`` (LIMIT) and the
+# target far exceeds GPU capacity, so the rate limiter never sleeps
+# (full-speed catchup); the loop's catchup branch (``continue`` on full
+# batch) keeps backlog draining flat-out.  Empirical testing showed file
+# size barely predicts encode time (r=0.33, R²=0.11 over 6k samples), so
+# a count-based throttle gets us essentially the same accuracy with less
+# complexity.
 #
-# Single window controls both the workload lookahead and the refresh
-# cadence: each measurement counts recordings that will be eligible in
-# the next ``_THROTTLE_WINDOW_SEC`` seconds, and the main loop recomputes
-# every ``_THROTTLE_WINDOW_SEC`` seconds.  Setting them equal cleanly
-# tiles the timeline — each measurement covers exactly the time until
-# the next one (no overlap, no gaps).  Decoupling them would just create
-# either redundant work or coverage holes.
+# After each batch (or empty pass), the loop sleeps one window before
+# re-querying — a fixed heartbeat that keeps DB queries and log noise
+# bounded.
 _THROTTLE_WINDOW_SEC = 60.0
 
 
 class RateLimiter:
     """Thread-safe rate limiter shared across worker threads.
 
-    ``target_per_min`` is set by the main loop on a fixed 60s cadence
-    (a single-writer, multi-reader pattern).  Workers call ``acquire`` and
+    ``target_per_min`` is set by the main loop just before submitting each
+    batch (single-writer, multi-reader).  Workers call ``acquire`` and
     read whatever target is in effect at that moment.  No-op when target
     ≤ 0 (initial state, or no eligible work).
     """
@@ -3143,59 +3139,6 @@ def main() -> int:
     return 0
 
 
-def measure_workload_per_min(ctx: CompressorContext) -> float:
-    """Recordings needing compression in the next minute, per minute.
-
-    Counts every recording that will be eligible by ``now + window`` and
-    isn't yet processed for the relevant tier — backlog (already past the
-    line ⇒ we've fallen behind) plus incoming (about to cross).  Divided
-    by window-minutes gives the rate the throttle targets.
-    """
-    cfg = ctx.cfg
-    window_sec = _THROTTLE_WINDOW_SEC
-    where, params = _build_eligible_where(cfg, time.time() + window_sec)
-    if not where:
-        return 0.0
-
-    conn = _open_eligible_conn(cfg)
-    try:
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS n
-            FROM   frigate_eligible.recordings r
-            LEFT JOIN files f ON f.recording_id = r.id
-            WHERE  ({where})
-            """,
-            params,
-        ).fetchone()
-    finally:
-        conn.close()
-    n = int(row["n"]) if row else 0
-    return n / (window_sec / 60.0)
-
-
-def _effective_throttle_target(ctx: CompressorContext) -> float:
-    """Throttle target in files/min for the next batch — equals the
-    measured workload.
-
-    Workload counts every recording needing compression in the next minute
-    (backlog already past the line + incoming about to cross).  During
-    catchup, workload >> capacity so the limiter is effectively a no-op;
-    once drained, the target settles to the steady-state inflow rate.
-
-    Returns 0 (no throttle) when there's no eligible work.
-    """
-    try:
-        workload = measure_workload_per_min(ctx)
-    except Exception as e:
-        log("WARNING", f"throttle: workload measurement failed: {e}")
-        return 0.0
-    if workload <= 0:
-        return 0.0
-    log("INFO", f"Throttle: target {workload:.0f}/min")
-    return workload
-
-
 def _pace_then_compress(
     stopping: threading.Event,
     rid: str,
@@ -3235,9 +3178,6 @@ def run_main_loop(
     """
     cfg = ctx.cfg
     last_housekeeping = time.time()
-    # Force throttle compute on the first iteration so target leaves its
-    # initial 0; after that, refresh on a fixed cadence.
-    last_throttle_refresh = 0.0
 
     while not stopping.is_set():
         # ── Housekeeping ──────────────────────────────────────────────────
@@ -3248,17 +3188,6 @@ def run_main_loop(
                 log("ERROR", f"Housekeeping failed: {e}")
             last_housekeeping = time.time()
 
-        # ── Refresh throttle target on the window cadence ────────────────
-        # Workload is itself a window-sized measurement, so recomputing
-        # more often just adds noise (DB queries + log spam) without
-        # changing the target meaningfully.
-        if (time.time() - last_throttle_refresh) >= _THROTTLE_WINDOW_SEC:
-            try:
-                ctx.rate_limiter.set_target(_effective_throttle_target(ctx))
-            except Exception as e:
-                log("WARNING", f"throttle: {e}")
-            last_throttle_refresh = time.time()
-
         # ── Find eligible recordings ──────────────────────────────────────
         try:
             eligible = get_eligible_recordings(ctx)
@@ -3268,8 +3197,17 @@ def run_main_loop(
             continue
 
         if eligible:
+            # Throttle target = exactly the work in this batch over the
+            # next minute.  No separate workload measurement, no lookahead
+            # — pace just the files we actually have.
+            ctx.rate_limiter.set_target(len(eligible))
+
             suffix = " (DRY RUN — skipping ffmpeg)" if cfg.all_dry_run else ""
-            log("INFO", f"Found {len(eligible)} recording(s) to compress{suffix}")
+            log(
+                "INFO",
+                f"Found {len(eligible)} recording(s) to compress "
+                f"(target {len(eligible)}/min){suffix}",
+            )
             camera_counts = Counter(r["camera"] for r in eligible)
             breakdown = ", ".join(
                 f"{cam}={n}" for cam, n in sorted(camera_counts.items())
