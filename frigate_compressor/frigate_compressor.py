@@ -1236,26 +1236,39 @@ MAX_SLEEP_SEC = 600.0
 # time (r=0.33, R²=0.11 over 6k samples), so a count-based throttle gets
 # us essentially the same accuracy with less complexity.
 _THROTTLE_WORKLOAD_WINDOW_SEC = 60.0
+_THROTTLE_UPDATE_INTERVAL_SEC = 60.0
 _THROTTLE_OVERHEAD = 1.05
 
 
 class RateLimiter:
     """Thread-safe rate limiter shared across worker threads.
 
-    Workers call ``acquire(target_per_min, stopping)`` after each completed
-    compression.  The limiter spaces concurrent completions evenly so that
-    aggregate throughput stays at or below ``target_per_min`` files/min.
-    No-op when ``target_per_min`` ≤ 0.  State persists across batches.
+    The current ``target_per_min`` is owned by a separate updater thread
+    (``run_throttle_updater``) that recomputes it on a wall-clock cadence
+    independent of batch size, thread count, or per-file processing time.
+    Workers call ``acquire(stopping)`` after each completed compression and
+    read whatever target is in effect at that moment.  No-op when target
+    ≤ 0 (initial state, or no eligible work).
     """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.next_allowed = 0.0
+        self.target_per_min = 0.0
 
-    def acquire(self, target_per_min: float, stopping: threading.Event) -> None:
-        if target_per_min <= 0:
+    def set_target(self, target_per_min: float) -> None:
+        """Update the active target (called by the throttle updater thread).
+
+        Float writes are atomic in CPython so no lock is needed for this
+        field; ``next_allowed`` is still protected by ``self.lock``.
+        """
+        self.target_per_min = max(0.0, target_per_min)
+
+    def acquire(self, stopping: threading.Event) -> None:
+        target = self.target_per_min
+        if target <= 0:
             return
-        interval_sec = 60.0 / target_per_min
+        interval_sec = 60.0 / target
         with self.lock:
             now = time.time()
             wait = self.next_allowed - now
@@ -1275,9 +1288,9 @@ class ThroughputEMA:
     rapidly contribute proportionally less, so the EWMA reflects roughly the
     last-minute behavior even under variable batch cadence.
 
-    Not thread-safe: ``update`` must only be called from the main loop
-    thread.  Workers may read ``value`` (a single float read is atomic in
-    CPython) but must not call ``update``.
+    Not thread-safe: both ``update`` and reads of ``value`` are owned by
+    the throttle updater thread (``run_throttle_updater``) — workers and
+    the main loop never touch this directly.
     """
 
     tau_sec: float = 60.0
@@ -3210,6 +3223,11 @@ def main() -> int:
     )
     probe_thread.start()
 
+    throttle_thread = threading.Thread(
+        target=run_throttle_updater, args=(ctx, stopping), daemon=True
+    )
+    throttle_thread.start()
+
     publisher: MqttPublisher | None = None
     if cfg.mqtt.enabled:
         try:
@@ -3334,7 +3352,6 @@ def _effective_throttle_target(ctx: CompressorContext) -> float:
 
 
 def _compress_then_pace(
-    target_per_min: float,
     stopping: threading.Event,
     rid: str,
     path: str,
@@ -3344,11 +3361,34 @@ def _compress_then_pace(
     encoder: str,
     ctx: CompressorContext,
 ) -> bool:
-    """Worker wrapper: run compress_one then pace via the shared rate limiter."""
+    """Worker wrapper: run compress_one then pace via the shared rate limiter.
+
+    The limiter reads its current target from its own field (set by the
+    throttle updater thread), so the worker doesn't need to know it.
+    """
     try:
         return compress_one(rid, path, camera, tier, rtype, encoder, ctx)
     finally:
-        ctx.rate_limiter.acquire(target_per_min, stopping)
+        ctx.rate_limiter.acquire(stopping)
+
+
+def run_throttle_updater(ctx: CompressorContext, stopping: threading.Event) -> None:
+    """Recompute the throttle target on a fixed wall-clock cadence.
+
+    Independent of batch progress, worker count, or hardware speed: the
+    target gets a fresh sample every ``_THROTTLE_UPDATE_INTERVAL_SEC``
+    seconds, which also drives the EWMA at exactly its 60s time constant.
+    Owns ``ctx.throughput_ema`` and ``ctx.rate_limiter.target_per_min``;
+    nothing else writes to either.
+    """
+    while not stopping.is_set():
+        try:
+            ctx.throughput_ema.update(sample_throughput_per_min(ctx))
+            target = _effective_throttle_target(ctx)
+            ctx.rate_limiter.set_target(target)
+        except Exception as e:
+            log("WARNING", f"throttle updater: {e}")
+        stopping.wait(timeout=_THROTTLE_UPDATE_INTERVAL_SEC)
 
 
 def run_main_loop(
@@ -3391,18 +3431,10 @@ def run_main_loop(
             )
             log("INFO", f"  per-camera: {breakdown}")
 
-            # Refresh throughput EWMA before computing target — keeps the
-            # side effect at the call site instead of inside _effective_*.
-            try:
-                ctx.throughput_ema.update(sample_throughput_per_min(ctx))
-            except Exception as e:
-                log("WARNING", f"throttle: throughput sample failed: {e}")
-            target_per_min = _effective_throttle_target(ctx)
             pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
                 pool.submit(
                     _compress_then_pace,
-                    target_per_min,
                     stopping,
                     r["recording_id"],
                     r["path"],
