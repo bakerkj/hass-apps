@@ -8,4 +8,5 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /frigate_compressor.py --options "$OPTIONS"
+export PYTHONPATH=/opt
+exec python3 -m frigate_compressor --options "$OPTIONS"

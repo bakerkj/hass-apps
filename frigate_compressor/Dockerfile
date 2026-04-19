@@ -31,8 +31,9 @@ RUN apk add --no-cache \
       onevpl-intel-gpu=25.4.6-r0
 
 COPY run.sh /run.sh
-COPY frigate_compressor.py /frigate_compressor.py
+COPY frigate_compressor /opt/frigate_compressor
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/frigate_compressor
 
 CMD ["/run.sh"]
