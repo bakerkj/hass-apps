@@ -179,7 +179,7 @@ def test_build_ffmpeg_cmd_copy_audio(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# _probe_video
+# _probe (dims/fps view via _probe_dims + info["fps"])
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -191,51 +191,51 @@ def _fake_probe_result(stdout: str, returncode: int = 0) -> MagicMock:
     return m
 
 
-def test_probe_video_empty_output(tmp_path):
+def test_probe_empty_output(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"")
     with patch("subprocess.run", return_value=_fake_probe_result("")):
-        dims, fps = fc._probe_video(f)
-    assert dims is None
-    assert fps is None
+        info = fc._probe(f)
+    assert info is None
+    assert fc._probe_dims(info) is None
 
 
-def test_probe_video_nonzero_returncode(tmp_path):
+def test_probe_nonzero_returncode(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"")
     with patch(
         "subprocess.run", return_value=_fake_probe_result("width=1920\n", returncode=1)
     ):
-        dims, fps = fc._probe_video(f)
-    assert dims is None
-    assert fps is None
+        info = fc._probe(f)
+    assert info is None
+    assert fc._probe_dims(info) is None
 
 
-def test_probe_video_zero_division_fps(tmp_path):
+def test_probe_zero_division_fps(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"")
     stdout = "width=1920\nheight=1080\nr_frame_rate=0/0\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        dims, fps = fc._probe_video(f)
-    assert dims == (1920, 1080)
-    assert fps is None  # ZeroDivisionError swallowed gracefully
+        info = fc._probe(f)
+    assert fc._probe_dims(info) == (1920, 1080)
+    assert info["fps"] is None  # ZeroDivisionError swallowed gracefully
 
 
-def test_probe_video_bad_dimensions(tmp_path):
+def test_probe_bad_dimensions(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"")
     stdout = "width=N/A\nheight=N/A\nr_frame_rate=25/1\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        dims, fps = fc._probe_video(f)
-    assert dims is None
-    assert fps == pytest.approx(25.0)
+        info = fc._probe(f)
+    assert fc._probe_dims(info) is None
+    assert info["fps"] == pytest.approx(25.0)
 
 
-def test_probe_video_valid(tmp_path):
+def test_probe_valid_dims_and_fps(tmp_path):
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"")
     stdout = "width=1920\nheight=1080\nr_frame_rate=30000/1001\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
-        dims, fps = fc._probe_video(f)
-    assert dims == (1920, 1080)
-    assert fps == pytest.approx(30000 / 1001)
+        info = fc._probe(f)
+    assert fc._probe_dims(info) == (1920, 1080)
+    assert info["fps"] == pytest.approx(30000 / 1001)
