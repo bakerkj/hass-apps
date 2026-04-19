@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import subprocess
 import threading
@@ -921,3 +922,353 @@ def test_run_main_loop_sleep_path_handles_query_exception(monkeypatch, tmp_path)
 
     _close_ctx(ctx)
     frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# throttle (count-based: workload + EWMA)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _drive_loop_one_batch(monkeypatch, ctx, eligible_rows, workload):
+    """Drive run_main_loop through one work batch with mocked workload."""
+    captured = {"acquire_targets": [], "no_work_wait": None}
+    eligible_calls = {"n": 0}
+
+    def fake_eligible(_ctx):
+        eligible_calls["n"] += 1
+        return list(eligible_rows) if eligible_calls["n"] == 1 else []
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: workload)
+    monkeypatch.setattr(fc, "sample_throughput_per_min", lambda _ctx: 0.0)
+    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 999.0)
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        captured["no_work_wait"] = timeout
+        stopping.set()
+        return real_wait(timeout=0)
+
+    def fake_acquire(target_per_min, _stopping):
+        captured["acquire_targets"].append(target_per_min)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+    monkeypatch.setattr(ctx.rate_limiter, "acquire", fake_acquire)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    return captured
+
+
+def test_throttle_disabled_when_no_workload(monkeypatch, tmp_path):
+    """workload=0, EWMA=0 → target=0 → no throttling."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    eligible = [_eligible_row("r1"), _eligible_row("r2")]
+    captured = _drive_loop_one_batch(monkeypatch, ctx, eligible, workload=0.0)
+
+    assert captured["acquire_targets"] == [0.0, 0.0]
+    assert captured["no_work_wait"] == 999.0
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_throttle_target_is_overhead_times_workload(monkeypatch, tmp_path):
+    """target = workload × OVERHEAD when EWMA is below."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    eligible = [_eligible_row("r1"), _eligible_row("r2")]
+    captured = _drive_loop_one_batch(monkeypatch, ctx, eligible, workload=40.0)
+
+    # 40 * 1.05 = 42 (files/min)
+    assert captured["acquire_targets"] == [pytest.approx(42.0)] * 2
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_throttle_target_uses_ewma_when_higher(monkeypatch, tmp_path):
+    """target = max(workload × OVERHEAD, speed_ema) — EWMA floors target
+    during the catchup tail."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    ctx.throughput_ema.value = 100.0
+    ctx.throughput_ema.last_sample_time = time.time()
+
+    captured = {"acquire_targets": []}
+    eligible_calls = {"n": 0}
+
+    def fake_eligible(_ctx):
+        eligible_calls["n"] += 1
+        return [_eligible_row("r1")] if eligible_calls["n"] == 1 else []
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 40.0)
+    monkeypatch.setattr(fc, "sample_throughput_per_min", lambda _ctx: 100.0)
+    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 999.0)
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        stopping.set()
+        return real_wait(timeout=0)
+
+    def fake_acquire(target_per_min, _stopping):
+        captured["acquire_targets"].append(target_per_min)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+    monkeypatch.setattr(ctx.rate_limiter, "acquire", fake_acquire)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    # workload × OVERHEAD = 42; EWMA = 100 → target = 100.
+    assert captured["acquire_targets"] == [pytest.approx(100.0)]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_compress_then_pace_invokes_compress_and_acquires(monkeypatch):
+    """Worker wrapper runs compress_one and unconditionally calls acquire."""
+    calls = {"compress_args": None, "acquire_args": None}
+
+    def fake_compress(rid, path, camera, tier, rtype, encoder, ctx):
+        calls["compress_args"] = (rid, path, camera, tier, rtype, encoder)
+        return True
+
+    monkeypatch.setattr(fc, "compress_one", fake_compress)
+
+    fake_ctx = MagicMock()
+    fake_ctx.rate_limiter.acquire = lambda target, stopping: calls.update(
+        acquire_args=(target, stopping)
+    )
+    stopping = threading.Event()
+
+    result = fc._compress_then_pace(
+        77.0, stopping, "rid-1", "/tmp/x.mp4", "cam", 1, "continuous", "cpu", fake_ctx
+    )
+
+    assert result is True
+    assert calls["compress_args"] == (
+        "rid-1",
+        "/tmp/x.mp4",
+        "cam",
+        1,
+        "continuous",
+        "cpu",
+    )
+    assert calls["acquire_args"] == (77.0, stopping)
+
+
+def test_compress_then_pace_acquires_even_on_compress_exception(monkeypatch):
+    """Exception in compress_one must not bypass the rate limiter."""
+    calls = {"acquire_called": False}
+
+    def boom(*_a, **_k):
+        raise RuntimeError("encoder crashed")
+
+    monkeypatch.setattr(fc, "compress_one", boom)
+
+    fake_ctx = MagicMock()
+
+    def fake_acquire(_target, _stopping):
+        calls["acquire_called"] = True
+
+    fake_ctx.rate_limiter.acquire = fake_acquire
+    stopping = threading.Event()
+
+    with pytest.raises(RuntimeError):
+        fc._compress_then_pace(
+            50.0, stopping, "r", "/p", "cam", 1, "continuous", "cpu", fake_ctx
+        )
+
+    assert calls["acquire_called"] is True
+
+
+def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
+    """End-to-end: don't mock the limiter; verify it actually emits the
+    expected throttle sleeps when the loop processes a batch."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    # Pin time so the limiter math is deterministic.
+    t = {"now": 1000.0}
+    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
+
+    eligible_calls = {"n": 0}
+
+    def fake_eligible(_ctx):
+        eligible_calls["n"] += 1
+        return (
+            [_eligible_row("r1"), _eligible_row("r2"), _eligible_row("r3")]
+            if eligible_calls["n"] == 1
+            else []
+        )
+
+    # workload=30 → target = round(30*1.05) = 31.5/min → interval ≈ 1.9s.
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 30.0)
+    monkeypatch.setattr(fc, "sample_throughput_per_min", lambda _ctx: 0.0)
+    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 999.0)
+
+    sleeps: list[float] = []
+    stopping = threading.Event()
+    real_wait = stopping.wait
+
+    def fake_wait(timeout=None):
+        sleeps.append(timeout)
+        # Simulate the wait elapsing so the limiter math advances correctly.
+        if timeout is not None:
+            t["now"] += timeout
+        # Long no-work sleep ends the loop; short throttle sleeps don't.
+        if timeout is not None and timeout >= 100.0:
+            stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    # 3 files at interval = 60/(30×1.05) ≈ 1.905s.  First file: no wait
+    # (next_allowed starts at 0).  Subsequent files: one interval each.
+    # Then trailing 999.0 no-work sleep.
+    throttle_sleeps = [s for s in sleeps if s != 999.0]
+    interval = 60.0 / (30.0 * 1.05)
+    assert len(throttle_sleeps) == 2
+    for s in throttle_sleeps:
+        assert s == pytest.approx(interval, abs=0.05)
+    assert sleeps[-1] == 999.0
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_measure_workload_per_min_counts_backlog_plus_incoming(tmp_path):
+    """Workload includes backlog (already past line) AND incoming next minute.
+    Done recordings excluded."""
+    frigate_db = tmp_path / "frigate.db"
+    conn = _make_frigate_db(frigate_db)
+    now = time.time()
+    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    cam_name = next(iter(cfg.cameras))
+    t1_min_days = cfg.cameras[cam_name].tier1.min_days
+
+    # 4 backlog + 3 about to cross within 60s = 7.
+    for i in range(4):
+        _insert_recording(
+            conn,
+            f"backlog-{i}",
+            cam_name,
+            f"/tmp/back-{i}.mp4",
+            start_time=now - (t1_min_days + 1) * 86400 - i * 60,
+        )
+    for i in range(3):
+        _insert_recording(
+            conn,
+            f"incoming-{i}",
+            cam_name,
+            f"/tmp/inc-{i}.mp4",
+            start_time=now - t1_min_days * 86400 + (i + 1) * 10,
+        )
+    # One done recording — must NOT count.
+    _insert_recording(
+        conn,
+        "done-1",
+        cam_name,
+        "/tmp/done.mp4",
+        start_time=now - (t1_min_days + 2) * 86400,
+    )
+    conn.close()
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    fc._record(
+        ctx.compress_db,
+        recording_id="done-1",
+        camera=cam_name,
+        path="/tmp/done.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+
+    # 7 / 1 min = 7/min.
+    workload = fc.measure_workload_per_min(ctx)
+    assert workload == pytest.approx(7.0, abs=0.01)
+    _close_ctx(ctx)
+
+
+def test_throughput_ema_weights_recent_samples_more(monkeypatch):
+    """A sample one tau (60s) after the previous shifts the EWMA by ~63%
+    toward the new value; samples taken rapidly contribute much less."""
+    ema = fc.ThroughputEMA()
+    t = {"now": 1000.0}
+    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
+
+    # First sample seeds the value verbatim.
+    assert ema.update(100.0) == pytest.approx(100.0)
+
+    # 60s later → alpha = 1 - 1/e ≈ 0.632 → blend toward 200.
+    t["now"] = 1060.0
+    val_after_60s = ema.update(200.0)
+    assert val_after_60s == pytest.approx(100.0 + 0.632 * (200.0 - 100.0), abs=0.5)
+
+    # 6s later (0.1 tau) → alpha ≈ 0.095 → small shift toward 0.
+    t["now"] = 1066.0
+    val_after_short = ema.update(0.0)
+    expected_alpha = 1.0 - math.exp(-6.0 / 60.0)
+    assert val_after_short == pytest.approx(
+        (1 - expected_alpha) * val_after_60s, abs=0.5
+    )
+
+
+def test_throughput_ema_resets_when_first_sample(monkeypatch):
+    """First-ever sample seeds the value; no smoothing yet."""
+    ema = fc.ThroughputEMA()
+    monkeypatch.setattr(fc.time, "time", lambda: 5000.0)
+    assert ema.update(42.0) == 42.0
+    assert ema.value == 42.0
+
+
+def test_rate_limiter_paces_concurrent_callers(monkeypatch):
+    """Limiter spaces calls to interval = 60/target across all callers."""
+    rl = fc.RateLimiter()
+    stopping = threading.Event()
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(stopping, "wait", lambda timeout=None: sleeps.append(timeout))
+
+    t = {"now": 1000.0}
+    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
+
+    # 3 acquires at 60/min → interval 1.0s; first is free, next two sleep.
+    rl.acquire(60, stopping)  # next=1001, wait=0 → no sleep
+    rl.acquire(60, stopping)  # next=1002, wait=1 → sleep 1
+    rl.acquire(60, stopping)  # next=1003, wait=2 → sleep 2
+
+    assert sleeps == [pytest.approx(1.0), pytest.approx(2.0)]
+
+
+def test_rate_limiter_disabled_is_noop(monkeypatch):
+    """target ≤ 0 returns immediately, no sleep, no state change."""
+    rl = fc.RateLimiter()
+    before = rl.next_allowed
+    stopping = threading.Event()
+    monkeypatch.setattr(stopping, "wait", lambda timeout=None: pytest.fail("slept"))
+    rl.acquire(0, stopping)
+    assert rl.next_allowed == before

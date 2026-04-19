@@ -103,6 +103,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -1225,6 +1226,75 @@ FFMPEG_STDERR_MAX_LEN = 300
 MIN_SLEEP_SEC = 10.0
 MAX_SLEEP_SEC = 600.0
 
+# Throttle target is OVERHEAD × workload (files/min), where workload counts
+# every recording needing compression in the next minute (backlog already
+# past the line + incoming about to cross).  When backlog is large the
+# target far exceeds GPU capacity so the rate limiter never sleeps (full-
+# speed catchup, e.g. 100k backlog → target ~105k/min vs ~170/min capacity).
+# Once the queue drains, target settles to OVERHEAD × the steady-state
+# inflow rate.  Empirical testing showed file size barely predicts encode
+# time (r=0.33, R²=0.11 over 6k samples), so a count-based throttle gets
+# us essentially the same accuracy with less complexity.
+_THROTTLE_WORKLOAD_WINDOW_SEC = 60.0
+_THROTTLE_OVERHEAD = 1.05
+
+
+class RateLimiter:
+    """Thread-safe rate limiter shared across worker threads.
+
+    Workers call ``acquire(target_per_min, stopping)`` after each completed
+    compression.  The limiter spaces concurrent completions evenly so that
+    aggregate throughput stays at or below ``target_per_min`` files/min.
+    No-op when ``target_per_min`` ≤ 0.  State persists across batches.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.next_allowed = 0.0
+
+    def acquire(self, target_per_min: float, stopping: threading.Event) -> None:
+        if target_per_min <= 0:
+            return
+        interval_sec = 60.0 / target_per_min
+        with self.lock:
+            now = time.time()
+            wait = self.next_allowed - now
+            self.next_allowed = max(now, self.next_allowed) + interval_sec
+        if wait > 0:
+            stopping.wait(timeout=wait)
+
+
+@dataclass
+class ThroughputEMA:
+    """Time-weighted exponential moving average of throughput (files/min).
+
+    Each call to ``update`` consumes a fresh sample.  The blend weight is
+    derived from the elapsed time since the previous sample with a 60-second
+    time constant — a sample one minute after the previous contributes
+    ~63% (1 − 1/e) to the new value, two minutes ~86%, etc.  Samples taken
+    rapidly contribute proportionally less, so the EWMA reflects roughly the
+    last-minute behavior even under variable batch cadence.
+
+    Not thread-safe: ``update`` must only be called from the main loop
+    thread.  Workers may read ``value`` (a single float read is atomic in
+    CPython) but must not call ``update``.
+    """
+
+    tau_sec: float = 60.0
+    value: float = 0.0
+    last_sample_time: float = 0.0
+
+    def update(self, sample_per_min: float) -> float:
+        now = time.time()
+        if self.last_sample_time == 0.0:
+            self.value = sample_per_min
+        else:
+            dt = max(now - self.last_sample_time, 0.0)
+            alpha = 1.0 - math.exp(-dt / self.tau_sec)
+            self.value = alpha * sample_per_min + (1.0 - alpha) * self.value
+        self.last_sample_time = now
+        return self.value
+
 
 @dataclass
 class CompressorContext:
@@ -1238,6 +1308,8 @@ class CompressorContext:
     frigate_ro: sqlite3.Connection
     frigate_rw: sqlite3.Connection
     compress_db: sqlite3.Connection | None = None
+    rate_limiter: RateLimiter = field(default_factory=RateLimiter)
+    throughput_ema: ThroughputEMA = field(default_factory=ThroughputEMA)
 
 
 def _recording_type(motion: int | None, objects: int | None) -> str:
@@ -1718,39 +1790,37 @@ def _min_tier1_min_days(cfg: Config) -> int:
 _ELIGIBLE_BATCH_SIZE = 500
 
 
-def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
-    """
-    Returns up to ``_ELIGIBLE_BATCH_SIZE`` recordings eligible for compression
-    that haven't been successfully compressed yet.  Each result dict has keys:
-        recording_id, camera, path, tier, recording_type
+def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]:
+    """Build the SQL WHERE clause + params shared by eligible-recordings queries.
 
-    All filtering is done in SQL — camera, age, and tier completion status.
-    """
-    cfg = ctx.cfg
-    now = time.time()
+    ``effective_now`` is "now" for normal eligibility queries.  Callers can
+    pass a future-shifted value to count recordings that *will* be eligible
+    by that time (current backlog + incoming).
 
+    Returns ("", []) if no enabled cameras have any enabled tier — caller must
+    short-circuit (no rows can match).
+    """
     _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
     ok_placeholders = ",".join("?" for _ in _ok_statuses)
 
-    # Build per-camera eligibility conditions.
     # A recording needs work if:
     #   - tier1 enabled AND old enough AND t1 not done, OR
     #   - tier2 enabled AND old enough AND t1 done AND t2 not done
     cam_clauses: list[str] = []
-    params: list[str | int | float] = []
+    params: list = []
     for name, cam in cfg.cameras.items():
         if not cam.enabled:
             continue
         subclauses = []
         sub_params: list = []
         if cam.tier1.enabled:
-            t1_cutoff = now - (cam.tier1.min_days * 86400)
+            t1_cutoff = effective_now - (cam.tier1.min_days * 86400)
             subclauses.append(
                 f"(r.start_time < ? AND (f.t1_status IS NULL OR f.t1_status NOT IN ({ok_placeholders})))"
             )
             sub_params.extend([t1_cutoff, *_ok_statuses])
         if cam.tier2.enabled:
-            t2_cutoff = now - (cam.tier2.min_days * 86400)
+            t2_cutoff = effective_now - (cam.tier2.min_days * 86400)
             subclauses.append(
                 f"(r.start_time < ? AND f.t1_status IN ({ok_placeholders}) AND (f.t2_status IS NULL OR f.t2_status NOT IN ({ok_placeholders})))"
             )
@@ -1763,20 +1833,39 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
         params.extend(sub_params)
 
     if not cam_clauses:
-        return []
+        return "", []
+    return " OR ".join(cam_clauses), params
 
-    where = " OR ".join(cam_clauses)
-    params.append(_ELIGIBLE_BATCH_SIZE)
 
+def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
+    """Open a read-only compress-db connection with frigate.recordings attached."""
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
+    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
+    conn.execute(
+        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
+    )
+    return conn
+
+
+def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
+    """
+    Returns up to ``_ELIGIBLE_BATCH_SIZE`` recordings eligible for compression
+    that haven't been successfully compressed yet.  Each result dict has keys:
+        recording_id, camera, path, tier, recording_type
+
+    All filtering is done in SQL — camera, age, and tier completion status.
+    """
+    cfg = ctx.cfg
+    where, params = _build_eligible_where(cfg, time.time())
+    if not where:
+        return []
+    params.append(_ELIGIBLE_BATCH_SIZE)
+
+    conn = _open_eligible_conn(cfg)
     try:
-        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        conn.execute(
-            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
-        )
         rows = conn.execute(
             f"""
             SELECT r.id, r.camera, r.path, r.start_time,
@@ -1793,6 +1882,7 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     finally:
         conn.close()
 
+    _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
     results = []
     for row in rows:
         camera = row["camera"]
@@ -3072,6 +3162,11 @@ def main() -> int:
     log("INFO", f"  Parallel jobs  : {cfg.max_parallel_jobs}")
     log("INFO", f"  Log level      : {cfg.log_level}")
     log("INFO", f"  Housekeeping   : every {cfg.housekeeping_interval_days}d")
+    log(
+        "INFO",
+        f"  Throttle       : auto (target ≈ {_THROTTLE_OVERHEAD}× pending "
+        f"work/min; smoothed via recent throughput)",
+    )
     log("INFO", f"  Frigate DB     : {cfg.frigate_db}")
     log("INFO", f"  Recordings     : {cfg.recordings_dir}")
     log("INFO", f"  Compress DB    : {cfg.compress_db}")
@@ -3151,6 +3246,120 @@ def main() -> int:
     return 0
 
 
+def measure_workload_per_min(ctx: CompressorContext) -> float:
+    """Recordings needing compression in the next minute, per minute.
+
+    Counts every recording that will be eligible by ``now + window`` and
+    isn't yet processed for the relevant tier — backlog (already past the
+    line ⇒ we've fallen behind) plus incoming (about to cross).  Divided
+    by window-minutes gives the rate the throttle targets.
+    """
+    cfg = ctx.cfg
+    window_sec = _THROTTLE_WORKLOAD_WINDOW_SEC
+    where, params = _build_eligible_where(cfg, time.time() + window_sec)
+    if not where:
+        return 0.0
+
+    conn = _open_eligible_conn(cfg)
+    try:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM   frigate_eligible.recordings r
+            LEFT JOIN files f ON f.recording_id = r.id
+            WHERE  ({where})
+            """,
+            params,
+        ).fetchone()
+    finally:
+        conn.close()
+    n = int(row["n"]) if row else 0
+    return n / (window_sec / 60.0)
+
+
+def sample_throughput_per_min(
+    ctx: CompressorContext, window_sec: float = 60.0
+) -> float:
+    """Observed throughput: tier1 + tier2 completions per minute over window.
+
+    Note: cutoff is formatted in local time to match ``_record``'s
+    ``time.strftime`` storage format.  This works correctly except across
+    DST transitions, where one hour of completions can be double-counted
+    (fall-back) or missed (spring-forward).
+    """
+    cfg = ctx.cfg
+    cutoff_str = time.strftime(
+        "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - window_sec)
+    )
+    conn = sqlite3.connect(
+        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM files"
+            " WHERE t1_compressed_at >= ? OR t2_compressed_at >= ?",
+            (cutoff_str, cutoff_str),
+        ).fetchone()
+    finally:
+        conn.close()
+    n = int(row[0]) if row else 0
+    return n / (window_sec / 60.0)
+
+
+def _effective_throttle_target(ctx: CompressorContext) -> float:
+    """Throttle target in files/min for the next batch.  Pure read of state.
+
+    target = max(workload × OVERHEAD, speed_ema)
+
+    Workload encodes "what we need to do" (backlog + next-minute incoming).
+    The EWMA value, read from ``ctx.throughput_ema.value``, encodes "what
+    we're actually doing right now".  Caller is responsible for sampling +
+    updating the EWMA before calling this function — keeping the side
+    effect explicit at the call site rather than buried here.
+
+    The max() gives smooth catchup-tail transitions: workload >> speed
+    during catchup → huge target, limiter is a no-op; as backlog drains,
+    workload falls, EWMA holds the floor while it decays over the 60s
+    time constant.
+
+    Returns 0 (no throttle) when there's no eligible work and no recent
+    activity.
+    """
+    try:
+        workload = measure_workload_per_min(ctx)
+    except Exception as e:
+        log("WARNING", f"throttle: workload measurement failed: {e}")
+        return 0.0
+    speed_ema = ctx.throughput_ema.value
+    if workload <= 0 and speed_ema <= 0:
+        return 0.0
+    target = max(workload * _THROTTLE_OVERHEAD, speed_ema)
+    log(
+        "INFO",
+        f"Throttle: target {target:.0f}/min "
+        f"(workload={workload:.0f}/min, speed_ema={speed_ema:.0f}/min)",
+    )
+    return target
+
+
+def _compress_then_pace(
+    target_per_min: float,
+    stopping: threading.Event,
+    rid: str,
+    path: str,
+    camera: str,
+    tier: int,
+    rtype: str,
+    encoder: str,
+    ctx: CompressorContext,
+) -> bool:
+    """Worker wrapper: run compress_one then pace via the shared rate limiter."""
+    try:
+        return compress_one(rid, path, camera, tier, rtype, encoder, ctx)
+    finally:
+        ctx.rate_limiter.acquire(target_per_min, stopping)
+
+
 def run_main_loop(
     ctx: CompressorContext,
     encoder: str,
@@ -3191,10 +3400,19 @@ def run_main_loop(
             )
             log("INFO", f"  per-camera: {breakdown}")
 
+            # Refresh throughput EWMA before computing target — keeps the
+            # side effect at the call site instead of inside _effective_*.
+            try:
+                ctx.throughput_ema.update(sample_throughput_per_min(ctx))
+            except Exception as e:
+                log("WARNING", f"throttle: throughput sample failed: {e}")
+            target_per_min = _effective_throttle_target(ctx)
             pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
                 pool.submit(
-                    compress_one,
+                    _compress_then_pace,
+                    target_per_min,
+                    stopping,
                     r["recording_id"],
                     r["path"],
                     r["camera"],
@@ -3223,13 +3441,12 @@ def run_main_loop(
             # re-querying would return the same set.  Fall through to sleep.
             if cfg.all_dry_run:
                 pass  # fall through to sleep
-            elif len(eligible) >= _ELIGIBLE_BATCH_SIZE:
-                # Full batch — there's likely more work.  Loop back
-                # immediately without sleeping.
-                continue
             else:
-                # Partial batch — we're caught up.  Re-check in case
-                # more recordings aged in while we were busy.
+                # Per-file pacing in the workers already enforced the
+                # target rate.  Loop back immediately so we keep draining
+                # backlog (or aged-in incoming) without an extra delay
+                # here.  Returning a partial batch doesn't mean the queue
+                # is empty — we re-check every pass.
                 continue
 
         # ── No work — sleep until the next recording becomes eligible ────
