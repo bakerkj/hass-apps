@@ -2280,7 +2280,6 @@ def _fmt(n: int | float | None, width: int = 0) -> str:
         else:
             s = f"{n:.1f}PB"
     return s.rjust(width) if width else s
-    return f"{n:.1f}PB"
 
 
 def _fmt_type(ts: TypeSettings) -> str:
