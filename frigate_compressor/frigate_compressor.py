@@ -1216,35 +1216,30 @@ FFMPEG_TIMEOUT_SEC = 30
 # Max bytes of ffmpeg stderr text stored in the compress DB error_msg column.
 FFMPEG_STDERR_MAX_LEN = 300
 
-# Bounds on the main loop's sleep between compression passes.
-# - MIN is a busy-loop guard: prevents the loop from spinning if
-#   ``time_until_next_eligible`` ever returns 0 or negative.  Kept very
-#   small so it doesn't interfere with smooth pacing — when each camera
-#   produces a segment every ~10s, a 10s floor here would idle the
-#   compressor between bursts (drain a batch in ~5s, sit idle for ~7s).
-# - MAX caps the wait so that even pathological states (frigate paused,
-#   long fallback paths) re-check at least every 10 minutes instead of
-#   sleeping for hours or days at a time.
-MIN_SLEEP_SEC = 0.1
-MAX_SLEEP_SEC = 600.0
-
-# Throttle target is OVERHEAD × workload (files/min), where workload counts
-# every recording needing compression in the next minute (backlog already
-# past the line + incoming about to cross).  When backlog is large the
-# target far exceeds GPU capacity so the rate limiter never sleeps (full-
-# speed catchup, e.g. 100k backlog → target ~105k/min vs ~170/min capacity).
-# Once the queue drains, target settles to OVERHEAD × the steady-state
-# inflow rate.  Empirical testing showed file size barely predicts encode
-# time (r=0.33, R²=0.11 over 6k samples), so a count-based throttle gets
-# us essentially the same accuracy with less complexity.
-_THROTTLE_WORKLOAD_WINDOW_SEC = 60.0
-_THROTTLE_OVERHEAD = 1.05
+# Throttle target is workload (files/min), where workload counts every
+# recording needing compression in the next minute (backlog already past
+# the line + incoming about to cross).  When backlog is large the target
+# far exceeds GPU capacity so the rate limiter never sleeps (full-speed
+# catchup, e.g. 100k backlog → target ~100k/min vs ~170/min capacity).
+# Once the queue drains, target settles to the steady-state inflow rate.
+# Empirical testing showed file size barely predicts encode time (r=0.33,
+# R²=0.11 over 6k samples), so a count-based throttle gets us essentially
+# the same accuracy with less complexity.
+#
+# Single window controls both the workload lookahead and the refresh
+# cadence: each measurement counts recordings that will be eligible in
+# the next ``_THROTTLE_WINDOW_SEC`` seconds, and the main loop recomputes
+# every ``_THROTTLE_WINDOW_SEC`` seconds.  Setting them equal cleanly
+# tiles the timeline — each measurement covers exactly the time until
+# the next one (no overlap, no gaps).  Decoupling them would just create
+# either redundant work or coverage holes.
+_THROTTLE_WINDOW_SEC = 60.0
 
 
 class RateLimiter:
     """Thread-safe rate limiter shared across worker threads.
 
-    ``target_per_min`` is set by the main loop at the top of each iteration
+    ``target_per_min`` is set by the main loop on a fixed 60s cadence
     (a single-writer, multi-reader pattern).  Workers call ``acquire`` and
     read whatever target is in effect at that moment.  No-op when target
     ≤ 0 (initial state, or no eligible work).
@@ -1756,16 +1751,6 @@ def _compress_one_inner(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _min_tier1_min_days(cfg: Config) -> int:
-    """Return the smallest tier1.min_days across all enabled cameras."""
-    days = [
-        cam.tier1.min_days
-        for cam in cfg.cameras.values()
-        if cam.enabled and cam.tier1.enabled
-    ]
-    return min(days) if days else 7
-
-
 _ELIGIBLE_BATCH_SIZE = 500
 
 
@@ -1875,60 +1860,6 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             }
         )
     return results
-
-
-def time_until_next_eligible(ctx: CompressorContext) -> float:
-    """
-    Returns seconds until the next recording becomes eligible for either
-    tier 1 or tier 2 compression, clamped to ``[MIN_SLEEP_SEC, MAX_SLEEP_SEC]``.
-
-    Returns ``MAX_SLEEP_SEC`` if nothing is pending.
-    """
-    cfg = ctx.cfg
-    now = time.time()
-    soonest = MAX_SLEEP_SEC
-
-    # Check tier 1: next recording aging past min_days.
-    min_t1_days = _min_tier1_min_days(cfg)
-    t1_cutoff = now - (min_t1_days * 86400)
-    row = ctx.frigate_ro.execute(
-        """
-        SELECT start_time FROM recordings
-        WHERE  start_time > ?
-        ORDER  BY start_time ASC
-        LIMIT  1
-        """,
-        (t1_cutoff,),
-    ).fetchone()
-    if row is not None:
-        eligible_at = row["start_time"] + (min_t1_days * 86400)
-        soonest = min(soonest, eligible_at - now)
-
-    # Check tier 2: next t1-compressed recording aging past tier2.min_days.
-    min_t2_days = min(
-        (
-            cam.tier2.min_days
-            for cam in cfg.cameras.values()
-            if cam.enabled and cam.tier2.enabled
-        ),
-        default=None,
-    )
-    if min_t2_days is not None:
-        t2_cutoff = now - (min_t2_days * 86400)
-        row = ctx.frigate_ro.execute(
-            """
-            SELECT start_time FROM recordings
-            WHERE  start_time > ?
-            ORDER  BY start_time ASC
-            LIMIT  1
-            """,
-            (t2_cutoff,),
-        ).fetchone()
-        if row is not None:
-            eligible_at = row["start_time"] + (min_t2_days * 86400)
-            soonest = min(soonest, eligible_at - now)
-
-    return max(MIN_SLEEP_SEC, min(MAX_SLEEP_SEC, soonest))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3132,10 +3063,7 @@ def main() -> int:
     log("INFO", f"  Parallel jobs  : {cfg.max_parallel_jobs}")
     log("INFO", f"  Log level      : {cfg.log_level}")
     log("INFO", f"  Housekeeping   : every {cfg.housekeeping_interval_days}d")
-    log(
-        "INFO",
-        f"  Throttle       : auto (target = {_THROTTLE_OVERHEAD}× pending work/min)",
-    )
+    log("INFO", "  Throttle       : auto (target = pending work/min)")
     log("INFO", f"  Frigate DB     : {cfg.frigate_db}")
     log("INFO", f"  Recordings     : {cfg.recordings_dir}")
     log("INFO", f"  Compress DB    : {cfg.compress_db}")
@@ -3224,7 +3152,7 @@ def measure_workload_per_min(ctx: CompressorContext) -> float:
     by window-minutes gives the rate the throttle targets.
     """
     cfg = ctx.cfg
-    window_sec = _THROTTLE_WORKLOAD_WINDOW_SEC
+    window_sec = _THROTTLE_WINDOW_SEC
     where, params = _build_eligible_where(cfg, time.time() + window_sec)
     if not where:
         return 0.0
@@ -3247,14 +3175,13 @@ def measure_workload_per_min(ctx: CompressorContext) -> float:
 
 
 def _effective_throttle_target(ctx: CompressorContext) -> float:
-    """Throttle target in files/min for the next batch.
-
-    target = workload × OVERHEAD
+    """Throttle target in files/min for the next batch — equals the
+    measured workload.
 
     Workload counts every recording needing compression in the next minute
     (backlog already past the line + incoming about to cross).  During
     catchup, workload >> capacity so the limiter is effectively a no-op;
-    once drained, the target settles to ~OVERHEAD × steady-state inflow.
+    once drained, the target settles to the steady-state inflow rate.
 
     Returns 0 (no throttle) when there's no eligible work.
     """
@@ -3265,12 +3192,8 @@ def _effective_throttle_target(ctx: CompressorContext) -> float:
         return 0.0
     if workload <= 0:
         return 0.0
-    target = workload * _THROTTLE_OVERHEAD
-    log(
-        "INFO",
-        f"Throttle: target {target:.0f}/min (workload={workload:.0f}/min)",
-    )
-    return target
+    log("INFO", f"Throttle: target {workload:.0f}/min")
+    return workload
 
 
 def _pace_then_compress(
@@ -3312,6 +3235,9 @@ def run_main_loop(
     """
     cfg = ctx.cfg
     last_housekeeping = time.time()
+    # Force throttle compute on the first iteration so target leaves its
+    # initial 0; after that, refresh on a fixed cadence.
+    last_throttle_refresh = 0.0
 
     while not stopping.is_set():
         # ── Housekeeping ──────────────────────────────────────────────────
@@ -3322,13 +3248,16 @@ def run_main_loop(
                 log("ERROR", f"Housekeeping failed: {e}")
             last_housekeeping = time.time()
 
-        # ── Refresh throttle target ───────────────────────────────────────
-        # Recompute every iteration so backlog spikes raise the target
-        # immediately and the limiter no-ops when the queue is empty.
-        try:
-            ctx.rate_limiter.set_target(_effective_throttle_target(ctx))
-        except Exception as e:
-            log("WARNING", f"throttle: {e}")
+        # ── Refresh throttle target on the window cadence ────────────────
+        # Workload is itself a window-sized measurement, so recomputing
+        # more often just adds noise (DB queries + log spam) without
+        # changing the target meaningfully.
+        if (time.time() - last_throttle_refresh) >= _THROTTLE_WINDOW_SEC:
+            try:
+                ctx.rate_limiter.set_target(_effective_throttle_target(ctx))
+            except Exception as e:
+                log("WARNING", f"throttle: {e}")
+            last_throttle_refresh = time.time()
 
         # ── Find eligible recordings ──────────────────────────────────────
         try:
@@ -3376,31 +3305,18 @@ def run_main_loop(
             else:
                 pool.shutdown(wait=True)
 
-            # In dry-run mode, recordings are never marked as done, so
-            # re-querying would return the same set.  Fall through to sleep.
-            if cfg.all_dry_run:
-                pass  # fall through to sleep
-            else:
-                # Per-file pacing in the workers already enforced the
-                # target rate.  Loop back immediately so we keep draining
-                # backlog (or aged-in incoming) without an extra delay
-                # here.  Returning a partial batch doesn't mean the queue
-                # is empty — we re-check every pass.
+            # If we hit the batch LIMIT there's almost certainly more work
+            # waiting (catchup mode).  Skip the sleep so backlog drains
+            # flat-out.  Dry-run can never make progress this way (recordings
+            # aren't marked done), so always fall through to sleep there.
+            if not cfg.all_dry_run and len(eligible) >= _ELIGIBLE_BATCH_SIZE:
                 continue
 
-        # ── No work — sleep until the next recording becomes eligible ────
-        if not stopping.is_set():
-            try:
-                sleep_sec = time_until_next_eligible(ctx)
-            except Exception as e:
-                log("WARNING", f"time_until_next_eligible failed: {e}")
-                sleep_sec = MAX_SLEEP_SEC
-
-            log("INFO", f"Next check in {sleep_sec / 60:.1f} min")
-
-            # stopping.wait() returns immediately when the event is set, so a
-            # signal wakes us without waiting for the full sleep duration.
-            stopping.wait(timeout=sleep_sec)
+        # ── Sleep one window before the next pass ────────────────────────
+        # All work — eligibility query, throttle refresh, batch processing —
+        # is naturally aligned to a 60s heartbeat.  ``stopping.wait`` returns
+        # immediately when the event is set, so a signal wakes us promptly.
+        stopping.wait(timeout=_THROTTLE_WINDOW_SEC)
 
 
 if __name__ == "__main__":
