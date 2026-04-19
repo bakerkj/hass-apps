@@ -760,10 +760,10 @@ def _eligible_row(rid: str = "r1", camera: str = "cam1") -> dict:
     }
 
 
-def test_run_main_loop_sleeps_one_window_after_partial_batch(monkeypatch, tmp_path):
-    """A partial batch (fewer than _ELIGIBLE_BATCH_SIZE files) means we've
-    drained the queue — the loop should sleep one full window before the
-    next pass instead of immediately re-querying."""
+def test_run_main_loop_sleeps_remainder_after_partial_batch(monkeypatch, tmp_path):
+    """A partial batch that processes fast (mocked instant compress) means
+    elapsed << window — the loop should sleep approximately the full window
+    to keep the iteration cycle ≈ _THROTTLE_WINDOW_SEC."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
@@ -776,7 +776,7 @@ def test_run_main_loop_sleeps_one_window_after_partial_batch(monkeypatch, tmp_pa
 
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
-    # Skip per-file throttle pacing so we observe only the post-batch sleep.
+    # Skip per-file throttle pacing so we observe only the iteration sleep.
     monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
 
     stopping = threading.Event()
@@ -793,32 +793,47 @@ def test_run_main_loop_sleeps_one_window_after_partial_batch(monkeypatch, tmp_pa
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
     assert eligible_calls["n"] == 1
-    assert wait_timeouts == [fc._THROTTLE_WINDOW_SEC]
+    # elapsed ≈ 0 (instant mocked compress) → sleep ≈ full window.
+    assert wait_timeouts == [pytest.approx(fc._THROTTLE_WINDOW_SEC, abs=1.0)]
 
     _close_ctx(ctx)
     frigate_conn.close()
 
 
-def test_run_main_loop_continues_immediately_on_full_batch(monkeypatch, tmp_path):
-    """A full batch (== _ELIGIBLE_BATCH_SIZE) signals more work is waiting —
-    the loop must skip the post-batch sleep and re-query immediately so
-    catchup runs flat-out."""
+def test_run_main_loop_skips_sleep_when_processing_overruns_window(
+    monkeypatch, tmp_path
+):
+    """If processing took longer than _THROTTLE_WINDOW_SEC (catchup mode:
+    batch outran capacity), the loop must not sleep — it should re-query
+    immediately so backlog drains flat-out."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    # Mocked time so we can simulate "processing took 90 seconds".
+    t = {"now": 1000.0}
+    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
 
     eligible_calls = {"n": 0}
 
     def fake_eligible(_ctx):
         eligible_calls["n"] += 1
-        # Pass 1: full batch.  Pass 2: empty (forces sleep, ends test).
         if eligible_calls["n"] == 1:
-            return [_eligible_row(f"r{i}") for i in range(fc._ELIGIBLE_BATCH_SIZE)]
+            return [_eligible_row("r1")]
         return []
 
+    def fake_compress(*_args, **_kwargs):
+        # Simulate slow compression — push wall-clock past the window.
+        t["now"] += fc._THROTTLE_WINDOW_SEC + 30
+        return True
+
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc, "compress_one", fake_compress)
     monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
+    # Make the no-work path return a sentinel so the test ends predictably.
+    # The loop adds _THROTTLE_WINDOW_SEC to this so the first batch on wake
+    # has one full window of accumulated work.
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 333.0)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -826,24 +841,29 @@ def test_run_main_loop_continues_immediately_on_full_batch(monkeypatch, tmp_path
 
     def fake_wait(timeout=None):
         wait_timeouts.append(timeout)
+        if timeout is not None:
+            t["now"] += timeout
         stopping.set()
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # Two eligibility queries: the full batch (continued immediately) then the
-    # empty pass that finally hits the sleep.
+    # Pass 1's processing took 90s (> 60s window), so no sleep was scheduled
+    # — we went straight to pass 2.  Pass 2 was empty → no-work sleep
+    # (333 + window) was the only call to wait().
     assert eligible_calls["n"] == 2
-    assert wait_timeouts == [fc._THROTTLE_WINDOW_SEC]
+    assert wait_timeouts == [333.0 + fc._THROTTLE_WINDOW_SEC]
 
     _close_ctx(ctx)
     frigate_conn.close()
 
 
-def test_run_main_loop_sleeps_one_window_when_no_work(monkeypatch, tmp_path):
-    """An empty queue means the loop sleeps one window before re-checking."""
+def test_run_main_loop_sleeps_until_next_eligible_when_no_work(monkeypatch, tmp_path):
+    """An empty queue means we sleep until the next recording becomes
+    eligible PLUS one full window — so the first batch on wake has a
+    window's worth of accumulated work, not a lone first-eligible file.
+    Capped at MAX_SLEEP_SEC."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
@@ -860,6 +880,11 @@ def test_run_main_loop_sleeps_one_window_when_no_work(monkeypatch, tmp_path):
         compress_calls["n"] += 1
         return True
 
+    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    # Pin to a known value so we can assert it precisely.
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 137.0)
+
     stopping = threading.Event()
     real_wait = stopping.wait
 
@@ -868,15 +893,71 @@ def test_run_main_loop_sleeps_one_window_when_no_work(monkeypatch, tmp_path):
         stopping.set()
         return real_wait(timeout=0)
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", fake_compress)
     monkeypatch.setattr(stopping, "wait", fake_wait)
-
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
     assert eligible_calls["n"] == 1
     assert compress_calls["n"] == 0
-    assert wait_timeouts == [fc._THROTTLE_WINDOW_SEC]
+    assert wait_timeouts == [137.0 + fc._THROTTLE_WINDOW_SEC]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_run_main_loop_no_work_sleep_capped_at_max(monkeypatch, tmp_path):
+    """If next eligible is far in the future, the sleep is clamped."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 99_999.0)
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+    wait_timeouts: list[float | None] = []
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    assert wait_timeouts == [fc.MAX_SLEEP_SEC]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_run_main_loop_no_work_sleep_handles_query_exception(monkeypatch, tmp_path):
+    """If the no-work query throws, fall back to MAX_SLEEP_SEC instead of
+    crashing the loop."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+
+    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+
+    def boom(_ctx):
+        raise RuntimeError("frigate db went away")
+
+    monkeypatch.setattr(fc, "time_until_next_eligible", boom)
+
+    stopping = threading.Event()
+    real_wait = stopping.wait
+    wait_timeouts: list[float | None] = []
+
+    def fake_wait(timeout=None):
+        wait_timeouts.append(timeout)
+        stopping.set()
+        return real_wait(timeout=0)
+
+    monkeypatch.setattr(stopping, "wait", fake_wait)
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+
+    assert wait_timeouts == [fc.MAX_SLEEP_SEC]
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -998,8 +1079,9 @@ def test_pace_then_compress_propagates_compress_exception(monkeypatch):
 
 
 def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
-    """End-to-end: don't mock the limiter; pre-set its target and verify
-    workers sleep at the expected per-file interval."""
+    """End-to-end: don't mock the limiter.  6 files at target=6/min → 5
+    pacing sleeps of 10s each, then the elapsed-remainder fills out the
+    iteration to one window, then the no-work sleep ends the test."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
@@ -1011,13 +1093,16 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
 
     def fake_eligible(_ctx):
         eligible_calls["n"] += 1
-        # Pass 1: 6 files → target=6/min → interval=10s.  Pass 2: empty.
         if eligible_calls["n"] == 1:
             return [_eligible_row(f"r{i}") for i in range(6)]
         return []
 
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    # No-work sleep will be capped to MAX_SLEEP_SEC; mock returns a value
+    # well above that so we can identify it as "the no-work sleep" in the
+    # asserted sleep list.
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 9999.0)
 
     sleeps: list[float] = []
     stopping = threading.Event()
@@ -1027,8 +1112,8 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
         sleeps.append(timeout)
         if timeout is not None:
             t["now"] += timeout
-        # The 60s post-batch sleep ends the test.
-        if timeout is not None and timeout >= fc._THROTTLE_WINDOW_SEC:
+        # The no-work sleep (capped at MAX_SLEEP_SEC) ends the test.
+        if timeout is not None and timeout >= fc.MAX_SLEEP_SEC:
             stopping.set()
         return real_wait(timeout=0)
 
@@ -1036,13 +1121,13 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
 
     fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # 6 files at target=6/min → interval=10s.  First file: no wait.
-    # Next five: 10s each.  Then trailing _THROTTLE_WINDOW_SEC post-batch sleep.
-    throttle_sleeps = [s for s in sleeps if s != fc._THROTTLE_WINDOW_SEC]
-    assert len(throttle_sleeps) == 5
-    for s in throttle_sleeps:
-        assert s == pytest.approx(10.0, abs=0.05)
-    assert sleeps[-1] == fc._THROTTLE_WINDOW_SEC
+    # Iter 1: 6 files at interval=10s.  First file fires immediately;
+    #   workers sleep 10s × 5 between starts (50s total wall-clock).
+    #   Then elapsed=50s, post-batch sleep=10s fills out the window.
+    # Iter 2: empty → MAX-capped no-work sleep ends the test.
+    assert sleeps[:6] == [pytest.approx(10.0, abs=0.05)] * 6
+    assert sleeps[-1] == fc.MAX_SLEEP_SEC
+    assert len(sleeps) == 7
 
     _close_ctx(ctx)
     frigate_conn.close()

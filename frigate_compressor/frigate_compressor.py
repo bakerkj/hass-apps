@@ -1220,16 +1220,16 @@ FFMPEG_STDERR_MAX_LEN = 300
 # is, "process the work we have in roughly one minute".  When backlog is
 # large the eligible query hits ``_ELIGIBLE_BATCH_SIZE`` (LIMIT) and the
 # target far exceeds GPU capacity, so the rate limiter never sleeps
-# (full-speed catchup); the loop's catchup branch (``continue`` on full
-# batch) keeps backlog draining flat-out.  Empirical testing showed file
-# size barely predicts encode time (r=0.33, R²=0.11 over 6k samples), so
-# a count-based throttle gets us essentially the same accuracy with less
-# complexity.
+# (full-speed catchup) and processing naturally takes longer than a
+# window; the loop skips the post-batch sleep in that case.
 #
-# After each batch (or empty pass), the loop sleeps one window before
-# re-querying — a fixed heartbeat that keeps DB queries and log noise
-# bounded.
+# When work IS available, the loop targets a fixed iteration cycle of
+# one window — sleep at the end is whatever's left after processing.
+# When NO work is available, sleep until the next recording becomes
+# eligible (capped at ``MAX_SLEEP_SEC`` so pathological states still
+# re-check periodically).
 _THROTTLE_WINDOW_SEC = 60.0
+MAX_SLEEP_SEC = 600.0
 
 
 class RateLimiter:
@@ -1856,6 +1856,59 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             }
         )
     return results
+
+
+def _min_tier1_min_days(cfg: Config) -> int:
+    """Smallest ``tier1.min_days`` across enabled cameras (default 7)."""
+    days = [
+        cam.tier1.min_days
+        for cam in cfg.cameras.values()
+        if cam.enabled and cam.tier1.enabled
+    ]
+    return min(days) if days else 7
+
+
+def time_until_next_eligible(ctx: CompressorContext) -> float:
+    """Seconds until the next recording becomes eligible for tier 1 or
+    tier 2 compression.  Returns ``MAX_SLEEP_SEC`` if nothing is pending
+    so the loop still re-checks periodically.
+
+    Used only by the no-work sleep path — when there is eligible work,
+    the loop sleeps the remainder of ``_THROTTLE_WINDOW_SEC`` instead.
+    """
+    cfg = ctx.cfg
+    now = time.time()
+    soonest = MAX_SLEEP_SEC
+
+    min_t1_days = _min_tier1_min_days(cfg)
+    t1_cutoff = now - (min_t1_days * 86400)
+    row = ctx.frigate_ro.execute(
+        "SELECT start_time FROM recordings"
+        " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
+        (t1_cutoff,),
+    ).fetchone()
+    if row is not None:
+        soonest = min(soonest, row["start_time"] + min_t1_days * 86400 - now)
+
+    min_t2_days = min(
+        (
+            cam.tier2.min_days
+            for cam in cfg.cameras.values()
+            if cam.enabled and cam.tier2.enabled
+        ),
+        default=None,
+    )
+    if min_t2_days is not None:
+        t2_cutoff = now - (min_t2_days * 86400)
+        row = ctx.frigate_ro.execute(
+            "SELECT start_time FROM recordings"
+            " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
+            (t2_cutoff,),
+        ).fetchone()
+        if row is not None:
+            soonest = min(soonest, row["start_time"] + min_t2_days * 86400 - now)
+
+    return min(MAX_SLEEP_SEC, max(0.0, soonest))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3180,8 +3233,12 @@ def run_main_loop(
     last_housekeeping = time.time()
 
     while not stopping.is_set():
+        # Each iteration aims to take exactly ``_THROTTLE_WINDOW_SEC``
+        # wall-clock — sleep at the end is whatever's left over.
+        iter_start = time.time()
+
         # ── Housekeeping ──────────────────────────────────────────────────
-        if (time.time() - last_housekeeping) >= housekeeping_interval_sec:
+        if (iter_start - last_housekeeping) >= housekeeping_interval_sec:
             try:
                 run_housekeeping(ctx)
             except Exception as e:
@@ -3243,18 +3300,34 @@ def run_main_loop(
             else:
                 pool.shutdown(wait=True)
 
-            # If we hit the batch LIMIT there's almost certainly more work
-            # waiting (catchup mode).  Skip the sleep so backlog drains
-            # flat-out.  Dry-run can never make progress this way (recordings
-            # aren't marked done), so always fall through to sleep there.
-            if not cfg.all_dry_run and len(eligible) >= _ELIGIBLE_BATCH_SIZE:
-                continue
-
-        # ── Sleep one window before the next pass ────────────────────────
-        # All work — eligibility query, throttle refresh, batch processing —
-        # is naturally aligned to a 60s heartbeat.  ``stopping.wait`` returns
-        # immediately when the event is set, so a signal wakes us promptly.
-        stopping.wait(timeout=_THROTTLE_WINDOW_SEC)
+        # ── Sleep until the next iteration ───────────────────────────────
+        # Three cases:
+        #   1. Work was processed: sleep the remainder of the window so
+        #      total iteration = one window.  If processing overran the
+        #      window (catchup: batch outran capacity), don't sleep.
+        #   2. No work: sleep until the next recording becomes eligible
+        #      PLUS one full window — so when we wake there's ~one
+        #      window of accumulated work to process as a proper batch,
+        #      not a lone first-eligible file.  Capped at MAX_SLEEP_SEC
+        #      so pathological states still re-check every 10 minutes.
+        #   3. Dry-run with work: recordings are never marked done, so
+        #      we force a full window sleep to avoid looping instantly
+        #      on the same un-marked files.
+        if eligible and cfg.all_dry_run:
+            sleep_sec = _THROTTLE_WINDOW_SEC
+        elif eligible:
+            sleep_sec = max(0.0, _THROTTLE_WINDOW_SEC - (time.time() - iter_start))
+        else:
+            try:
+                sleep_sec = min(
+                    time_until_next_eligible(ctx) + _THROTTLE_WINDOW_SEC,
+                    MAX_SLEEP_SEC,
+                )
+            except Exception as e:
+                log("WARNING", f"time_until_next_eligible failed: {e}")
+                sleep_sec = MAX_SLEEP_SEC
+        if sleep_sec > 0:
+            stopping.wait(timeout=sleep_sec)
 
 
 if __name__ == "__main__":
