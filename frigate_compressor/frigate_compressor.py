@@ -103,7 +103,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import signal
@@ -1218,12 +1217,15 @@ FFMPEG_TIMEOUT_SEC = 30
 FFMPEG_STDERR_MAX_LEN = 300
 
 # Bounds on the main loop's sleep between compression passes.
-# - MIN avoids hammering Frigate's DB when a recording is just barely
-#   under the eligibility threshold.
+# - MIN is a busy-loop guard: prevents the loop from spinning if
+#   ``time_until_next_eligible`` ever returns 0 or negative.  Kept very
+#   small so it doesn't interfere with smooth pacing — when each camera
+#   produces a segment every ~10s, a 10s floor here would idle the
+#   compressor between bursts (drain a batch in ~5s, sit idle for ~7s).
 # - MAX caps the wait so that even pathological states (frigate paused,
 #   long fallback paths) re-check at least every 10 minutes instead of
 #   sleeping for hours or days at a time.
-MIN_SLEEP_SEC = 10.0
+MIN_SLEEP_SEC = 0.1
 MAX_SLEEP_SEC = 600.0
 
 # Throttle target is OVERHEAD × workload (files/min), where workload counts
@@ -1236,17 +1238,14 @@ MAX_SLEEP_SEC = 600.0
 # time (r=0.33, R²=0.11 over 6k samples), so a count-based throttle gets
 # us essentially the same accuracy with less complexity.
 _THROTTLE_WORKLOAD_WINDOW_SEC = 60.0
-_THROTTLE_UPDATE_INTERVAL_SEC = 60.0
 _THROTTLE_OVERHEAD = 1.05
 
 
 class RateLimiter:
     """Thread-safe rate limiter shared across worker threads.
 
-    The current ``target_per_min`` is owned by a separate updater thread
-    (``run_throttle_updater``) that recomputes it on a wall-clock cadence
-    independent of batch size, thread count, or per-file processing time.
-    Workers call ``acquire(stopping)`` after each completed compression and
+    ``target_per_min`` is set by the main loop at the top of each iteration
+    (a single-writer, multi-reader pattern).  Workers call ``acquire`` and
     read whatever target is in effect at that moment.  No-op when target
     ≤ 0 (initial state, or no eligible work).
     """
@@ -1257,7 +1256,7 @@ class RateLimiter:
         self.target_per_min = 0.0
 
     def set_target(self, target_per_min: float) -> None:
-        """Update the active target (called by the throttle updater thread).
+        """Update the active target (called by the main loop).
 
         Float writes are atomic in CPython so no lock is needed for this
         field; ``next_allowed`` is still protected by ``self.lock``.
@@ -1278,38 +1277,6 @@ class RateLimiter:
 
 
 @dataclass
-class ThroughputEMA:
-    """Time-weighted exponential moving average of throughput (files/min).
-
-    Each call to ``update`` consumes a fresh sample.  The blend weight is
-    derived from the elapsed time since the previous sample with a 60-second
-    time constant — a sample one minute after the previous contributes
-    ~63% (1 − 1/e) to the new value, two minutes ~86%, etc.  Samples taken
-    rapidly contribute proportionally less, so the EWMA reflects roughly the
-    last-minute behavior even under variable batch cadence.
-
-    Not thread-safe: both ``update`` and reads of ``value`` are owned by
-    the throttle updater thread (``run_throttle_updater``) — workers and
-    the main loop never touch this directly.
-    """
-
-    tau_sec: float = 60.0
-    value: float = 0.0
-    last_sample_time: float = 0.0
-
-    def update(self, sample_per_min: float) -> float:
-        now = time.time()
-        if self.last_sample_time == 0.0:
-            self.value = sample_per_min
-        else:
-            dt = max(now - self.last_sample_time, 0.0)
-            alpha = 1.0 - math.exp(-dt / self.tau_sec)
-            self.value = alpha * sample_per_min + (1.0 - alpha) * self.value
-        self.last_sample_time = now
-        return self.value
-
-
-@dataclass
 class CompressorContext:
     """Shared, per-daemon state passed to every compression worker.
 
@@ -1322,7 +1289,6 @@ class CompressorContext:
     frigate_rw: sqlite3.Connection
     compress_db: sqlite3.Connection | None = None
     rate_limiter: RateLimiter = field(default_factory=RateLimiter)
-    throughput_ema: ThroughputEMA = field(default_factory=ThroughputEMA)
 
 
 def _recording_type(motion: int | None, objects: int | None) -> str:
@@ -3168,8 +3134,7 @@ def main() -> int:
     log("INFO", f"  Housekeeping   : every {cfg.housekeeping_interval_days}d")
     log(
         "INFO",
-        f"  Throttle       : auto (target ≈ {_THROTTLE_OVERHEAD}× pending "
-        f"work/min; smoothed via recent throughput)",
+        f"  Throttle       : auto (target = {_THROTTLE_OVERHEAD}× pending work/min)",
     )
     log("INFO", f"  Frigate DB     : {cfg.frigate_db}")
     log("INFO", f"  Recordings     : {cfg.recordings_dir}")
@@ -3222,11 +3187,6 @@ def main() -> int:
         target=run_probe_loop, args=(ctx, stopping), daemon=True
     )
     probe_thread.start()
-
-    throttle_thread = threading.Thread(
-        target=run_throttle_updater, args=(ctx, stopping), daemon=True
-    )
-    throttle_thread.start()
 
     publisher: MqttPublisher | None = None
     if cfg.mqtt.enabled:
@@ -3286,72 +3246,34 @@ def measure_workload_per_min(ctx: CompressorContext) -> float:
     return n / (window_sec / 60.0)
 
 
-def sample_throughput_per_min(
-    ctx: CompressorContext, window_sec: float = 60.0
-) -> float:
-    """Observed throughput: tier1 + tier2 completions per minute over window.
-
-    Note: cutoff is formatted in local time to match ``_record``'s
-    ``time.strftime`` storage format.  This works correctly except across
-    DST transitions, where one hour of completions can be double-counted
-    (fall-back) or missed (spring-forward).
-    """
-    cfg = ctx.cfg
-    cutoff_str = time.strftime(
-        "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - window_sec)
-    )
-    conn = sqlite3.connect(
-        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
-    )
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM files"
-            " WHERE t1_compressed_at >= ? OR t2_compressed_at >= ?",
-            (cutoff_str, cutoff_str),
-        ).fetchone()
-    finally:
-        conn.close()
-    n = int(row[0]) if row else 0
-    return n / (window_sec / 60.0)
-
-
 def _effective_throttle_target(ctx: CompressorContext) -> float:
-    """Throttle target in files/min for the next batch.  Pure read of state.
+    """Throttle target in files/min for the next batch.
 
-    target = max(workload × OVERHEAD, speed_ema)
+    target = workload × OVERHEAD
 
-    Workload encodes "what we need to do" (backlog + next-minute incoming).
-    The EWMA value, read from ``ctx.throughput_ema.value``, encodes "what
-    we're actually doing right now".  Caller is responsible for sampling +
-    updating the EWMA before calling this function — keeping the side
-    effect explicit at the call site rather than buried here.
+    Workload counts every recording needing compression in the next minute
+    (backlog already past the line + incoming about to cross).  During
+    catchup, workload >> capacity so the limiter is effectively a no-op;
+    once drained, the target settles to ~OVERHEAD × steady-state inflow.
 
-    The max() gives smooth catchup-tail transitions: workload >> speed
-    during catchup → huge target, limiter is a no-op; as backlog drains,
-    workload falls, EWMA holds the floor while it decays over the 60s
-    time constant.
-
-    Returns 0 (no throttle) when there's no eligible work and no recent
-    activity.
+    Returns 0 (no throttle) when there's no eligible work.
     """
     try:
         workload = measure_workload_per_min(ctx)
     except Exception as e:
         log("WARNING", f"throttle: workload measurement failed: {e}")
         return 0.0
-    speed_ema = ctx.throughput_ema.value
-    if workload <= 0 and speed_ema <= 0:
+    if workload <= 0:
         return 0.0
-    target = max(workload * _THROTTLE_OVERHEAD, speed_ema)
+    target = workload * _THROTTLE_OVERHEAD
     log(
         "INFO",
-        f"Throttle: target {target:.0f}/min "
-        f"(workload={workload:.0f}/min, speed_ema={speed_ema:.0f}/min)",
+        f"Throttle: target {target:.0f}/min (workload={workload:.0f}/min)",
     )
     return target
 
 
-def _compress_then_pace(
+def _pace_then_compress(
     stopping: threading.Event,
     rid: str,
     path: str,
@@ -3361,34 +3283,20 @@ def _compress_then_pace(
     encoder: str,
     ctx: CompressorContext,
 ) -> bool:
-    """Worker wrapper: run compress_one then pace via the shared rate limiter.
+    """Worker wrapper: pace via the shared rate limiter, then run compress_one.
+
+    Pacing happens *before* compression so that every file *start* is gated
+    by the limiter — including the first ones in a batch.  Pacing after
+    compression would let the first ``max_parallel_jobs`` workers in a
+    batch each fire one compress with no spacing, producing the bursty
+    "process N files in 5s, then idle for 7s" pattern.
 
     The limiter reads its current target from its own field (set by the
-    throttle updater thread), so the worker doesn't need to know it.
+    main loop at the top of each iteration), so the worker doesn't need
+    to know it.
     """
-    try:
-        return compress_one(rid, path, camera, tier, rtype, encoder, ctx)
-    finally:
-        ctx.rate_limiter.acquire(stopping)
-
-
-def run_throttle_updater(ctx: CompressorContext, stopping: threading.Event) -> None:
-    """Recompute the throttle target on a fixed wall-clock cadence.
-
-    Independent of batch progress, worker count, or hardware speed: the
-    target gets a fresh sample every ``_THROTTLE_UPDATE_INTERVAL_SEC``
-    seconds, which also drives the EWMA at exactly its 60s time constant.
-    Owns ``ctx.throughput_ema`` and ``ctx.rate_limiter.target_per_min``;
-    nothing else writes to either.
-    """
-    while not stopping.is_set():
-        try:
-            ctx.throughput_ema.update(sample_throughput_per_min(ctx))
-            target = _effective_throttle_target(ctx)
-            ctx.rate_limiter.set_target(target)
-        except Exception as e:
-            log("WARNING", f"throttle updater: {e}")
-        stopping.wait(timeout=_THROTTLE_UPDATE_INTERVAL_SEC)
+    ctx.rate_limiter.acquire(stopping)
+    return compress_one(rid, path, camera, tier, rtype, encoder, ctx)
 
 
 def run_main_loop(
@@ -3414,6 +3322,14 @@ def run_main_loop(
                 log("ERROR", f"Housekeeping failed: {e}")
             last_housekeeping = time.time()
 
+        # ── Refresh throttle target ───────────────────────────────────────
+        # Recompute every iteration so backlog spikes raise the target
+        # immediately and the limiter no-ops when the queue is empty.
+        try:
+            ctx.rate_limiter.set_target(_effective_throttle_target(ctx))
+        except Exception as e:
+            log("WARNING", f"throttle: {e}")
+
         # ── Find eligible recordings ──────────────────────────────────────
         try:
             eligible = get_eligible_recordings(ctx)
@@ -3434,7 +3350,7 @@ def run_main_loop(
             pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
                 pool.submit(
-                    _compress_then_pace,
+                    _pace_then_compress,
                     stopping,
                     r["recording_id"],
                     r["path"],

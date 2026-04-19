@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import sqlite3
 import subprocess
 import threading
@@ -969,7 +968,7 @@ def test_run_main_loop_sleep_path_handles_query_exception(monkeypatch, tmp_path)
 
 
 def test_throttle_target_zero_when_no_workload(monkeypatch, tmp_path):
-    """workload=0, EWMA=0 → _effective_throttle_target returns 0."""
+    """workload=0 → _effective_throttle_target returns 0 (limiter disabled)."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
@@ -982,46 +981,30 @@ def test_throttle_target_zero_when_no_workload(monkeypatch, tmp_path):
 
 
 def test_throttle_target_is_overhead_times_workload(monkeypatch, tmp_path):
-    """target = workload × OVERHEAD when EWMA is below."""
+    """target = workload × OVERHEAD."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
     monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 40.0)
-    # ema starts at 0 → workload term wins
     assert fc._effective_throttle_target(ctx) == pytest.approx(42.0)
 
     _close_ctx(ctx)
     frigate_conn.close()
 
 
-def test_throttle_target_uses_ewma_when_higher(monkeypatch, tmp_path):
-    """target = max(workload × OVERHEAD, speed_ema)."""
-    frigate_db = tmp_path / "frigate.db"
-    frigate_conn = _make_frigate_db(frigate_db)
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
-    ctx.throughput_ema.value = 100.0
-
-    monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 40.0)
-    # workload × OVERHEAD = 42; EWMA = 100 → target = 100.
-    assert fc._effective_throttle_target(ctx) == pytest.approx(100.0)
-
-    _close_ctx(ctx)
-    frigate_conn.close()
-
-
-def test_throttle_updater_sets_limiter_target(monkeypatch, tmp_path):
-    """One pass of run_throttle_updater samples throughput, updates EMA,
-    computes target, and writes it onto the rate limiter."""
+def test_run_main_loop_refreshes_throttle_target(monkeypatch, tmp_path):
+    """The main loop refreshes the rate limiter's target each iteration so
+    backlog spikes raise the target without waiting for a separate updater."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    monkeypatch.setattr(fc, "sample_throughput_per_min", lambda _ctx: 80.0)
     monkeypatch.setattr(fc, "measure_workload_per_min", lambda _ctx: 50.0)
+    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 999.0)
 
     stopping = threading.Event()
-    # End the loop on the first wait — we only want one update tick.
     real_wait = stopping.wait
 
     def fake_wait(timeout=None):
@@ -1029,22 +1012,23 @@ def test_throttle_updater_sets_limiter_target(monkeypatch, tmp_path):
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_throttle_updater(ctx, stopping)
+    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
 
-    # After one tick: ema seeded to 80; target = max(50*1.05, 80) = 80.
-    assert ctx.throughput_ema.value == pytest.approx(80.0)
-    assert ctx.rate_limiter.target_per_min == pytest.approx(80.0)
+    # target = workload × OVERHEAD = 50 × 1.05 = 52.5
+    assert ctx.rate_limiter.target_per_min == pytest.approx(52.5)
 
     _close_ctx(ctx)
     frigate_conn.close()
 
 
-def test_compress_then_pace_invokes_compress_and_acquires(monkeypatch):
-    """Worker wrapper runs compress_one and unconditionally calls acquire."""
-    calls = {"compress_args": None, "acquire_called": False}
+def test_pace_then_compress_acquires_before_compressing(monkeypatch):
+    """Worker wrapper paces FIRST, then runs compress.  Pacing-after-compress
+    is what produced the bursty "first 2 workers fire instantly" pattern;
+    asserting the order here pins the fix."""
+    events: list[str] = []
 
     def fake_compress(rid, path, camera, tier, rtype, encoder, ctx):
-        calls["compress_args"] = (rid, path, camera, tier, rtype, encoder)
+        events.append("compress")
         return True
 
     monkeypatch.setattr(fc, "compress_one", fake_compress)
@@ -1052,50 +1036,40 @@ def test_compress_then_pace_invokes_compress_and_acquires(monkeypatch):
     fake_ctx = MagicMock()
 
     def fake_acquire(_stopping):
-        calls["acquire_called"] = True
+        events.append("acquire")
 
     fake_ctx.rate_limiter.acquire = fake_acquire
     stopping = threading.Event()
 
-    result = fc._compress_then_pace(
+    result = fc._pace_then_compress(
         stopping, "rid-1", "/tmp/x.mp4", "cam", 1, "continuous", "cpu", fake_ctx
     )
 
     assert result is True
-    assert calls["compress_args"] == (
-        "rid-1",
-        "/tmp/x.mp4",
-        "cam",
-        1,
-        "continuous",
-        "cpu",
-    )
-    assert calls["acquire_called"] is True
+    assert events == ["acquire", "compress"]
 
 
-def test_compress_then_pace_acquires_even_on_compress_exception(monkeypatch):
-    """Exception in compress_one must not bypass the rate limiter."""
-    calls = {"acquire_called": False}
+def test_pace_then_compress_propagates_compress_exception(monkeypatch):
+    """A compress failure propagates to the caller after the slot was
+    already consumed.  No try/finally needed since acquire runs first."""
+    events: list[str] = []
 
     def boom(*_a, **_k):
+        events.append("compress")
         raise RuntimeError("encoder crashed")
 
     monkeypatch.setattr(fc, "compress_one", boom)
 
     fake_ctx = MagicMock()
-
-    def fake_acquire(_stopping):
-        calls["acquire_called"] = True
-
-    fake_ctx.rate_limiter.acquire = fake_acquire
+    fake_ctx.rate_limiter.acquire = lambda _stopping: events.append("acquire")
     stopping = threading.Event()
 
     with pytest.raises(RuntimeError):
-        fc._compress_then_pace(
+        fc._pace_then_compress(
             stopping, "r", "/p", "cam", 1, "continuous", "cpu", fake_ctx
         )
 
-    assert calls["acquire_called"] is True
+    assert events == ["acquire", "compress"]
 
 
 def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
@@ -1104,9 +1078,6 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
-
-    # Simulate the throttle updater having set a target of 30/min.
-    ctx.rate_limiter.set_target(30.0)
 
     t = {"now": 1000.0}
     monkeypatch.setattr(fc.time, "time", lambda: t["now"])
@@ -1121,6 +1092,9 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
             else []
         )
 
+    # Pin the inline target update to 30/min so we can verify per-file pacing
+    # at a known rate (interval=2s).
+    monkeypatch.setattr(fc, "_effective_throttle_target", lambda _ctx: 30.0)
     monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
     monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
     monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 999.0)
@@ -1209,38 +1183,6 @@ def test_measure_workload_per_min_counts_backlog_plus_incoming(tmp_path):
     workload = fc.measure_workload_per_min(ctx)
     assert workload == pytest.approx(7.0, abs=0.01)
     _close_ctx(ctx)
-
-
-def test_throughput_ema_weights_recent_samples_more(monkeypatch):
-    """A sample one tau (60s) after the previous shifts the EWMA by ~63%
-    toward the new value; samples taken rapidly contribute much less."""
-    ema = fc.ThroughputEMA()
-    t = {"now": 1000.0}
-    monkeypatch.setattr(fc.time, "time", lambda: t["now"])
-
-    # First sample seeds the value verbatim.
-    assert ema.update(100.0) == pytest.approx(100.0)
-
-    # 60s later → alpha = 1 - 1/e ≈ 0.632 → blend toward 200.
-    t["now"] = 1060.0
-    val_after_60s = ema.update(200.0)
-    assert val_after_60s == pytest.approx(100.0 + 0.632 * (200.0 - 100.0), abs=0.5)
-
-    # 6s later (0.1 tau) → alpha ≈ 0.095 → small shift toward 0.
-    t["now"] = 1066.0
-    val_after_short = ema.update(0.0)
-    expected_alpha = 1.0 - math.exp(-6.0 / 60.0)
-    assert val_after_short == pytest.approx(
-        (1 - expected_alpha) * val_after_60s, abs=0.5
-    )
-
-
-def test_throughput_ema_resets_when_first_sample(monkeypatch):
-    """First-ever sample seeds the value; no smoothing yet."""
-    ema = fc.ThroughputEMA()
-    monkeypatch.setattr(fc.time, "time", lambda: 5000.0)
-    assert ema.update(42.0) == 42.0
-    assert ema.value == 42.0
 
 
 def test_rate_limiter_paces_concurrent_callers(monkeypatch):
