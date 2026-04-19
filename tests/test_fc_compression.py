@@ -774,8 +774,8 @@ def test_run_main_loop_sleeps_remainder_after_partial_batch(monkeypatch, tmp_pat
         eligible_calls["n"] += 1
         return [_eligible_row("r1"), _eligible_row("r2")]
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc.app, "compress_one", lambda *a, **k: True)
     # Skip per-file throttle pacing so we observe only the iteration sleep.
     monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
 
@@ -827,13 +827,13 @@ def test_run_main_loop_skips_sleep_when_processing_overruns_window(
         t["now"] += fc._THROTTLE_WINDOW_SEC + 30
         return True
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc.app, "compress_one", fake_compress)
     monkeypatch.setattr(fc.RateLimiter, "acquire", lambda self, stopping: None)
     # Make the no-work path return a sentinel so the test ends predictably.
     # The loop adds _THROTTLE_WINDOW_SEC to this so the first batch on wake
     # has one full window of accumulated work.
-    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 333.0)
+    monkeypatch.setattr(fc.app, "time_until_next_eligible", lambda _ctx: 333.0)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -880,10 +880,10 @@ def test_run_main_loop_sleeps_until_next_eligible_when_no_work(monkeypatch, tmp_
         compress_calls["n"] += 1
         return True
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc.app, "compress_one", fake_compress)
     # Pin to a known value so we can assert it precisely.
-    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 137.0)
+    monkeypatch.setattr(fc.app, "time_until_next_eligible", lambda _ctx: 137.0)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -910,8 +910,8 @@ def test_run_main_loop_no_work_sleep_capped_at_max(monkeypatch, tmp_path):
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
-    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 99_999.0)
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(fc.app, "time_until_next_eligible", lambda _ctx: 99_999.0)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -938,12 +938,12 @@ def test_run_main_loop_no_work_sleep_handles_query_exception(monkeypatch, tmp_pa
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", lambda _ctx: [])
 
     def boom(_ctx):
         raise RuntimeError("frigate db went away")
 
-    monkeypatch.setattr(fc, "time_until_next_eligible", boom)
+    monkeypatch.setattr(fc.app, "time_until_next_eligible", boom)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -977,11 +977,11 @@ def test_run_main_loop_sets_target_to_batch_size(monkeypatch, tmp_path):
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
     monkeypatch.setattr(
-        fc,
+        fc.app,
         "get_eligible_recordings",
         lambda _ctx: [_eligible_row(f"r{i}") for i in range(7)],
     )
-    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc.app, "compress_one", lambda *a, **k: True)
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -1005,7 +1005,7 @@ def test_run_main_loop_target_unchanged_when_no_work(monkeypatch, tmp_path):
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", lambda _ctx: [])
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", lambda _ctx: [])
 
     stopping = threading.Event()
     real_wait = stopping.wait
@@ -1037,7 +1037,7 @@ def test_pace_then_compress_acquires_before_compressing(monkeypatch):
         events.append("compress")
         return True
 
-    monkeypatch.setattr(fc, "compress_one", fake_compress)
+    monkeypatch.setattr(fc.app, "compress_one", fake_compress)
 
     fake_ctx = MagicMock()
 
@@ -1064,7 +1064,7 @@ def test_pace_then_compress_propagates_compress_exception(monkeypatch):
         events.append("compress")
         raise RuntimeError("encoder crashed")
 
-    monkeypatch.setattr(fc, "compress_one", boom)
+    monkeypatch.setattr(fc.app, "compress_one", boom)
 
     fake_ctx = MagicMock()
     fake_ctx.rate_limiter.acquire = lambda _stopping: events.append("acquire")
@@ -1097,12 +1097,12 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
             return [_eligible_row(f"r{i}") for i in range(6)]
         return []
 
-    monkeypatch.setattr(fc, "get_eligible_recordings", fake_eligible)
-    monkeypatch.setattr(fc, "compress_one", lambda *a, **k: True)
+    monkeypatch.setattr(fc.app, "get_eligible_recordings", fake_eligible)
+    monkeypatch.setattr(fc.app, "compress_one", lambda *a, **k: True)
     # No-work sleep will be capped to MAX_SLEEP_SEC; mock returns a value
     # well above that so we can identify it as "the no-work sleep" in the
     # asserted sleep list.
-    monkeypatch.setattr(fc, "time_until_next_eligible", lambda _ctx: 9999.0)
+    monkeypatch.setattr(fc.app, "time_until_next_eligible", lambda _ctx: 9999.0)
 
     sleeps: list[float] = []
     stopping = threading.Event()
