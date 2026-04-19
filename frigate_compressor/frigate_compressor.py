@@ -1886,14 +1886,8 @@ def run_housekeeping(ctx: CompressorContext) -> None:
         compress_db.close()
 
 
-def _run_housekeeping_inner(
-    cfg: Config,
-    compress_db: sqlite3.Connection,
-    frigate_rw: sqlite3.Connection,
-) -> None:
-    log("INFO", "── Housekeeping starting")
-
-    # 1. Remove leftover temp files from crashed runs.
+def _hk_remove_temp_files(cfg: Config) -> None:
+    """Remove leftover temp files from crashed compression runs."""
     temp_files = list(Path(cfg.recordings_dir).rglob(_TEMP_GLOB))
     for tmp in temp_files:
         if cfg.all_dry_run:
@@ -1904,7 +1898,13 @@ def _run_housekeeping_inner(
     if not temp_files:
         log("DEBUG", "No leftover temp files found")
 
-    # 2. Retry pending segment_size updates.
+
+def _hk_retry_segment_updates(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
+) -> None:
+    """Retry segment_size updates that failed during prior compress runs."""
     pending_seg = compress_db.execute(
         """SELECT recording_id, camera, path
            FROM files
@@ -1977,7 +1977,9 @@ def _run_housekeeping_inner(
     else:
         log("DEBUG", "No pending segment_size retries")
 
-    # 3. Prune compress DB rows whose recording no longer exists in Frigate's DB.
+
+def _hk_prune_orphaned(cfg: Config, compress_db: sqlite3.Connection) -> None:
+    """Drop compress_db rows whose recording is no longer in Frigate's DB."""
     pruned = 0
     _attach_frigate_ro(compress_db, cfg, "frigate_ro_hk")
     try:
@@ -2010,46 +2012,61 @@ def _run_housekeeping_inner(
     else:
         log("DEBUG", "No orphaned DB entries")
 
-    # 4. Storage savings summary
+
+def _hk_log_savings_summary(compress_db: sqlite3.Connection) -> None:
+    """Print the storage-savings table by camera."""
     rows = compress_db.execute(
         "SELECT * FROM savings_by_camera ORDER BY camera"
     ).fetchall()
-
-    if rows:
-        log("INFO", "── Storage savings by camera")
-        log(
-            "INFO",
-            f"  {'Camera':<20} {'T1':>5} {'T1 Before':>10} {'T1 After':>10}"
-            f" {'T2':>5} {'T2 Before':>10} {'T2 After':>10}",
-        )
-        log(
-            "INFO",
-            f"  {'-' * 20} {'-' * 5} {'-' * 10} {'-' * 10}"
-            f" {'-' * 5} {'-' * 10} {'-' * 10}",
-        )
-        for r in rows:
-            log(
-                "INFO",
-                f"  {r['camera']:<20}"
-                f" {r['t1_files'] or 0:>5}"
-                f" {_fmt(r['t1_bytes_before']):>10}"
-                f" {_fmt(r['t1_bytes_after']):>10}"
-                f" {r['t2_files'] or 0:>5}"
-                f" {_fmt(r['t2_bytes_before']):>10}"
-                f" {_fmt(r['t2_bytes_after']):>10}",
-            )
-    else:
+    if not rows:
         log("INFO", "No compression data yet")
+        return
+    log("INFO", "── Storage savings by camera")
+    log(
+        "INFO",
+        f"  {'Camera':<20} {'T1':>5} {'T1 Before':>10} {'T1 After':>10}"
+        f" {'T2':>5} {'T2 Before':>10} {'T2 After':>10}",
+    )
+    log(
+        "INFO",
+        f"  {'-' * 20} {'-' * 5} {'-' * 10} {'-' * 10} {'-' * 5} {'-' * 10} {'-' * 10}",
+    )
+    for r in rows:
+        log(
+            "INFO",
+            f"  {r['camera']:<20}"
+            f" {r['t1_files'] or 0:>5}"
+            f" {_fmt(r['t1_bytes_before']):>10}"
+            f" {_fmt(r['t1_bytes_after']):>10}"
+            f" {r['t2_files'] or 0:>5}"
+            f" {_fmt(r['t2_bytes_before']):>10}"
+            f" {_fmt(r['t2_bytes_after']):>10}",
+        )
 
-    # 5. Recent errors
+
+def _hk_log_recent_errors(compress_db: sqlite3.Connection) -> None:
+    """Print the most recent compression errors (last 7 days, up to 20)."""
     errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
-    if errors:
-        log("WARNING", "── Recent errors (last 7 days)")
-        for err in errors:
-            ts = err["t2_compressed_at"] or err["t1_compressed_at"]
-            msg = err["t2_error_msg"] or err["t1_error_msg"]
-            log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
+    if not errors:
+        return
+    log("WARNING", "── Recent errors (last 7 days)")
+    for err in errors:
+        ts = err["t2_compressed_at"] or err["t1_compressed_at"]
+        msg = err["t2_error_msg"] or err["t1_error_msg"]
+        log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
 
+
+def _run_housekeeping_inner(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    frigate_rw: sqlite3.Connection,
+) -> None:
+    log("INFO", "── Housekeeping starting")
+    _hk_remove_temp_files(cfg)
+    _hk_retry_segment_updates(cfg, compress_db, frigate_rw)
+    _hk_prune_orphaned(cfg, compress_db)
+    _hk_log_savings_summary(compress_db)
+    _hk_log_recent_errors(compress_db)
     log("INFO", "── Housekeeping complete")
 
 
