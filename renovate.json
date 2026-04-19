@@ -28,6 +28,14 @@
     },
     {
       "customType": "regex",
+      "description": "Renovate npm package version pinned in CI workflows",
+      "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["npx --package renovate@(?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
       "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
