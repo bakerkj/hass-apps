@@ -1797,16 +1797,23 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     return " OR ".join(cam_clauses), params
 
 
+def _attach_frigate_ro(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
+    """ATTACH the Frigate DB to ``conn`` read-only under the given alias.
+
+    Centralizes the path escaping so any future change to the URI format
+    happens in one place rather than four.
+    """
+    db_path = str(cfg.frigate_db).replace('"', "")
+    conn.execute(f'ATTACH DATABASE "file:{db_path}?mode=ro" AS {alias}')
+
+
 def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
     """Open a read-only compress-db connection with frigate.recordings attached."""
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    conn.execute(
-        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_eligible'
-    )
+    _attach_frigate_ro(conn, cfg, "frigate_eligible")
     return conn
 
 
@@ -2026,10 +2033,7 @@ def _run_housekeeping_inner(
 
     # 3. Prune compress DB rows whose recording no longer exists in Frigate's DB.
     pruned = 0
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    compress_db.execute(
-        f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_ro_hk'
-    )
+    _attach_frigate_ro(compress_db, cfg, "frigate_ro_hk")
     try:
         if cfg.all_dry_run:
             pruned = compress_db.execute(
@@ -2118,8 +2122,7 @@ def _get_unprobed_recordings(cfg: Config, conn: sqlite3.Connection) -> list[dict
 
     Limited to ``_PROBE_BATCH_SIZE`` rows per call to keep memory bounded.
     """
-    _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-    conn.execute(f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_probe')
+    _attach_frigate_ro(conn, cfg, "frigate_probe")
     try:
         rows = conn.execute(
             """
@@ -2359,10 +2362,7 @@ def collect_frigate_stats(ctx: "CompressorContext") -> FrigateStats:
     )
     conn.row_factory = sqlite3.Row
     try:
-        _frigate_db_str = str(cfg.frigate_db).replace('"', "")
-        conn.execute(
-            f'ATTACH DATABASE "file:{_frigate_db_str}?mode=ro" AS frigate_stats'
-        )
+        _attach_frigate_ro(conn, cfg, "frigate_stats")
         rows = conn.execute(
             f"""
             SELECT
