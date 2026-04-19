@@ -258,6 +258,11 @@ class Config:
     )
 
     @property
+    def cam_name_width(self) -> int:
+        """Max camera name length, for aligned log output."""
+        return max((len(n) for n in self.cameras), default=0)
+
+    @property
     def all_dry_run(self) -> bool:
         """True when every configured camera is in dry-run mode."""
         return (
@@ -1418,23 +1423,17 @@ def _compress_one_inner(
         log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
-    src_fps = f"@{probe_row['fps']:.0f}fps" if probe_row["fps"] else ""
-    src_info = f"{probe_row['width']}x{probe_row['height']}{src_fps} "
+    src_info = f"{probe_row['width']}x{probe_row['height']}"
+    src_info = f"{src_info:<10}"
 
     # Format target settings for log messages.
     tgt_res = ""
     if ts.scale_mode != "none" and ts.scale_value:
-        tgt_res = ts.scale_value.replace(":", "x")
+        tgt_res = ts.scale_value.replace(":", "x") + " "
     elif ts.scale_mode == "halve":
-        tgt_res = "halve"
-    tgt_fps = ""
-    if ts.fps_mode != "none":
-        v = ts.fps_value
-        tgt_fps = f"@{int(v)}" if v == int(v) else f"@{v}"
-    if tgt_res or tgt_fps:
-        tgt_info = f"→{tgt_res}{tgt_fps} q{ts.quality}"
-    else:
-        tgt_info = f"→q{ts.quality}"
+        tgt_res = "halve "
+    tgt_info = f"→{tgt_res}q{ts.quality}"
+    tgt_info = f"{tgt_info:<14}"
 
     # Temp file is named .tmp.{recording_id}.mp4 — unique per job, easy to
     # identify as a temp file by housekeeping without affecting other jobs.
@@ -1448,8 +1447,9 @@ def _compress_one_inner(
         # Emit a single self-contained INFO line here instead.
         log(
             "INFO",
-            f"[{camera}] DRY RUN t{tier}:{recording_type[:4]} "
-            f"{_display_path(filepath)} {src_info}{tgt_info} {_fmt(size_before)}",
+            f"[{camera:<{cfg.cam_name_width}}] DRY RUN t{tier}:{recording_type[:3]}  "
+            f"{_display_path(filepath)}  {src_info}{tgt_info}"
+            f"{_fmt(size_before, 10)}",
         )
         return True
 
@@ -1661,9 +1661,9 @@ def _compress_one_inner(
     pct = ((size_before - size_after) / size_before * 100) if size_before else 0.0
     log(
         "INFO",
-        f"[{camera}] t{tier}:{recording_type[:4]} "
-        f"{_display_path(filepath)} {src_info}{tgt_info} "
-        f"{_fmt(size_before)}→{_fmt(size_after)} -{pct:.0f}% {duration:.1f}s",
+        f"[{camera:<{cfg.cam_name_width}}] t{tier}:{recording_type[:3]}  "
+        f"{_display_path(filepath)}  {src_info}{tgt_info}"
+        f"{_fmt(size_before, 10)}→{_fmt(size_after, 10)}  {pct:>3.0f}%  {duration:>5.1f}s",
     )
 
     # Update segment_size in Frigate's DB (MB, float).
@@ -2220,20 +2220,26 @@ def _display_path(filepath: Path) -> str:
     if len(parts) >= 4:
         date = parts[-4].replace("-", "")  # YYYY-MM-DD → YYYYMMDD
         hour = parts[-3]  # HH
-        mm_ss = filepath.stem.replace(".", "")  # MM.SS → MMSS
-        return f"{date}{hour}{mm_ss}"
+        mm = filepath.stem.split(".")[0] if "." in filepath.stem else filepath.stem
+        ss = filepath.stem.split(".")[1] if "." in filepath.stem else "00"
+        return f"{date} {hour}:{mm}:{ss}"
     return filepath.name
 
 
-def _fmt(n: int | float | None) -> str:
-    """Human-readable byte size string."""
+def _fmt(n: int | float | None, width: int = 0) -> str:
+    """Human-readable byte size string, optionally right-justified to *width*."""
     if n is None:
-        return "N/A"
-    n = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024:
-            return f"{n:.1f}{unit}"
-        n /= 1024
+        s = "N/A"
+    else:
+        n = float(n)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024:
+                s = f"{n:.1f}{unit}"
+                break
+            n /= 1024
+        else:
+            s = f"{n:.1f}PB"
+    return s.rjust(width) if width else s
     return f"{n:.1f}PB"
 
 
