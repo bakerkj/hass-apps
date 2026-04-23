@@ -260,7 +260,34 @@ class MqttPublisher:
                 "model": "camera",
             }
             self._publish_discovery(device_id, device, _CAMERA_SENSORS, slug)
+            if self.mqtt_cfg.publish_images:
+                self._publish_camera_discovery(device_id, device, cam_name, slug)
             self._publish_camera_state(slug, stats.snapshot())
+
+    def publish_image(self, camera_name: str, image_bytes: bytes) -> None:
+        """Publish a JPEG to the per-camera MQTT topic.
+
+        Called from Worker threads right after a successful snapshot.
+        Safe to call before the client is connected — paho's publish is
+        thread-safe and messages queued pre-connection will be flushed
+        on ``loop_start``.
+        """
+        if not self.mqtt_cfg.publish_images:
+            return
+        client = self.client
+        if client is None:
+            return
+        slug = _slugify_camera(camera_name)
+        topic = f"{self.mqtt_cfg.base_topic}/{slug}/image"
+        try:
+            info = client.publish(topic, image_bytes, qos=0, retain=True)
+            if info.rc != paho_mqtt.MQTT_ERR_SUCCESS:
+                log(
+                    "WARNING",
+                    f"MQTT image publish rc={info.rc} topic={topic}",
+                )
+        except Exception as e:
+            log("WARNING", f"MQTT image publish failed for {camera_name}: {e}")
 
     # ── discovery + state helpers ────────────────────────────────────────
 
@@ -323,6 +350,56 @@ class MqttPublisher:
         if published:
             with self._lock:
                 self._discovery_published.add(device_id)
+
+    def _publish_camera_discovery(
+        self, device_id: str, device: dict, camera_name: str, slug: str
+    ) -> None:
+        """Publish HA MQTT discovery for the per-camera ``camera`` entity.
+
+        Tracked separately from ``_discovery_published`` under a suffix key
+        so a single-failure on the image entity doesn't block sensor
+        discovery, and vice versa.
+        """
+        cam_discovery_key = f"{device_id}:image"
+        with self._lock:
+            if cam_discovery_key in self._discovery_published:
+                return
+        client = self.client
+        if client is None:
+            return
+        base = self.mqtt_cfg.base_topic
+        availability_topic = f"{base}/availability"
+        state_topic = f"{base}/{slug}/image"
+        config_topic = (
+            f"{self.mqtt_cfg.discovery_prefix}/camera/{device_id}/image/config"
+        )
+        payload: dict = {
+            "name": "Snapshot",
+            "has_entity_name": True,
+            "unique_id": f"{device_id}_image",
+            "topic": state_topic,
+            "availability_topic": availability_topic,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "icon": "mdi:camera",
+            "device": device,
+        }
+        try:
+            info = client.publish(config_topic, json.dumps(payload), qos=1, retain=True)
+            if info.rc != paho_mqtt.MQTT_ERR_SUCCESS:
+                log(
+                    "WARNING",
+                    f"MQTT camera discovery publish rc={info.rc} topic={config_topic}",
+                )
+                return
+        except Exception as e:
+            log(
+                "WARNING",
+                f"MQTT camera discovery publish failed for {camera_name}: {e}",
+            )
+            return
+        with self._lock:
+            self._discovery_published.add(cam_discovery_key)
 
     def _publish_camera_state(self, slug: str, view) -> None:
         base = self.mqtt_cfg.base_topic

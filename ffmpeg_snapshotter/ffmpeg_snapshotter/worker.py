@@ -11,6 +11,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import StreamCfg
@@ -26,6 +27,7 @@ class Worker:
         log_level: str,
         start_offset_seconds: float = 0.0,
         stats: SnapshotStats | None = None,
+        image_sink: Callable[[str, bytes], None] | None = None,
     ):
         self.cfg = cfg
         self.ffmpeg_cfg = ffmpeg_cfg
@@ -36,6 +38,10 @@ class Worker:
         self.next_due = 0.0
         self.start_offset_seconds = float(start_offset_seconds)
         self.stats = stats
+        # Called with (camera_name, jpeg_bytes) after each successful
+        # snapshot.  The sink must be fast and thread-safe; exceptions
+        # are swallowed so an MQTT outage can't break snapshotting.
+        self.image_sink = image_sink
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -167,6 +173,11 @@ class Worker:
             set_latest_symlink(final_path, latest_path)
             if self.stats is not None:
                 self.stats.record_success(file_bytes)
+            if self.image_sink is not None:
+                try:
+                    self.image_sink(self.cfg.name, final_path.read_bytes())
+                except Exception as e:
+                    log("WARNING", f"[{self.cfg.name}] image publish failed: {e}")
             return 0
         except subprocess.TimeoutExpired:
             if proc is not None:

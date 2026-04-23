@@ -39,6 +39,11 @@ class MqttConfig:
     rate_window_seconds: int
     disconnect_timeout_seconds: int
     snapshot_error_timeout_seconds: int
+    # When True the Worker also publishes the latest JPEG to an MQTT topic
+    # and registers an HA ``camera`` entity via MQTT discovery.  Metrics
+    # always publish when MQTT is enabled; images are opt-out for users who
+    # want to save broker bandwidth.
+    publish_images: bool = True
 
     @property
     def enabled(self) -> bool:
@@ -73,4 +78,5 @@ def load_mqtt_config(opts: dict) -> MqttConfig:
         snapshot_error_timeout_seconds=max(
             10, int(opts.get("mqtt_snapshot_error_timeout_seconds", 300))
         ),
+        publish_images=bool(opts.get("mqtt_publish_images", True)),
     )

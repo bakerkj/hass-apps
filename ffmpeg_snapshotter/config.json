@@ -3,7 +3,7 @@
   "slug": "ffmpeg_snapshotter",
   "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "arch": ["amd64"],
   "startup": "services",
   "init": false,
@@ -31,6 +31,7 @@
     "mqtt_disconnect_timeout_seconds": 300,
     "mqtt_rate_window_seconds": 300,
     "mqtt_snapshot_error_timeout_seconds": 300,
+    "mqtt_publish_images": true,
     "streams": []
   },
   "schema": {
@@ -54,6 +55,7 @@
     "mqtt_disconnect_timeout_seconds": "int(5,3600)?",
     "mqtt_rate_window_seconds": "int(60,86400)?",
     "mqtt_snapshot_error_timeout_seconds": "int(10,86400)?",
+    "mqtt_publish_images": "bool?",
     "streams": [
       {
         "name": "str",
