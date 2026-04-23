@@ -37,6 +37,11 @@ class CameraStats:
     tier1_bytes: int
     tier2_bytes: int
     oldest_age_days: float | None  # None when the camera has no recordings
+    # Fresh bytes written by this camera in the last ``rate_window_seconds``
+    # divided by the window — i.e. how fast the camera is generating video.
+    # Unlike ``tier0_bytes_rate`` this is not a pool delta; it's a true
+    # write rate derived from ``recordings.start_time`` and is never negative.
+    recording_bytes_rate: float
 
 
 @dataclass
@@ -72,6 +77,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     """
     cfg = ctx.cfg
     now = time.time()
+    rate_window = float(cfg.mqtt.rate_window_seconds)
+    rate_cutoff = now - rate_window
 
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
@@ -102,8 +109,27 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             GROUP BY r.camera, tier, rtype
             """
         ).fetchall()
+        # Fresh bytes per camera within the rate window.  Filtered on
+        # start_time so in-flight segments (NULL segment_size) contribute
+        # 0 until finalised — a small under-count that self-corrects on
+        # the next publish.
+        recent_rows = conn.execute(
+            f"""
+            SELECT
+                camera                                          AS camera,
+                SUM(COALESCE(segment_size, 0) * {_MB_BYTES})    AS bytes
+            FROM frigate_stats.recordings
+            WHERE start_time >= ?
+            GROUP BY camera
+            """,
+            (rate_cutoff,),
+        ).fetchall()
     finally:
         conn.close()
+
+    recording_rate: dict[str, float] = {
+        r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
+    }
 
     cameras: dict[str, dict] = {}
     top_total_bytes = 0
@@ -162,6 +188,7 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             tier1_bytes=c["tier1_bytes"],
             tier2_bytes=c["tier2_bytes"],
             oldest_age_days=_age(c["oldest"]),
+            recording_bytes_rate=recording_rate.get(cam, 0.0),
         )
         for cam, c in cameras.items()
     }
@@ -358,6 +385,14 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
         "B/s",
         "data_rate",
         "mdi:chart-line",
+        True,
+    ),
+    (
+        "recording_bytes_rate",
+        "Recording rate",
+        "B/s",
+        "data_rate",
+        "mdi:video-plus",
         True,
     ),
 ]
@@ -721,6 +756,9 @@ class MqttPublisher:
             values[f"{k}_rate"] = self.tracker.update(
                 f"{device_id}/{k}", float(v or 0), now
             )
+        # Recording rate is a fresh windowed measurement, not a RateTracker
+        # derivative — assign it directly.
+        values["recording_bytes_rate"] = cs.recording_bytes_rate
         self._publish_values(prefix, values)
 
     def _publish_values(

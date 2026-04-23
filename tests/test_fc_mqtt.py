@@ -276,6 +276,55 @@ def test_collect_stats_multi_camera(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# recording_bytes_rate (windowed camera write rate)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_recording_rate_counts_only_window(tmp_path):
+    """Bytes inside rate_window_seconds count; older bytes are ignored."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    window = float(ctx.cfg.mqtt.rate_window_seconds)
+    try:
+        now = time.time()
+        # 30 MB in window, 100 MB outside — only the 30 MB should count.
+        _insert_rec(writer, "in1", "cam", now - 10, segment_size_mb=10)
+        _insert_rec(writer, "in2", "cam", now - 60, segment_size_mb=20)
+        _insert_rec(writer, "old", "cam", now - window - 60, segment_size_mb=100)
+        stats = fc.collect_frigate_stats(ctx)
+        cs = stats.cameras["cam"]
+        assert cs.recording_bytes_rate == (30 * _MB) / window
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_recording_rate_zero_when_no_recent_activity(tmp_path):
+    """A camera with only old recordings has a zero write rate, not None."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    window = float(ctx.cfg.mqtt.rate_window_seconds)
+    try:
+        _insert_rec(writer, "old", "cam", time.time() - window - 3600)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.recording_bytes_rate == 0.0
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_recording_rate_per_camera_isolated(tmp_path):
+    """Activity on one camera must not leak into another's rate."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    window = float(ctx.cfg.mqtt.rate_window_seconds)
+    try:
+        now = time.time()
+        _insert_rec(writer, "live", "busy", now - 5, segment_size_mb=60)
+        _insert_rec(writer, "old", "idle", now - window - 60, segment_size_mb=60)
+        cams = fc.collect_frigate_stats(ctx).cameras
+        assert cams["busy"].recording_bytes_rate == (60 * _MB) / window
+        assert cams["idle"].recording_bytes_rate == 0.0
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RateTracker
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -438,8 +487,8 @@ def test_publisher_publishes_discovery_once_per_device(tmp_path, monkeypatch):
             for t, p, _ in client.publishes
             if t.startswith("homeassistant/sensor/")
         ]
-        # 10 top-level + 16 per-camera × 2 cameras = 42 discovery publishes
-        assert len(first_discovery) == 10 + 16 * 2
+        # 10 top-level + 17 per-camera × 2 cameras = 44 discovery publishes
+        assert len(first_discovery) == 10 + 17 * 2
 
         # Verify one discovery payload schema
         top_total = next(
@@ -470,8 +519,14 @@ def test_publisher_rate_sensors_appear_after_second_pass(tmp_path, monkeypatch):
     publisher, ctx, writer, client = _build_publisher(tmp_path, monkeypatch)
     try:
         publisher.publish_once()
-        # First pass: tracker has 1 sample → no rate state published
-        rate_topics_first = [t for t, _, _ in client.publishes if "_rate/state" in t]
+        # First pass: tracker has 1 sample → no tracker-derived rate state
+        # published.  ``recording_bytes_rate`` is exempt — it's a windowed
+        # SQL-side measurement that publishes on every pass.
+        rate_topics_first = [
+            t
+            for t, _, _ in client.publishes
+            if "_rate/state" in t and not t.endswith("recording_bytes_rate/state")
+        ]
         assert rate_topics_first == []
 
         # Mutate the underlying data so the second pass sees a delta.
@@ -491,6 +546,27 @@ def test_publisher_rate_sensors_appear_after_second_pass(tmp_path, monkeypatch):
         assert any(
             t.endswith("front/total_bytes_rate/state") for t in rate_topics_second
         )
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_publisher_publishes_recording_rate_on_first_pass(tmp_path, monkeypatch):
+    """Per-camera recording_bytes_rate is a fresh windowed measurement and
+    therefore reaches MQTT on the very first publish pass (unlike the
+    RateTracker-derived _rate sensors)."""
+    publisher, ctx, writer, client = _build_publisher(
+        tmp_path, monkeypatch, insert_rows=False
+    )
+    window = float(ctx.cfg.mqtt.rate_window_seconds)
+    try:
+        now = time.time()
+        _insert_rec(writer, "fresh", "cam", now - 5, segment_size_mb=30)
+        _insert_rec(writer, "old", "cam", now - window - 60, segment_size_mb=100)
+        publisher.publish_once()
+
+        by_topic = {t: p for t, p, _ in client.publishes}
+        expected = f"{(30 * _MB) / window:.6g}"
+        assert by_topic["frigate_compressor/cam/recording_bytes_rate/state"] == expected
     finally:
         _close_stats_ctx(ctx, writer)
 
