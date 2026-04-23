@@ -8,4 +8,5 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /ffmpeg_snapshotter.py --options "$OPTIONS"
+export PYTHONPATH=/opt
+exec python3 -m ffmpeg_snapshotter --options "$OPTIONS"

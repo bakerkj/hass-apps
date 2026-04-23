@@ -625,6 +625,31 @@ def test_run_loop_failure_doubles_backoff(tmp_path):
     assert w.backoff <= 60.0
 
 
+def test_compute_stream_offsets_single_stream():
+    """A single stream gets offset 0.0."""
+    offsets = fs._compute_stream_offsets([{"name": "a", "interval_seconds": 30}])
+    assert offsets == {"a": 0.0}
+
+
+def test_compute_stream_offsets_evenly_distributes_within_interval():
+    """N streams sharing an interval → offsets 0, I/N, 2I/N, … (N-1)I/N."""
+    streams = [{"name": chr(ord("a") + i), "interval_seconds": 60} for i in range(6)]
+    offsets = fs._compute_stream_offsets(streams)
+    assert offsets == {"a": 0.0, "b": 10.0, "c": 20.0, "d": 30.0, "e": 40.0, "f": 50.0}
+
+
+def test_compute_stream_offsets_groups_by_interval():
+    """Streams with different intervals are staggered independently."""
+    streams = [
+        {"name": "fast1", "interval_seconds": 10},
+        {"name": "fast2", "interval_seconds": 10},
+        {"name": "slow1", "interval_seconds": 60},
+        {"name": "slow2", "interval_seconds": 60},
+    ]
+    offsets = fs._compute_stream_offsets(streams)
+    assert offsets == {"fast1": 0.0, "fast2": 5.0, "slow1": 0.0, "slow2": 30.0}
+
+
 def test_run_loop_stop_event_exits_promptly(tmp_path):
     w = _make_worker(tmp_path, interval_seconds=60)
 

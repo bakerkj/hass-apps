@@ -18,8 +18,9 @@ RUN apk add --no-cache \
   findutils=4.10.0-r0
 
 COPY run.sh /run.sh
-COPY ffmpeg_snapshotter.py /ffmpeg_snapshotter.py
+COPY ffmpeg_snapshotter /opt/ffmpeg_snapshotter
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/ffmpeg_snapshotter
 
 CMD ["/run.sh"]
