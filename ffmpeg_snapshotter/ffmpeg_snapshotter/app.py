@@ -8,10 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import signal
+import threading
 import time
 
-from .config import StreamCfg
+from .config import StreamCfg, load_mqtt_config
+from .mqtt import MqttPublisher
 from .retention import apply_retention_count, apply_retention_days
+from .stats import SnapshotStats
 from .util import ensure_media_path, log, redact_url
 from .worker import Worker
 
@@ -90,12 +93,24 @@ def main() -> int:
 
     offsets = _compute_stream_offsets(streams)
 
+    mqtt_cfg = load_mqtt_config(opts)
+    stats_by_name: dict[str, SnapshotStats] = {}
+    if mqtt_cfg.enabled:
+        stats_by_name = {
+            name: SnapshotStats(
+                rate_window_seconds=mqtt_cfg.rate_window_seconds,
+                error_timeout_seconds=mqtt_cfg.snapshot_error_timeout_seconds,
+            )
+            for name in cfgs
+        }
+
     for name, cfg in cfgs.items():
         workers[name] = Worker(
             cfg,
             ffmpeg_cfg,
             log_level=log_level,
             start_offset_seconds=offsets.get(name, 0.0),
+            stats=stats_by_name.get(name),
         )
 
     _cfg_lines = [
@@ -124,6 +139,8 @@ def main() -> int:
     log("INFO", "\n".join(_cfg_lines))
 
     stopping = False
+    mqtt_stopping = threading.Event()
+    publisher: MqttPublisher | None = None
 
     def handle_sig(sig, frame):
         nonlocal stopping
@@ -131,6 +148,7 @@ def main() -> int:
         log("INFO", f"Received signal {sig}, stopping workers...")
         for w in workers.values():
             w.stop(signal.SIGTERM)
+        mqtt_stopping.set()
 
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
@@ -141,6 +159,15 @@ def main() -> int:
         except Exception as e:
             log("ERROR", f"[{w.cfg.name}] failed to start: {e}")
             return 1
+
+    if mqtt_cfg.enabled:
+        publisher = MqttPublisher(mqtt_cfg, stats_by_name, mqtt_stopping)
+        try:
+            publisher.start()
+            log("INFO", f"MQTT publisher started (host={mqtt_cfg.host})")
+        except Exception as e:
+            log("ERROR", f"MQTT publisher failed to start: {e}")
+            publisher = None
 
     while True:
         now = time.time()
@@ -157,7 +184,20 @@ def main() -> int:
                 except Exception as e:
                     log("WARNING", f"[{cfg.name}] retention error: {e}")
 
+        # Surface an MQTT watchdog exit (11/12) to the supervisor so the
+        # add-on gets restarted like the frigate_compressor does.
+        if publisher is not None and publisher.exit_code is not None:
+            stopping = True
+            mqtt_stopping.set()
+            log("ERROR", f"MQTT watchdog triggered exit code {publisher.exit_code}")
+            for w in workers.values():
+                w.stop(signal.SIGTERM)
+            publisher.stop()
+            return publisher.exit_code
+
         if stopping:
+            if publisher is not None:
+                publisher.stop()
             time.sleep(1.0)
             return 0
 

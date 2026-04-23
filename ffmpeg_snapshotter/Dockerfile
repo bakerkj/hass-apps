@@ -9,6 +9,7 @@ LABEL \
 
 RUN apk add --no-cache \
   python3=3.12.13-r0 \
+  py3-paho-mqtt=1.6.1-r3 \
   ffmpeg=8.0.1-r1 \
   libva=2.22.0-r1 \
   intel-media-driver=25.4.6-r0 \

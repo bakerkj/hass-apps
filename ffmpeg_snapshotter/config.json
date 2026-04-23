@@ -3,7 +3,7 @@
   "slug": "ffmpeg_snapshotter",
   "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "arch": ["amd64"],
   "startup": "services",
   "init": false,
@@ -20,6 +20,17 @@
     "housekeeping": {
       "retention_interval_seconds": 60
     },
+    "mqtt_host": "",
+    "mqtt_port": 1883,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "ffmpeg_snapshotter",
+    "mqtt_client_id": "ffmpeg-snapshotter",
+    "mqtt_publish_interval_seconds": 60,
+    "mqtt_disconnect_timeout_seconds": 300,
+    "mqtt_rate_window_seconds": 300,
+    "mqtt_snapshot_error_timeout_seconds": 300,
     "streams": []
   },
   "schema": {
@@ -32,6 +43,17 @@
     "housekeeping": {
       "retention_interval_seconds": "int(5,3600)?"
     },
+    "mqtt_host": "str?",
+    "mqtt_port": "port?",
+    "mqtt_username": "str?",
+    "mqtt_password": "password?",
+    "mqtt_discovery_prefix": "str?",
+    "mqtt_base_topic": "str?",
+    "mqtt_client_id": "str?",
+    "mqtt_publish_interval_seconds": "int(5,3600)?",
+    "mqtt_disconnect_timeout_seconds": "int(5,3600)?",
+    "mqtt_rate_window_seconds": "int(60,86400)?",
+    "mqtt_snapshot_error_timeout_seconds": "int(10,86400)?",
     "streams": [
       {
         "name": "str",

@@ -549,6 +549,38 @@ def test_run_one_snapshot_ffmpeg_failure_cleans_tmp(tmp_path, monkeypatch):
     assert jpgs == []
 
 
+def test_run_one_snapshot_success_records_stats(tmp_path, monkeypatch):
+    """On success the Worker feeds (bytes) into its SnapshotStats."""
+    stats = fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
+    w = _make_worker(tmp_path)
+    w.stats = stats
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=0, write_output=True)
+    )
+    rc = w._run_one_snapshot()
+    assert rc == 0
+    v = stats.snapshot()
+    assert v.last_bytes is not None
+    assert v.last_bytes > 0
+    assert v.snapshots_per_minute > 0
+    assert v.error is False
+
+
+def test_run_one_snapshot_failure_records_error(tmp_path, monkeypatch):
+    """On ffmpeg failure the Worker flags its SnapshotStats as errored."""
+    stats = fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
+    w = _make_worker(tmp_path)
+    w.stats = stats
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=1, write_output=False)
+    )
+    rc = w._run_one_snapshot()
+    assert rc == 1
+    v = stats.snapshot()
+    assert v.last_bytes is None
+    assert v.error is True
+
+
 def test_run_one_snapshot_timeout_returns_124(tmp_path, monkeypatch):
     import subprocess as _subprocess
 

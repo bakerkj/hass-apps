@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .config import StreamCfg
+from .stats import SnapshotStats
 from .util import log, redact_url, set_latest_symlink
 
 
@@ -24,6 +25,7 @@ class Worker:
         ffmpeg_cfg: dict[str, str],
         log_level: str,
         start_offset_seconds: float = 0.0,
+        stats: SnapshotStats | None = None,
     ):
         self.cfg = cfg
         self.ffmpeg_cfg = ffmpeg_cfg
@@ -33,6 +35,7 @@ class Worker:
         self.log_level = log_level
         self.next_due = 0.0
         self.start_offset_seconds = float(start_offset_seconds)
+        self.stats = stats
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -148,11 +151,22 @@ class Worker:
                         if line:
                             log(out_level, f"[{self.cfg.name}] [stderr] {line}")
             if rc != 0:
+                if self.stats is not None:
+                    self.stats.record_error()
                 return rc
 
+            # Capture size before the rename so we can feed it to stats; a
+            # stat on final_path after rename would also work but incurs a
+            # second inode lookup for no benefit.
+            try:
+                file_bytes = tmp_path.stat().st_size
+            except OSError:
+                file_bytes = 0
             tmp_path.replace(final_path)
             latest_path = self.cfg.output_dir / self.cfg.latest_name
             set_latest_symlink(final_path, latest_path)
+            if self.stats is not None:
+                self.stats.record_success(file_bytes)
             return 0
         except subprocess.TimeoutExpired:
             if proc is not None:
@@ -161,9 +175,13 @@ class Worker:
                 except Exception:
                     pass
             log("WARNING", f"[{self.cfg.name}] ffmpeg timed out")
+            if self.stats is not None:
+                self.stats.record_error()
             return 124
         except Exception as e:
             log("WARNING", f"[{self.cfg.name}] snapshot failed: {e}")
+            if self.stats is not None:
+                self.stats.record_error()
             return rc
         finally:
             try:
