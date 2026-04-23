@@ -37,6 +37,18 @@ class CameraStats:
     tier1_bytes: int
     tier2_bytes: int
     oldest_age_days: float | None  # None when the camera has no recordings
+    # Fresh bytes written by this camera in the last ``rate_window_seconds``
+    # divided by the window — i.e. how fast the camera is generating video.
+    # Unlike ``tier0_bytes_rate`` this is not a pool delta; it's a true
+    # write rate derived from ``recordings.start_time`` and is never negative.
+    recording_bytes_rate: float
+    # Compression-backlog health.  ``tier1_backlog_error`` is True when
+    # the oldest recording that is *eligible* for tier-1 promotion (age
+    # past the camera's tier1.min_days) has been waiting more than
+    # ``mqtt.backlog_timeout_seconds``; tier2 analogously for tier-1→2.
+    # Both are False for tiers that are disabled for the camera.
+    tier1_backlog_error: bool
+    tier2_backlog_error: bool
 
 
 @dataclass
@@ -72,6 +84,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     """
     cfg = ctx.cfg
     now = time.time()
+    rate_window = float(cfg.mqtt.rate_window_seconds)
+    rate_cutoff = now - rate_window
 
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
@@ -102,8 +116,61 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             GROUP BY r.camera, tier, rtype
             """
         ).fetchall()
+        # Fresh bytes per camera within the rate window.  Filtered on
+        # start_time so in-flight segments (NULL segment_size) contribute
+        # 0 until finalised — a small under-count that self-corrects on
+        # the next publish.
+        recent_rows = conn.execute(
+            f"""
+            SELECT
+                camera                                          AS camera,
+                SUM(COALESCE(segment_size, 0) * {_MB_BYTES})    AS bytes
+            FROM frigate_stats.recordings
+            WHERE start_time >= ?
+            GROUP BY camera
+            """,
+            (rate_cutoff,),
+        ).fetchall()
+        # Oldest pending recording per camera per tier.  "Pending" = exists
+        # in the recordings table but the corresponding tier status is
+        # neither OK nor segment-update-failed (both count as compressed
+        # on disk).  Eligibility filtering is done in Python because
+        # min_days is per-camera.
+        pending_rows = conn.execute(
+            f"""
+            SELECT
+                r.camera                                        AS camera,
+                MIN(CASE
+                        WHEN (f.t1_status IS NULL
+                              OR f.t1_status NOT IN
+                                 ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                        THEN r.start_time
+                    END)                                        AS oldest_t1_pending,
+                MIN(CASE
+                        WHEN f.t1_status IN
+                             ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                         AND (f.t2_status IS NULL
+                              OR f.t2_status NOT IN
+                                 ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                        THEN r.start_time
+                    END)                                        AS oldest_t2_pending
+            FROM frigate_stats.recordings r
+            LEFT JOIN files f
+              ON  f.recording_id = r.id
+            GROUP BY r.camera
+            """
+        ).fetchall()
     finally:
         conn.close()
+
+    recording_rate: dict[str, float] = {
+        r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
+    }
+    pending: dict[str, tuple[float | None, float | None]] = {
+        r["camera"]: (r["oldest_t1_pending"], r["oldest_t2_pending"])
+        for r in pending_rows
+    }
+    backlog_timeout = float(cfg.mqtt.backlog_timeout_seconds)
 
     cameras: dict[str, dict] = {}
     top_total_bytes = 0
@@ -151,8 +218,27 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     def _age(t: float | None) -> float | None:
         return (now - float(t)) / 86400.0 if t is not None else None
 
-    cam_stats = {
-        cam: CameraStats(
+    def _backlog(cam_name: str, oldest_pending: float | None, tier_idx: int) -> bool:
+        """True when the oldest eligible-but-pending recording for this
+        camera/tier has been waiting more than ``backlog_timeout`` past
+        the eligibility cutoff.  Returns False when the tier is disabled
+        or the camera is not in the resolved config (unknown cameras
+        should not alert)."""
+        if oldest_pending is None:
+            return False
+        cam_cfg = cfg.cameras.get(cam_name)
+        if cam_cfg is None:
+            return False
+        tier_cfg = cam_cfg.tier1 if tier_idx == 1 else cam_cfg.tier2
+        if not tier_cfg.enabled:
+            return False
+        eligibility_age = tier_cfg.min_days * 86400.0
+        return float(oldest_pending) < now - eligibility_age - backlog_timeout
+
+    cam_stats: dict[str, CameraStats] = {}
+    for cam, c in cameras.items():
+        t1_pending, t2_pending = pending.get(cam, (None, None))
+        cam_stats[cam] = CameraStats(
             total_bytes=c["total_bytes"],
             total_files=c["total_files"],
             continuous_bytes=c["continuous_bytes"],
@@ -162,9 +248,10 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             tier1_bytes=c["tier1_bytes"],
             tier2_bytes=c["tier2_bytes"],
             oldest_age_days=_age(c["oldest"]),
+            recording_bytes_rate=recording_rate.get(cam, 0.0),
+            tier1_backlog_error=_backlog(cam, t1_pending, 1),
+            tier2_backlog_error=_backlog(cam, t2_pending, 2),
         )
-        for cam, c in cameras.items()
-    }
 
     return FrigateStats(
         total_bytes=top_total_bytes,
@@ -359,6 +446,33 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
         "data_rate",
         "mdi:chart-line",
         True,
+    ),
+    (
+        "recording_bytes_rate",
+        "Recording rate",
+        "B/s",
+        "data_rate",
+        "mdi:video-plus",
+        True,
+    ),
+    # Binary (problem) sensors: ON when the camera's eligible backlog at
+    # that tier has been sitting past the backlog timeout.  Routing to
+    # HA's binary_sensor component is keyed off ``device_class == 'problem'``.
+    (
+        "tier1_backlog_error",
+        "Tier 1 backlog",
+        None,
+        "problem",
+        "mdi:alert-circle",
+        False,
+    ),
+    (
+        "tier2_backlog_error",
+        "Tier 2 backlog",
+        None,
+        "problem",
+        "mdi:alert-circle",
+        False,
     ),
 ]
 
@@ -637,9 +751,11 @@ class MqttPublisher:
             return
         published = True
         for key, name, unit, device_class, icon, is_rate in sensors:
+            is_binary = device_class == "problem"
+            component = "binary_sensor" if is_binary else "sensor"
             state_topic = f"{base}/{topic_subpath}/{key}/state"
             config_topic = (
-                f"{self.mqtt_cfg.discovery_prefix}/sensor/{device_id}/{key}/config"
+                f"{self.mqtt_cfg.discovery_prefix}/{component}/{device_id}/{key}/config"
             )
             payload: dict = {
                 "name": name,
@@ -649,10 +765,14 @@ class MqttPublisher:
                 "availability_topic": availability_topic,
                 "payload_available": "online",
                 "payload_not_available": "offline",
-                "state_class": "measurement",
                 "icon": icon,
                 "device": device,
             }
+            if is_binary:
+                payload["payload_on"] = "ON"
+                payload["payload_off"] = "OFF"
+            else:
+                payload["state_class"] = "measurement"
             if unit:
                 payload["unit_of_measurement"] = unit
             if device_class:
@@ -705,7 +825,7 @@ class MqttPublisher:
     ) -> None:
         base = self.mqtt_cfg.base_topic
         prefix = f"{base}/{slug}"
-        values: dict[str, float | int | None] = {
+        values: dict[str, float | int | bool | None] = {
             "total_bytes": cs.total_bytes,
             "total_files": cs.total_files,
             "continuous_bytes": cs.continuous_bytes,
@@ -721,10 +841,15 @@ class MqttPublisher:
             values[f"{k}_rate"] = self.tracker.update(
                 f"{device_id}/{k}", float(v or 0), now
             )
+        # Recording rate is a fresh windowed measurement, not a RateTracker
+        # derivative — assign it directly.
+        values["recording_bytes_rate"] = cs.recording_bytes_rate
+        values["tier1_backlog_error"] = cs.tier1_backlog_error
+        values["tier2_backlog_error"] = cs.tier2_backlog_error
         self._publish_values(prefix, values)
 
     def _publish_values(
-        self, prefix: str, values: dict[str, float | int | None]
+        self, prefix: str, values: dict[str, float | int | bool | None]
     ) -> None:
         client = self.client
         if client is None:
@@ -732,7 +857,11 @@ class MqttPublisher:
         for key, val in values.items():
             if val is None:
                 continue
-            if isinstance(val, float):
+            # bool is a subclass of int — check it first so True/False render
+            # as ON/OFF for HA binary_sensor entities.
+            if isinstance(val, bool):
+                payload = "ON" if val else "OFF"
+            elif isinstance(val, float):
                 payload = f"{val:.6g}"
             else:
                 payload = str(val)
