@@ -72,6 +72,9 @@ class MqttConfig:
     publish_interval_seconds: int
     rate_window_seconds: int
     disconnect_timeout_seconds: int = 300
+    # How long a recording can sit past its tier eligibility before the
+    # per-camera backlog binary sensor flips to "problem". Default 1 hour.
+    backlog_timeout_seconds: int = 3600
 
     @property
     def enabled(self) -> bool:
@@ -349,6 +352,9 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         rate_window_seconds=int(opts.get("rate_window_seconds", 300)),
         disconnect_timeout_seconds=max(
             5, int(opts.get("mqtt_disconnect_timeout_seconds", 300))
+        ),
+        backlog_timeout_seconds=max(
+            60, int(opts.get("mqtt_backlog_timeout_seconds", 3600))
         ),
     )
 

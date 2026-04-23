@@ -325,6 +325,129 @@ def test_recording_rate_per_camera_isolated(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# tier1_backlog_error / tier2_backlog_error
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Defaults baked into tests/fc_helpers.py yaml_defaults: tier1.min_days=8,
+# tier2.min_days=30, both enabled.  The default backlog timeout is 3600s.
+_T1_MIN_DAYS = 8
+_T2_MIN_DAYS = 30
+
+
+def test_backlog_ok_when_no_recordings(tmp_path):
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # Insert one for camera bookkeeping only (no pending work).
+        _insert_rec(writer, "r1", "cam", time.time() - 3600)
+        # Mark it as tier2 OK so neither tier has anything pending.
+        _record_compressed(ctx, "r1", "cam", tier=1)
+        _record_compressed(ctx, "r1", "cam", tier=2)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is False
+        assert cs.tier2_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_ok_when_too_young_to_be_eligible(tmp_path):
+    """A fresh recording isn't eligible yet → not a backlog, even if pending."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # 1 day old: well under tier1.min_days=8.
+        _insert_rec(writer, "r1", "cam", time.time() - 86400)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is False
+        assert cs.tier2_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_ok_when_eligible_but_within_timeout(tmp_path):
+    """Eligible + pending, but only slightly past cutoff → still OK."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # 60s past the tier1 eligibility cutoff — well inside 3600s timeout.
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 60)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_tier1_backlog_flags_when_past_timeout(tmp_path):
+    """Eligible + pending + older than backlog_timeout → tier1_backlog_error ON."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # 2 hours past the tier1 eligibility cutoff (default timeout: 1 hour).
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is True
+        # tier2 doesn't consider r1 — r1 hasn't been promoted to tier1 yet.
+        assert cs.tier2_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_tier2_backlog_requires_tier1_compressed(tmp_path):
+    """A recording only qualifies for tier2 backlog once tier1 is done."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        now = time.time()
+        # Old enough for tier2 eligibility and past the 1-hour timeout.
+        _insert_rec(writer, "r1", "cam", now - _T2_MIN_DAYS * 86400 - 7200)
+        # Without compression record → still tier0, tier2 doesn't flag.
+        cs_before = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs_before.tier1_backlog_error is True
+        assert cs_before.tier2_backlog_error is False
+        # Promote to tier1 → now tier2 pending & past timeout.
+        _record_compressed(ctx, "r1", "cam", tier=1)
+        cs_after = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs_after.tier1_backlog_error is False
+        assert cs_after.tier2_backlog_error is True
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_respects_disabled_tier(tmp_path):
+    """A disabled tier on a camera never reports a backlog even if files pending."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # Force tier1 off for cam.  Mutate the resolved config in place.
+        ctx.cfg.cameras["cam"].tier1.enabled = False
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_unknown_camera_is_ok(tmp_path):
+    """A recording from a camera not in the resolved config does not alert."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        _insert_rec(writer, "r1", "ghost", time.time() - _T2_MIN_DAYS * 86400 - 7200)
+        cs = fc.collect_frigate_stats(ctx).cameras["ghost"]
+        assert cs.tier1_backlog_error is False
+        assert cs.tier2_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_respects_custom_timeout(tmp_path):
+    """Changing mqtt.backlog_timeout_seconds shifts the threshold."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # 120s past the tier1 eligibility cutoff.
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 120)
+        # With a 60s timeout the 120s-past-cutoff file becomes a backlog.
+        ctx.cfg.mqtt.backlog_timeout_seconds = 60
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
+        assert cs.tier1_backlog_error is True
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RateTracker
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -487,8 +610,22 @@ def test_publisher_publishes_discovery_once_per_device(tmp_path, monkeypatch):
             for t, p, _ in client.publishes
             if t.startswith("homeassistant/sensor/")
         ]
-        # 10 top-level + 17 per-camera × 2 cameras = 44 discovery publishes
+        # 10 top-level + 17 per-camera-sensor × 2 cameras = 44 (plain) sensors.
+        # Binary sensors (tier1/tier2 backlog) are routed to binary_sensor/.
         assert len(first_discovery) == 10 + 17 * 2
+        binary_discovery = [
+            (t, p)
+            for t, p, _ in client.publishes
+            if t.startswith("homeassistant/binary_sensor/")
+        ]
+        # 2 backlog binary_sensors × 2 cameras
+        assert len(binary_discovery) == 2 * 2
+        # Payload shape for a binary_sensor: payload_on/off and no state_class.
+        backlog_cfg = json.loads(binary_discovery[0][1])
+        assert backlog_cfg["device_class"] == "problem"
+        assert backlog_cfg["payload_on"] == "ON"
+        assert backlog_cfg["payload_off"] == "OFF"
+        assert "state_class" not in backlog_cfg
 
         # Verify one discovery payload schema
         top_total = next(
@@ -546,6 +683,25 @@ def test_publisher_rate_sensors_appear_after_second_pass(tmp_path, monkeypatch):
         assert any(
             t.endswith("front/total_bytes_rate/state") for t in rate_topics_second
         )
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_publisher_publishes_backlog_binary_state(tmp_path, monkeypatch):
+    """Backlog booleans are serialized to the MQTT state topic as ON/OFF."""
+    publisher, ctx, writer, client = _build_publisher(
+        tmp_path, monkeypatch, insert_rows=False
+    )
+    try:
+        # 'cam' is in the resolved config with tier1.min_days=8 and tier2
+        # disabled-by-default? No — both are enabled in the test defaults.
+        # Insert a file well past tier1 eligibility and the backlog timeout.
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        publisher.publish_once()
+        by_topic = {t: p for t, p, _ in client.publishes}
+        assert by_topic["frigate_compressor/cam/tier1_backlog_error/state"] == "ON"
+        # r1 is still at tier 0 → tier2 pending predicate doesn't fire.
+        assert by_topic["frigate_compressor/cam/tier2_backlog_error/state"] == "OFF"
     finally:
         _close_stats_ctx(ctx, writer)
 
