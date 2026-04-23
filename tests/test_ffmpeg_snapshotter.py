@@ -472,3 +472,171 @@ def test_apply_retention_days_calls_find(tmp_path, monkeypatch):
     assert "+7" in args
     assert "-delete" in args
     assert "latest.jpg" in args
+
+
+# ---------------------------------------------------------------------------
+# Worker._run_one_snapshot — subprocess mocked so no real ffmpeg runs.
+# These tests pin the success/failure/timeout behavior so the upcoming
+# refactor doesn't change it silently.
+# ---------------------------------------------------------------------------
+
+
+def _fake_popen_factory(rc: int, write_output: bool):
+    """Return a function usable as monkeypatch for subprocess.Popen.
+
+    When invoked, it simulates ffmpeg by (optionally) writing a JPEG to
+    the final argument of ``cmd`` (the ``-y <path>``) and reporting the
+    desired return code.
+    """
+
+    class _FakeProc:
+        def __init__(self, cmd):
+            self._cmd = cmd
+            self.returncode = rc
+
+        def communicate(self, timeout=None):
+            if write_output:
+                out_path = Path(self._cmd[-1])
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(b"\xff\xd8fake-jpeg")
+            return ("", "")
+
+        def kill(self) -> None:  # noqa: D401 — behaviour not used on success path
+            return None
+
+    def _fake(cmd, *args, **kwargs):
+        return _FakeProc(cmd)
+
+    return _fake
+
+
+def test_run_one_snapshot_success_moves_and_symlinks(tmp_path, monkeypatch):
+    w = _make_worker(tmp_path)
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=0, write_output=True)
+    )
+
+    rc = w._run_one_snapshot()
+    assert rc == 0
+    # Tmp file is gone (moved).
+    tmp_dir = tmp_path / ".tmp"
+    assert list(tmp_dir.glob("*.jpg")) == []
+    # Final file exists in a date directory.
+    jpgs = [
+        p
+        for p in tmp_path.rglob("*.jpg")
+        if ".tmp" not in p.parts and not p.is_symlink()
+    ]
+    assert len(jpgs) == 1
+    # Symlink latest.jpg was created and points to the final file.
+    latest = tmp_path / "latest.jpg"
+    assert latest.is_symlink()
+    assert latest.resolve() == jpgs[0].resolve()
+
+
+def test_run_one_snapshot_ffmpeg_failure_cleans_tmp(tmp_path, monkeypatch):
+    w = _make_worker(tmp_path)
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=1, write_output=False)
+    )
+
+    rc = w._run_one_snapshot()
+    assert rc == 1
+    # Neither tmp nor final file exists; no symlink either.
+    assert list((tmp_path / ".tmp").glob("*.jpg")) == []
+    assert not (tmp_path / "latest.jpg").exists()
+    jpgs = [p for p in tmp_path.rglob("*.jpg") if not p.is_symlink()]
+    assert jpgs == []
+
+
+def test_run_one_snapshot_timeout_returns_124(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    kills: list[bool] = []
+
+    class _TimeoutProc:
+        def __init__(self, cmd):
+            self._cmd = cmd
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            raise _subprocess.TimeoutExpired(self._cmd, timeout or 5)
+
+        def kill(self) -> None:
+            kills.append(True)
+
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, *a, **k: _TimeoutProc(cmd))
+    w = _make_worker(tmp_path)
+    rc = w._run_one_snapshot()
+    assert rc == 124
+    assert kills == [True]
+
+
+# ---------------------------------------------------------------------------
+# Worker._run loop — success advances next_due by interval; failure backs off.
+# These are synchronous tests: we drive _run() on the current thread and use
+# a mocked _run_one_snapshot to set stop_event after N calls.
+# ---------------------------------------------------------------------------
+
+
+def test_run_loop_success_advances_next_due_and_resets_backoff(tmp_path):
+    w = _make_worker(tmp_path, interval_seconds=1)
+    w.backoff = 8.0  # seed a non-default backoff that must reset to 1.0
+    calls: list[float] = []
+
+    def fake_snap():
+        calls.append(time.monotonic())
+        if len(calls) >= 2:
+            w.stop_event.set()
+        return 0
+
+    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    w.next_due = time.monotonic()  # fire immediately
+    start_due = w.next_due
+    w._run()
+
+    assert len(calls) == 2
+    assert w.backoff == 1.0
+    # next_due advanced by the 1s interval per successful snapshot.
+    assert w.next_due >= start_due + 2.0 - 0.1
+
+
+def test_run_loop_failure_doubles_backoff(tmp_path):
+    w = _make_worker(tmp_path, interval_seconds=1)
+
+    def fake_snap():
+        return 1  # always fail
+
+    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    w.next_due = time.monotonic()
+
+    # Manually drive one iteration by running in a thread that we stop
+    # after a short moment, inspecting backoff growth.
+    import threading as _threading
+
+    t = _threading.Thread(target=w._run, daemon=True)
+    t.start()
+    # Give the loop enough time to fail → backoff=2 → wait 1s → fail → backoff=4.
+    time.sleep(1.5)
+    w.stop_event.set()
+    t.join(timeout=3.0)
+    # After at least two failures, backoff should have doubled at least once.
+    assert w.backoff > 1.0
+    assert w.backoff <= 60.0
+
+
+def test_run_loop_stop_event_exits_promptly(tmp_path):
+    w = _make_worker(tmp_path, interval_seconds=60)
+
+    def fake_snap():
+        return 0
+
+    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    # next_due far in the future — loop is waiting.
+    w.next_due = time.monotonic() + 3600
+    w.stop_event.set()  # pre-set so the initial wait returns immediately
+
+    start = time.monotonic()
+    w._run()
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0
