@@ -231,6 +231,91 @@ def test_publish_state_reflects_stats_values():
     assert by_topic["ffmpeg_snapshotter/cam/snapshot_error/state"] == "OFF"
 
 
+def test_publish_image_posts_bytes_to_retained_topic():
+    publisher, _, client = _build_publisher()
+    publisher.publish_image("front", b"\xff\xd8FAKEJPEG")
+    imgs = [(t, p, r) for t, p, r in client.publishes if t.endswith("/image")]
+    assert imgs == [("ffmpeg_snapshotter/front/image", b"\xff\xd8FAKEJPEG", True)]
+
+
+def test_publish_image_slugifies_camera_name():
+    publisher, _, client = _build_publisher(
+        {
+            "Front Door": fs.SnapshotStats(
+                rate_window_seconds=60.0, error_timeout_seconds=30.0
+            )
+        }
+    )
+    publisher.publish_image("Front Door", b"\xff\xd8X")
+    topics = [t for t, _, _ in client.publishes if t.endswith("/image")]
+    assert topics == ["ffmpeg_snapshotter/front_door/image"]
+
+
+def test_publish_image_skipped_when_publish_images_false():
+    cams = {
+        "cam": fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
+    }
+    publisher = fs.MqttPublisher(
+        _make_mqtt_cfg(publish_images=False), cams, threading.Event()
+    )
+    client = _RecordingClient()
+    publisher.client = client
+    publisher.publish_image("cam", b"\xff\xd8X")
+    assert client.publishes == []
+
+
+def test_publish_image_no_op_when_client_not_connected():
+    cams = {
+        "cam": fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
+    }
+    publisher = fs.MqttPublisher(_make_mqtt_cfg(), cams, threading.Event())
+    # publisher.client is None — no crash, no publish.
+    publisher.publish_image("cam", b"\xff\xd8X")  # must not raise
+
+
+def test_camera_discovery_payload_shape():
+    """The MQTT camera entity uses the ``camera`` component and a ``topic``
+    field (not ``state_topic``), with no ``state_class``."""
+    publisher, _, client = _build_publisher()
+    publisher.publish_once()
+    cfg_topic = "homeassistant/camera/ffmpeg_snapshotter_camera_front/image/config"
+    matching = [p for t, p, _ in client.publishes if t == cfg_topic]
+    assert len(matching) == 1
+    payload = json.loads(matching[0])
+    assert payload["topic"] == "ffmpeg_snapshotter/front/image"
+    assert payload["unique_id"] == "ffmpeg_snapshotter_camera_front_image"
+    assert payload["availability_topic"] == "ffmpeg_snapshotter/availability"
+    assert "state_class" not in payload
+    assert "state_topic" not in payload
+
+
+def test_camera_discovery_skipped_when_publish_images_false():
+    cams = {
+        "cam": fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
+    }
+    publisher = fs.MqttPublisher(
+        _make_mqtt_cfg(publish_images=False), cams, threading.Event()
+    )
+    client = _RecordingClient()
+    publisher.client = client
+    publisher.publish_once()
+    cam_discovery = [
+        t for t, _, _ in client.publishes if t.startswith("homeassistant/camera/")
+    ]
+    assert cam_discovery == []
+
+
+def test_camera_discovery_published_only_once_per_device():
+    publisher, _, client = _build_publisher()
+    publisher.publish_once()
+    before = len(client.publishes)
+    publisher.publish_once()
+    after = [
+        t for t, _, _ in client.publishes[before:] if t.startswith("homeassistant/")
+    ]
+    assert after == []
+
+
 def test_publish_state_error_flag_on_after_failure():
     stats = fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
     stats.record_error(now=1000.0)

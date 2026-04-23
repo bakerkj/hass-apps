@@ -142,6 +142,16 @@ def main() -> int:
     mqtt_stopping = threading.Event()
     publisher: MqttPublisher | None = None
 
+    # Construct the publisher BEFORE starting workers so the image_sink is
+    # wired before any snapshots happen.  The publisher's client is still
+    # None at this point; publish_image gracefully no-ops until start()
+    # completes.
+    if mqtt_cfg.enabled:
+        publisher = MqttPublisher(mqtt_cfg, stats_by_name, mqtt_stopping)
+        if mqtt_cfg.publish_images:
+            for w in workers.values():
+                w.image_sink = publisher.publish_image
+
     def handle_sig(sig, frame):
         nonlocal stopping
         stopping = True
@@ -160,8 +170,7 @@ def main() -> int:
             log("ERROR", f"[{w.cfg.name}] failed to start: {e}")
             return 1
 
-    if mqtt_cfg.enabled:
-        publisher = MqttPublisher(mqtt_cfg, stats_by_name, mqtt_stopping)
+    if publisher is not None:
         try:
             publisher.start()
             log("INFO", f"MQTT publisher started (host={mqtt_cfg.host})")

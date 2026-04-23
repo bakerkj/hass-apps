@@ -566,6 +566,60 @@ def test_run_one_snapshot_success_records_stats(tmp_path, monkeypatch):
     assert v.error is False
 
 
+def test_run_one_snapshot_success_calls_image_sink(tmp_path, monkeypatch):
+    """On success the Worker forwards (camera_name, jpeg_bytes) to image_sink."""
+    captured: list[tuple[str, bytes]] = []
+
+    w = _make_worker(tmp_path)
+    w.image_sink = lambda name, data: captured.append((name, data))
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=0, write_output=True)
+    )
+    rc = w._run_one_snapshot()
+    assert rc == 0
+    assert len(captured) == 1
+    name, data = captured[0]
+    assert name == "test_cam"
+    assert data.startswith(b"\xff\xd8")  # JPEG SOI
+
+
+def test_run_one_snapshot_failure_does_not_call_image_sink(tmp_path, monkeypatch):
+    """On ffmpeg failure image_sink is not invoked."""
+    captured: list = []
+    w = _make_worker(tmp_path)
+    w.image_sink = lambda name, data: captured.append((name, data))
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=1, write_output=False)
+    )
+    rc = w._run_one_snapshot()
+    assert rc == 1
+    assert captured == []
+
+
+def test_run_one_snapshot_image_sink_exception_does_not_fail_snapshot(
+    tmp_path, monkeypatch
+):
+    """image_sink exceptions are swallowed so MQTT outages don't break snapshotting."""
+    w = _make_worker(tmp_path)
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("broker down")
+
+    w.image_sink = boom
+    monkeypatch.setattr(
+        "subprocess.Popen", _fake_popen_factory(rc=0, write_output=True)
+    )
+    rc = w._run_one_snapshot()
+    assert rc == 0  # snapshot still succeeded
+    # The JPEG must still be on disk despite the sink failure.
+    jpgs = [
+        p
+        for p in tmp_path.rglob("*.jpg")
+        if ".tmp" not in p.parts and not p.is_symlink()
+    ]
+    assert len(jpgs) == 1
+
+
 def test_run_one_snapshot_failure_records_error(tmp_path, monkeypatch):
     """On ffmpeg failure the Worker flags its SnapshotStats as errored."""
     stats = fs.SnapshotStats(rate_window_seconds=60.0, error_timeout_seconds=30.0)
