@@ -13,8 +13,9 @@ RUN apk add --no-cache \
   docker-cli=29.1.3-r4
 
 COPY run.sh /run.sh
-COPY container_info_mqtt.py /container_info_mqtt.py
+COPY container_info_mqtt /opt/container_info_mqtt
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/container_info_mqtt
 
 CMD ["/run.sh"]

@@ -510,7 +510,7 @@ def _fake_ps_proc(rows: list[dict[str, Any]]) -> subprocess.CompletedProcess[str
 
 def test_fetch_ps_strips_leading_slash():
     row = {"ID": "abc123", "Names": "/builder_foo", "Status": "Up", "State": "running"}
-    with patch("container_info_mqtt.run_cmd", return_value=_fake_ps_proc([row])):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=_fake_ps_proc([row])):
         result = cim.fetch_ps_containers(10, _LOG)
     assert len(result) == 1
     assert result[0]["name"] == "builder_foo"
@@ -518,7 +518,7 @@ def test_fetch_ps_strips_leading_slash():
 
 def test_fetch_ps_name_without_slash_unchanged():
     row = {"ID": "abc123", "Names": "mycontainer", "Status": "Up", "State": "running"}
-    with patch("container_info_mqtt.run_cmd", return_value=_fake_ps_proc([row])):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=_fake_ps_proc([row])):
         result = cim.fetch_ps_containers(10, _LOG)
     assert result[0]["name"] == "mycontainer"
 
@@ -1204,7 +1204,7 @@ def test_fetch_stats_by_id_delegates_to_async():
     """Mock the async helper and verify the sync wrapper calls it."""
     fake_result = {"abc123": {"cpu_percent": 42.0}}
     with patch(
-        "container_info_mqtt._fetch_stats_by_id_async",
+        "container_info_mqtt.docker._fetch_stats_by_id_async",
         return_value=fake_result,
     ) as mock_async:
         result = cim.fetch_stats_by_id(["abc123"], 10, _LOG)
@@ -1240,7 +1240,9 @@ def test_fetch_stats_by_id_async_single_container():
         "memory_stats": {"usage": 1048576},
         "networks": {"eth0": {"rx_bytes": 500, "tx_bytes": 100}},
     }
-    with patch("container_info_mqtt.docker_api_get_json", return_value=fake_payload):
+    with patch(
+        "container_info_mqtt.docker.docker_api_get_json", return_value=fake_payload
+    ):
         result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
     assert "abc123" in result
     assert result["abc123"]["cpu_percent"] == pytest.approx(20.0)
@@ -1253,7 +1255,7 @@ def test_fetch_stats_by_id_async_exception_skips():
     import asyncio
 
     with patch(
-        "container_info_mqtt.docker_api_get_json",
+        "container_info_mqtt.docker.docker_api_get_json",
         side_effect=RuntimeError("fail"),
     ):
         result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
@@ -1263,7 +1265,9 @@ def test_fetch_stats_by_id_async_exception_skips():
 def test_fetch_stats_by_id_async_bad_payload_type():
     import asyncio
 
-    with patch("container_info_mqtt.docker_api_get_json", return_value="not a dict"):
+    with patch(
+        "container_info_mqtt.docker.docker_api_get_json", return_value="not a dict"
+    ):
         result = asyncio.run(cim._fetch_stats_by_id_async(["abc123"], 10, _LOG))
     assert result == {}
 
@@ -1298,7 +1302,7 @@ def test_fetch_inspect_by_id_parses_state_and_host_config():
     proc = subprocess.CompletedProcess(
         args=[], returncode=0, stdout=inspect_payload, stderr=""
     )
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         result = cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
     assert "abc123" in result
     info = result["abc123"]
@@ -1311,7 +1315,7 @@ def test_fetch_inspect_by_id_parses_state_and_host_config():
 
 def test_fetch_inspect_by_id_failure_raises():
     proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         with pytest.raises(RuntimeError, match="docker inspect failed"):
             cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
@@ -1320,7 +1324,7 @@ def test_fetch_inspect_by_id_invalid_json_raises():
     proc = subprocess.CompletedProcess(
         args=[], returncode=0, stdout="not json", stderr=""
     )
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         with pytest.raises(RuntimeError, match="invalid JSON"):
             cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
@@ -1329,7 +1333,7 @@ def test_fetch_inspect_by_id_non_list_raises():
     proc = subprocess.CompletedProcess(
         args=[], returncode=0, stdout='{"not": "a list"}', stderr=""
     )
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         with pytest.raises(RuntimeError, match="unexpected payload"):
             cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
@@ -1366,7 +1370,7 @@ def test_unix_socket_http_connection_min_timeout():
 
 def test_fetch_ps_empty_output():
     proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         result = cim.fetch_ps_containers(10, _LOG)
     assert result == []
 
@@ -1376,7 +1380,7 @@ def test_fetch_ps_skips_invalid_json_lines():
         {"ID": "abc", "Names": "good", "Status": "Up", "State": "running"}
     )
     proc = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         result = cim.fetch_ps_containers(10, _LOG)
     assert len(result) == 1
     assert result[0]["name"] == "good"
@@ -1384,7 +1388,7 @@ def test_fetch_ps_skips_invalid_json_lines():
 
 def test_fetch_ps_failure_raises():
     proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         with pytest.raises(RuntimeError, match="docker ps failed"):
             cim.fetch_ps_containers(10, _LOG)
 
@@ -1392,6 +1396,6 @@ def test_fetch_ps_failure_raises():
 def test_fetch_ps_skips_missing_id():
     row = json.dumps({"Names": "noname", "Status": "Up", "State": "running"})
     proc = subprocess.CompletedProcess(args=[], returncode=0, stdout=row, stderr="")
-    with patch("container_info_mqtt.run_cmd", return_value=proc):
+    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         result = cim.fetch_ps_containers(10, _LOG)
     assert result == []

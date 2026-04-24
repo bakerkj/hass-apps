@@ -8,4 +8,5 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /container_info_mqtt.py --options "$OPTIONS"
+export PYTHONPATH=/opt
+exec python3 -m container_info_mqtt --options "$OPTIONS"

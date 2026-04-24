@@ -20,8 +20,9 @@ RUN apk add --no-cache \
       igt-gpu-tools=2.3-r0
 
 COPY run.sh /run.sh
-COPY intel_gpu_mqtt.py /intel_gpu_mqtt.py
+COPY intel_gpu_mqtt /opt/intel_gpu_mqtt
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/intel_gpu_mqtt
 
 CMD ["/run.sh"]

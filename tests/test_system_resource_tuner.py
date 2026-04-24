@@ -504,9 +504,12 @@ class _FakeProcStub:
 
 
 def _install_stub(monkeypatch, stub: _FakeProcStub) -> None:
-    monkeypatch.setattr(srt, "list_process_threads", stub.list_process_threads)
-    monkeypatch.setattr(srt, "read_process_nice", stub.read_process_nice)
-    monkeypatch.setattr(srt.os, "setpriority", stub.setpriority)
+    # Patch at the submodule where these names are actually resolved by
+    # ``apply_process_nice``; patching ``srt.x`` alone wouldn't rebind the
+    # ``x`` lookup inside ``system_resource_tuner.process``.
+    monkeypatch.setattr(srt.process, "list_process_threads", stub.list_process_threads)
+    monkeypatch.setattr(srt.process, "read_process_nice", stub.read_process_nice)
+    monkeypatch.setattr(srt.process.os, "setpriority", stub.setpriority)
 
 
 def test_apply_process_nice_raises_when_nice_is_none():
@@ -516,11 +519,13 @@ def test_apply_process_nice_raises_when_nice_is_none():
 
 def test_apply_process_nice_returns_when_no_threads(monkeypatch):
     """If list_process_threads returns None (process gone) we exit silently."""
-    monkeypatch.setattr(srt, "list_process_threads", lambda *a, **kw: None)
+    monkeypatch.setattr(srt.process, "list_process_threads", lambda *a, **kw: None)
     # Should not raise even though setpriority is unmocked — it must never
     # be called.
     monkeypatch.setattr(
-        srt.os, "setpriority", lambda *a, **kw: pytest.fail("setpriority called")
+        srt.process.os,
+        "setpriority",
+        lambda *a, **kw: pytest.fail("setpriority called"),
     )
     srt.apply_process_nice(_process_tuning(nice=5), 1234, False, _LOG)
 

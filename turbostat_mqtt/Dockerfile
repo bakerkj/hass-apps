@@ -17,8 +17,9 @@ RUN apk add --no-cache \
 
 COPY run.sh /run.sh
 
-COPY turbostat_mqtt.py /turbostat_mqtt.py
+COPY turbostat_mqtt /opt/turbostat_mqtt
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/turbostat_mqtt
 
 CMD ["/run.sh"]
