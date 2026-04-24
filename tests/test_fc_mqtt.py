@@ -109,6 +109,22 @@ def _record_compressed(
     )
 
 
+def _record_probed(ctx: fc.CompressorContext, rid: str, camera: str) -> None:
+    """Insert a probed-but-not-compressed row into the compress DB.
+
+    Backlog existence queries drive from the ``files`` table, so a
+    recording only counts as "pending tier-N" when it has a files row.
+    Tests that want to simulate "recording waiting for tier-1" need
+    this probe-stub first.
+    """
+    ctx.compress_db.execute(
+        "INSERT OR IGNORE INTO files (recording_id, camera, path, scanned_at)"
+        " VALUES (?, ?, ?, ?)",
+        (rid, camera, f"/media/{camera}/{rid}.mp4", "2026-01-01T00:00:00"),
+    )
+    ctx.compress_db.commit()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # collect_frigate_stats
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -380,6 +396,7 @@ def test_tier1_backlog_flags_when_past_timeout(tmp_path):
     try:
         # 2 hours past the tier1 eligibility cutoff (default timeout: 1 hour).
         _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        _record_probed(ctx, "r1", "cam")
         cs = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs.tier1_backlog_error is True
         # tier2 doesn't consider r1 — r1 hasn't been promoted to tier1 yet.
@@ -395,6 +412,7 @@ def test_tier2_backlog_requires_tier1_compressed(tmp_path):
         now = time.time()
         # Old enough for tier2 eligibility and past the 1-hour timeout.
         _insert_rec(writer, "r1", "cam", now - _T2_MIN_DAYS * 86400 - 7200)
+        _record_probed(ctx, "r1", "cam")
         # Without compression record → still tier0, tier2 doesn't flag.
         cs_before = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs_before.tier1_backlog_error is True
@@ -415,6 +433,7 @@ def test_backlog_respects_disabled_tier(tmp_path):
         # Force tier1 off for cam.  Mutate the resolved config in place.
         ctx.cfg.cameras["cam"].tier1.enabled = False
         _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        _record_probed(ctx, "r1", "cam")
         cs = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs.tier1_backlog_error is False
     finally:
@@ -426,7 +445,24 @@ def test_backlog_unknown_camera_is_ok(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
         _insert_rec(writer, "r1", "ghost", time.time() - _T2_MIN_DAYS * 86400 - 7200)
+        _record_probed(ctx, "r1", "ghost")
         cs = fc.collect_frigate_stats(ctx).cameras["ghost"]
+        assert cs.tier1_backlog_error is False
+        assert cs.tier2_backlog_error is False
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
+def test_backlog_ignores_unprobed_recordings(tmp_path):
+    """A recording that exists in Frigate but hasn't been probed yet (no
+    files row) does NOT count as backlog — probe catch-up is the probe
+    loop's responsibility, not the compression health sensor's."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        # Recording is old enough + past the timeout, but no files row.
+        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        # Intentionally do NOT call _record_probed.
+        cs = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs.tier1_backlog_error is False
         assert cs.tier2_backlog_error is False
     finally:
@@ -439,6 +475,7 @@ def test_backlog_respects_custom_timeout(tmp_path):
     try:
         # 120s past the tier1 eligibility cutoff.
         _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 120)
+        _record_probed(ctx, "r1", "cam")
         # With a 60s timeout the 120s-past-cutoff file becomes a backlog.
         ctx.cfg.mqtt.backlog_timeout_seconds = 60
         cs = fc.collect_frigate_stats(ctx).cameras["cam"]
@@ -694,9 +731,11 @@ def test_publisher_publishes_backlog_binary_state(tmp_path, monkeypatch):
     )
     try:
         # 'cam' is in the resolved config with tier1.min_days=8 and tier2
-        # disabled-by-default? No — both are enabled in the test defaults.
-        # Insert a file well past tier1 eligibility and the backlog timeout.
+        # enabled by default in the test defaults.  Insert a file well past
+        # tier1 eligibility and the backlog timeout, probed but not yet
+        # compressed.
         _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
+        _record_probed(ctx, "r1", "cam")
         publisher.publish_once()
         by_topic = {t: p for t, p, _ in client.publishes}
         assert by_topic["frigate_compressor/cam/tier1_backlog_error/state"] == "ON"

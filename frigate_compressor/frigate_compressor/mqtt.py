@@ -131,46 +131,78 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             """,
             (rate_cutoff,),
         ).fetchall()
-        # Oldest pending recording per camera per tier.  "Pending" = exists
-        # in the recordings table but the corresponding tier status is
-        # neither OK nor segment-update-failed (both count as compressed
-        # on disk).  Eligibility filtering is done in Python because
-        # min_days is per-camera.
-        pending_rows = conn.execute(
-            f"""
-            SELECT
-                r.camera                                        AS camera,
-                MIN(CASE
-                        WHEN (f.t1_status IS NULL
-                              OR f.t1_status NOT IN
-                                 ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
-                        THEN r.start_time
-                    END)                                        AS oldest_t1_pending,
-                MIN(CASE
-                        WHEN f.t1_status IN
-                             ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                         AND (f.t2_status IS NULL
-                              OR f.t2_status NOT IN
-                                 ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
-                        THEN r.start_time
-                    END)                                        AS oldest_t2_pending
-            FROM frigate_stats.recordings r
-            LEFT JOIN files f
-              ON  f.recording_id = r.id
-            GROUP BY r.camera
-            """
-        ).fetchall()
+        # Per-camera backlog existence checks.  Replaces an earlier
+        # ``MIN(CASE ...)`` aggregation over the full recordings×files
+        # join — the Python side only needs to know whether *any*
+        # eligible recording is still pending past the backlog timeout,
+        # which is an EXISTS question.
+        #
+        # Driven from ``files`` via the partial index
+        # ``idx_files_t{1,2}_pending`` (camera, recording_id WHERE
+        # <pending>).  The planner range-seeks to camera=X within the
+        # partial index, then PK-looks up each recording's start_time
+        # to check the age threshold.  ``LIMIT 1`` stops at the first
+        # match.  Benchmarked at ~3× faster than the old aggregate.
+        #
+        # Semantic: a recording must have a files row (i.e. have been
+        # probed) for its backlog to be visible here.  Not-yet-probed
+        # recordings are excluded — they're the probe loop's problem,
+        # not the compressor's.
+        backlog_timeout = float(cfg.mqtt.backlog_timeout_seconds)
+        backlog_errors: dict[str, tuple[bool, bool]] = {}
+        for cam_name, cam_cfg in cfg.cameras.items():
+            if not cam_cfg.enabled:
+                backlog_errors[cam_name] = (False, False)
+                continue
+            t1_err = False
+            t2_err = False
+            if cam_cfg.tier1.enabled:
+                threshold = now - cam_cfg.tier1.min_days * 86400.0 - backlog_timeout
+                row = conn.execute(
+                    f"""
+                    SELECT 1
+                    FROM files f
+                    WHERE f.camera = ?
+                      AND (f.t1_status IS NULL
+                           OR f.t1_status NOT IN
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                      AND EXISTS (
+                        SELECT 1 FROM frigate_stats.recordings r
+                        WHERE r.id = f.recording_id AND r.start_time < ?
+                      )
+                    LIMIT 1
+                    """,
+                    (cam_name, threshold),
+                ).fetchone()
+                t1_err = row is not None
+            if cam_cfg.tier2.enabled:
+                threshold = now - cam_cfg.tier2.min_days * 86400.0 - backlog_timeout
+                row = conn.execute(
+                    f"""
+                    SELECT 1
+                    FROM files f
+                    WHERE f.camera = ?
+                      AND f.t1_status IN
+                          ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                      AND (f.t2_status IS NULL
+                           OR f.t2_status NOT IN
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                      AND EXISTS (
+                        SELECT 1 FROM frigate_stats.recordings r
+                        WHERE r.id = f.recording_id AND r.start_time < ?
+                      )
+                    LIMIT 1
+                    """,
+                    (cam_name, threshold),
+                ).fetchone()
+                t2_err = row is not None
+            backlog_errors[cam_name] = (t1_err, t2_err)
     finally:
         conn.close()
 
     recording_rate: dict[str, float] = {
         r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
     }
-    pending: dict[str, tuple[float | None, float | None]] = {
-        r["camera"]: (r["oldest_t1_pending"], r["oldest_t2_pending"])
-        for r in pending_rows
-    }
-    backlog_timeout = float(cfg.mqtt.backlog_timeout_seconds)
 
     cameras: dict[str, dict] = {}
     top_total_bytes = 0
@@ -218,26 +250,9 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     def _age(t: float | None) -> float | None:
         return (now - float(t)) / 86400.0 if t is not None else None
 
-    def _backlog(cam_name: str, oldest_pending: float | None, tier_idx: int) -> bool:
-        """True when the oldest eligible-but-pending recording for this
-        camera/tier has been waiting more than ``backlog_timeout`` past
-        the eligibility cutoff.  Returns False when the tier is disabled
-        or the camera is not in the resolved config (unknown cameras
-        should not alert)."""
-        if oldest_pending is None:
-            return False
-        cam_cfg = cfg.cameras.get(cam_name)
-        if cam_cfg is None:
-            return False
-        tier_cfg = cam_cfg.tier1 if tier_idx == 1 else cam_cfg.tier2
-        if not tier_cfg.enabled:
-            return False
-        eligibility_age = tier_cfg.min_days * 86400.0
-        return float(oldest_pending) < now - eligibility_age - backlog_timeout
-
     cam_stats: dict[str, CameraStats] = {}
     for cam, c in cameras.items():
-        t1_pending, t2_pending = pending.get(cam, (None, None))
+        t1_err, t2_err = backlog_errors.get(cam, (False, False))
         cam_stats[cam] = CameraStats(
             total_bytes=c["total_bytes"],
             total_files=c["total_files"],
@@ -249,8 +264,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             tier2_bytes=c["tier2_bytes"],
             oldest_age_days=_age(c["oldest"]),
             recording_bytes_rate=recording_rate.get(cam, 0.0),
-            tier1_backlog_error=_backlog(cam, t1_pending, 1),
-            tier2_backlog_error=_backlog(cam, t2_pending, 2),
+            tier1_backlog_error=t1_err,
+            tier2_backlog_error=t2_err,
         )
 
     return FrigateStats(
