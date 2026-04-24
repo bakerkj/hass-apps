@@ -70,17 +70,20 @@ _MB_BYTES = 1024 * 1024
 
 
 def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
-    """Snapshot Frigate's recording allocation, joined with our compress DB.
+    """Snapshot the compress DB's per-camera rollup for MQTT publishing.
 
-    One ATTACH+GROUP BY query: per (camera, tier, recording_type) we get a
-    files count, byte total (segment_size→bytes), and earliest start_time.
-    Tier comes from a LEFT JOIN against ``files`` — determined by which
-    ``t*_status`` column is set.  Uncompressed recordings are tier 0.
-    NULL ``segment_size`` is treated as 0 bytes so a half-finalised row
-    never crashes the aggregate.
+    The bulk of the data comes from the materialised ``files_stats`` table,
+    which is maintained transactionally by triggers on ``files``.  Instead
+    of aggregating 800K+ rows per publish, we read a handful of rows here.
+    Three supplementary queries fill in the pieces ``files_stats`` can't
+    carry cheaply:
 
-    Opens its own read-only connection so it never contends
-    with the probe or compression loops.
+      * recent recording-bytes rate (needs ``recordings.start_time``)
+      * oldest start_time per camera (can't maintain MIN under DELETE)
+      * per-tier backlog existence (per-camera EXISTS with partial indexes)
+
+    Opens its own read-only connection so it never contends with the
+    probe or compression loops.
     """
     cfg = ctx.cfg
     now = time.time()
@@ -93,27 +96,26 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     conn.row_factory = sqlite3.Row
     try:
         _attach_frigate_ro(conn, cfg, "frigate_stats")
-        rows = conn.execute(
-            f"""
-            SELECT
-                r.camera                                                AS camera,
-                CASE
-                  WHEN f.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 2
-                  WHEN f.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 1
-                  ELSE 0
-                END                                                     AS tier,
-                CASE
-                  WHEN COALESCE(r.objects, 0) > 0 THEN 'object'
-                  WHEN COALESCE(r.motion,  0) > 0 THEN 'motion'
-                  ELSE                                  'continuous'
-                END                                                     AS rtype,
-                COUNT(*)                                                AS files,
-                SUM(COALESCE(r.segment_size, 0) * {_MB_BYTES})          AS bytes,
-                MIN(r.start_time)                                       AS oldest
-            FROM frigate_stats.recordings r
-            LEFT JOIN files f
-              ON  f.recording_id = r.id
-            GROUP BY r.camera, tier, rtype
+        # Per (camera, rtype) rollup from the materialised stats table.
+        # files_stats carries tier0/tier1/tier2 bytes so each row is one
+        # rtype bucket for a camera — the publisher fans it out into
+        # CameraStats fields.
+        stats_rows = conn.execute(
+            """
+            SELECT camera, rtype, files_count,
+                   tier0_bytes, tier1_bytes, tier2_bytes
+            FROM files_stats
+            """
+        ).fetchall()
+        # Oldest start_time per camera — cheap with
+        # recordings_camera_start_time_end_time.  Kept separate from
+        # files_stats because maintaining MIN() under DELETE is expensive
+        # (it'd require finding the next minimum on every delete).
+        oldest_rows = conn.execute(
+            """
+            SELECT camera, MIN(start_time) AS oldest
+            FROM frigate_stats.recordings
+            GROUP BY camera
             """
         ).fetchall()
         # Fresh bytes per camera within the rate window.  Filtered on
@@ -203,6 +205,9 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     recording_rate: dict[str, float] = {
         r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
     }
+    oldest_by_camera: dict[str, float | None] = {
+        r["camera"]: r["oldest"] for r in oldest_rows
+    }
 
     cameras: dict[str, dict] = {}
     top_total_bytes = 0
@@ -210,15 +215,14 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     top_tier_bytes = {0: 0, 1: 0, 2: 0}
     top_oldest: float | None = None
 
-    for row in rows:
+    for row in stats_rows:
         cam = row["camera"]
-        tier = int(row["tier"])
-        if tier not in (0, 1, 2):
-            tier = 0
         rtype = row["rtype"]
-        files = int(row["files"] or 0)
-        bytes_ = int(row["bytes"] or 0)
-        oldest = row["oldest"]
+        files = int(row["files_count"] or 0)
+        tier0 = int(row["tier0_bytes"] or 0)
+        tier1 = int(row["tier1_bytes"] or 0)
+        tier2 = int(row["tier2_bytes"] or 0)
+        bucket_bytes = tier0 + tier1 + tier2
 
         c = cameras.setdefault(
             cam,
@@ -234,18 +238,45 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
                 "oldest": None,
             },
         )
-        c["total_bytes"] += bytes_
+        c["total_bytes"] += bucket_bytes
         c["total_files"] += files
-        c[f"{rtype}_bytes"] += bytes_
-        c[f"tier{tier}_bytes"] += bytes_
-        if oldest is not None and (c["oldest"] is None or oldest < c["oldest"]):
-            c["oldest"] = oldest
+        if rtype in ("continuous", "motion", "object"):
+            c[f"{rtype}_bytes"] += bucket_bytes
+        else:
+            # Defensive: unexpected rtype goes to the continuous bucket so
+            # nothing silently disappears from the top-level total.
+            c["continuous_bytes"] += bucket_bytes
+        c["tier0_bytes"] += tier0
+        c["tier1_bytes"] += tier1
+        c["tier2_bytes"] += tier2
 
-        top_total_bytes += bytes_
+        top_total_bytes += bucket_bytes
         top_total_files += files
-        top_tier_bytes[tier] += bytes_
-        if oldest is not None and (top_oldest is None or oldest < top_oldest):
-            top_oldest = oldest
+        top_tier_bytes[0] += tier0
+        top_tier_bytes[1] += tier1
+        top_tier_bytes[2] += tier2
+
+    # Stitch in the oldest start_time per camera (separate query).
+    for cam_name, oldest in oldest_by_camera.items():
+        c = cameras.setdefault(
+            cam_name,
+            {
+                "total_bytes": 0,
+                "total_files": 0,
+                "continuous_bytes": 0,
+                "motion_bytes": 0,
+                "object_bytes": 0,
+                "tier0_bytes": 0,
+                "tier1_bytes": 0,
+                "tier2_bytes": 0,
+                "oldest": None,
+            },
+        )
+        if oldest is not None:
+            if c["oldest"] is None or oldest < c["oldest"]:
+                c["oldest"] = oldest
+            if top_oldest is None or oldest < top_oldest:
+                top_oldest = oldest
 
     def _age(t: float | None) -> float | None:
         return (now - float(t)) / 86400.0 if t is not None else None

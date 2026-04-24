@@ -92,8 +92,17 @@ def _record_compressed(
     tier: int,
     *,
     status: str | None = None,
+    size_before: int = 10 * _MB,
+    size_after: int = 5 * _MB,
 ) -> None:
-    """Insert a row into compress DB so collect_frigate_stats sees it as compressed."""
+    """Insert a row into compress DB so collect_frigate_stats sees it as compressed.
+
+    ``size_before`` / ``size_after`` default to 10 MB / 5 MB for tests
+    that only care about the tier bucketing; tests asserting specific
+    byte totals can override — stats now read post-compression bytes
+    from ``t1_file_size`` / ``t2_file_size`` (via ``files_stats``), not
+    Frigate's ``segment_size``.
+    """
     fc._record(
         ctx.compress_db,
         recording_id=rid,
@@ -102,27 +111,88 @@ def _record_compressed(
         tier=tier,
         recording_type="motion",
         encoder="cpu",
-        size_before=10 * _MB,
-        size_after=5 * _MB,
+        size_before=size_before,
+        size_after=size_after,
         duration_sec=1.0,
         status=status or fc.STATUS_OK,
     )
 
 
-def _record_probed(ctx: fc.CompressorContext, rid: str, camera: str) -> None:
+def _record_probed(
+    ctx: fc.CompressorContext,
+    rid: str,
+    camera: str,
+    *,
+    file_size: int = 0,
+    recording_type: str | None = None,
+) -> None:
     """Insert a probed-but-not-compressed row into the compress DB.
 
-    Backlog existence queries drive from the ``files`` table, so a
-    recording only counts as "pending tier-N" when it has a files row.
-    Tests that want to simulate "recording waiting for tier-1" need
-    this probe-stub first.
+    Matches what the probe loop writes: ``scanned_at`` set, ``file_size``
+    populated, ``recording_type`` set based on motion/objects classification.
+    ``files_stats`` triggers rely on ``recording_type`` + ``file_size``
+    to bucket the row correctly, so tests simulating a probed recording
+    need to pass both to mirror the real probe flow.
     """
     ctx.compress_db.execute(
-        "INSERT OR IGNORE INTO files (recording_id, camera, path, scanned_at)"
-        " VALUES (?, ?, ?, ?)",
-        (rid, camera, f"/media/{camera}/{rid}.mp4", "2026-01-01T00:00:00"),
+        "INSERT OR IGNORE INTO files"
+        " (recording_id, camera, path, recording_type, file_size, scanned_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            rid,
+            camera,
+            f"/media/{camera}/{rid}.mp4",
+            recording_type,
+            file_size,
+            "2026-01-01T00:00:00",
+        ),
     )
     ctx.compress_db.commit()
+
+
+def _rtype_for(motion: int, objects: int) -> str:
+    """Mirror of ``_recording_type`` — local helper to avoid cross-file deps."""
+    if objects:
+        return "object"
+    if motion:
+        return "motion"
+    return "continuous"
+
+
+def _insert_probed(
+    writer: sqlite3.Connection,
+    ctx: fc.CompressorContext,
+    rid: str,
+    camera: str,
+    start_time: float,
+    *,
+    motion: int = 0,
+    objects: int = 0,
+    segment_size_mb: float = 1.0,
+) -> None:
+    """Insert recording into Frigate DB AND a matching probed files row.
+
+    This is what happens in production: Frigate writes the recording,
+    the probe loop quickly catches up and writes a files row.  Stats
+    are computed from ``files_stats`` (the materialised aggregate), so
+    tests need the files row for bytes to show up in the rollup.
+    """
+    _insert_rec(
+        writer,
+        rid,
+        camera,
+        start_time,
+        motion=motion,
+        objects=objects,
+        segment_size_mb=segment_size_mb,
+    )
+    _record_probed(
+        ctx,
+        rid,
+        camera,
+        file_size=int(segment_size_mb * _MB),
+        recording_type=_rtype_for(motion, objects),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,12 +219,21 @@ def test_collect_stats_single_camera_uncompressed(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
         # 3 files: continuous (10 MB), motion (20 MB), object (30 MB) = 60 MB
-        _insert_rec(writer, "r1", "front", time.time() - 86400, segment_size_mb=10)
-        _insert_rec(
-            writer, "r2", "front", time.time() - 86400, motion=5, segment_size_mb=20
+        _insert_probed(
+            writer, ctx, "r1", "front", time.time() - 86400, segment_size_mb=10
         )
-        _insert_rec(
+        _insert_probed(
             writer,
+            ctx,
+            "r2",
+            "front",
+            time.time() - 86400,
+            motion=5,
+            segment_size_mb=20,
+        )
+        _insert_probed(
+            writer,
+            ctx,
             "r3",
             "front",
             time.time() - 86400,
@@ -188,11 +267,11 @@ def test_collect_stats_recording_type_priority(tmp_path):
     """objects > motion > continuous; objects=0 motion>0 → motion."""
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
-        _insert_rec(writer, "a", "cam", time.time(), motion=0, objects=0)
-        _insert_rec(writer, "b", "cam", time.time(), motion=3, objects=0)
-        _insert_rec(writer, "c", "cam", time.time(), motion=3, objects=2)
+        _insert_probed(writer, ctx, "a", "cam", time.time(), motion=0, objects=0)
+        _insert_probed(writer, ctx, "b", "cam", time.time(), motion=3, objects=0)
+        _insert_probed(writer, ctx, "c", "cam", time.time(), motion=3, objects=2)
         # Edge case: object>0 with motion=0 (still classified as object)
-        _insert_rec(writer, "d", "cam", time.time(), motion=0, objects=1)
+        _insert_probed(writer, ctx, "d", "cam", time.time(), motion=0, objects=1)
         stats = fc.collect_frigate_stats(ctx)
         cs = stats.cameras["cam"]
         assert cs.continuous_bytes == 1 * _MB
@@ -205,15 +284,20 @@ def test_collect_stats_recording_type_priority(tmp_path):
 def test_collect_stats_compressed_tier_split(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
-        _insert_rec(writer, "u1", "cam", time.time(), segment_size_mb=10)  # tier 0
-        _insert_rec(writer, "t1a", "cam", time.time(), segment_size_mb=5)
-        _insert_rec(writer, "t1b", "cam", time.time(), segment_size_mb=5)
-        _insert_rec(writer, "t2a", "cam", time.time(), segment_size_mb=20)
-        # Promote two to tier 1, one to tier 2
-        _record_compressed(ctx, "t1a", "cam", tier=1)
-        _record_compressed(ctx, "t1b", "cam", tier=1)
-        _record_compressed(ctx, "t2a", "cam", tier=2)
+        # Probe all four.  file_size on the probed row is what tier-0 uses;
+        # _record_compressed overrides size_after to set the post-compression
+        # bytes stored as t1_file_size / t2_file_size.
+        _insert_probed(writer, ctx, "u1", "cam", time.time(), segment_size_mb=10)
+        _insert_probed(writer, ctx, "t1a", "cam", time.time(), segment_size_mb=10)
+        _insert_probed(writer, ctx, "t1b", "cam", time.time(), segment_size_mb=10)
+        _insert_probed(writer, ctx, "t2a", "cam", time.time(), segment_size_mb=10)
+        # Promote two to tier 1 (size_after=5 MB each), one to tier 2
+        # (size_after=20 MB) so the totals match the expectation below.
+        _record_compressed(ctx, "t1a", "cam", tier=1, size_after=5 * _MB)
+        _record_compressed(ctx, "t1b", "cam", tier=1, size_after=5 * _MB)
+        _record_compressed(ctx, "t2a", "cam", tier=2, size_after=20 * _MB)
         stats = fc.collect_frigate_stats(ctx)
+        # 10 (tier0) + 5+5 (tier1) + 20 (tier2)
         assert stats.total_bytes == (10 + 5 + 5 + 20) * _MB
         assert stats.tier0_bytes == 10 * _MB
         assert stats.tier1_bytes == 10 * _MB
@@ -232,9 +316,14 @@ def test_collect_stats_segment_update_failed_counts_as_compressed(tmp_path):
     bucketed by its tier, not as tier 0."""
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
-        _insert_rec(writer, "x", "cam", time.time(), segment_size_mb=8)
+        _insert_probed(writer, ctx, "x", "cam", time.time(), segment_size_mb=10)
         _record_compressed(
-            ctx, "x", "cam", tier=2, status=fc.STATUS_SEGMENT_UPDATE_FAILED
+            ctx,
+            "x",
+            "cam",
+            tier=2,
+            status=fc.STATUS_SEGMENT_UPDATE_FAILED,
+            size_after=8 * _MB,
         )
         stats = fc.collect_frigate_stats(ctx)
         assert stats.tier0_bytes == 0
@@ -248,7 +337,7 @@ def test_collect_stats_error_status_does_not_count_as_compressed(tmp_path):
     disk in its original form, so it belongs in tier 0."""
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
-        _insert_rec(writer, "x", "cam", time.time(), segment_size_mb=4)
+        _insert_probed(writer, ctx, "x", "cam", time.time(), segment_size_mb=4)
         _record_compressed(ctx, "x", "cam", tier=1, status=fc.STATUS_ERROR)
         stats = fc.collect_frigate_stats(ctx)
         assert stats.tier0_bytes == 4 * _MB
@@ -257,9 +346,9 @@ def test_collect_stats_error_status_does_not_count_as_compressed(tmp_path):
         _close_stats_ctx(ctx, writer)
 
 
-def test_collect_stats_null_segment_size_treated_as_zero(tmp_path):
-    """Frigate writes recordings rows before segment_size is finalised; we
-    must not crash on the NULL and must count those rows as zero bytes."""
+def test_collect_stats_null_file_size_treated_as_zero(tmp_path):
+    """A probed row with NULL file_size must not crash the aggregate and
+    should contribute zero bytes."""
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
         writer.execute(
@@ -268,6 +357,13 @@ def test_collect_stats_null_segment_size_treated_as_zero(tmp_path):
             ("nullrow", "cam", "/x", time.time(), 0, 0),
         )
         writer.commit()
+        # Probe the row but leave file_size NULL.
+        ctx.compress_db.execute(
+            "INSERT INTO files (recording_id, camera, path, recording_type, scanned_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("nullrow", "cam", "/x", "continuous", "2026-01-01T00:00:00"),
+        )
+        ctx.compress_db.commit()
         stats = fc.collect_frigate_stats(ctx)
         assert stats.total_files == 1
         assert stats.total_bytes == 0
@@ -278,8 +374,12 @@ def test_collect_stats_null_segment_size_treated_as_zero(tmp_path):
 def test_collect_stats_multi_camera(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
-        _insert_rec(writer, "a1", "front", time.time() - 86400, segment_size_mb=10)
-        _insert_rec(writer, "b1", "back", time.time() - 2 * 86400, segment_size_mb=20)
+        _insert_probed(
+            writer, ctx, "a1", "front", time.time() - 86400, segment_size_mb=10
+        )
+        _insert_probed(
+            writer, ctx, "b1", "back", time.time() - 2 * 86400, segment_size_mb=20
+        )
         stats = fc.collect_frigate_stats(ctx)
         assert set(stats.cameras.keys()) == {"front", "back"}
         assert stats.cameras["front"].total_bytes == 10 * _MB

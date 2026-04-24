@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import Config
 from .context import CompressorContext
-from .database import _attach_frigate_ro
+from .database import _attach_frigate_ro, _recording_type
 from .ffmpeg import _probe
 from .util import log
 
@@ -49,7 +49,8 @@ def _get_unprobed_recordings(
         if cursor is None:
             rows = conn.execute(
                 """
-                SELECT r.id, r.camera, r.path, r.start_time
+                SELECT r.id, r.camera, r.path, r.start_time,
+                       r.motion, r.objects
                 FROM   frigate_probe.recordings r
                 LEFT JOIN files f ON f.recording_id = r.id
                 WHERE  f.recording_id IS NULL
@@ -63,7 +64,8 @@ def _get_unprobed_recordings(
             floor = cursor - _PROBE_SAFETY_WINDOW_SEC
             rows = conn.execute(
                 """
-                SELECT r.id, r.camera, r.path, r.start_time
+                SELECT r.id, r.camera, r.path, r.start_time,
+                       r.motion, r.objects
                 FROM   frigate_probe.recordings r
                 LEFT JOIN files f ON f.recording_id = r.id
                 WHERE  r.start_time >= ?
@@ -82,6 +84,7 @@ def _get_unprobed_recordings(
             "camera": row["camera"],
             "path": row["path"],
             "start_time": float(row["start_time"]),
+            "recording_type": _recording_type(row["motion"], row["objects"]),
         }
         for row in rows
     ]
@@ -109,16 +112,26 @@ def _store_probe(
     camera: str,
     path: str,
     info: dict,
+    recording_type: str | None = None,
 ) -> None:
-    """Insert or update probe results in the files table."""
+    """Insert or update probe results in the files table.
+
+    ``recording_type`` is written on insert so the ``files_stats``
+    triggers can bucket the row correctly.  If ``None`` (caller from
+    older code paths that don't classify), the trigger falls back to
+    'continuous' and the bucket will self-correct on the next status
+    update that includes a valid recording_type.
+    """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     conn.execute(
         """
         INSERT INTO files
-            (recording_id, camera, path, codec, width, height,
+            (recording_id, camera, path, recording_type,
+             codec, width, height,
              fps, bitrate, duration_sec, file_size, scanned_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(recording_id) DO UPDATE SET
+            recording_type = COALESCE(excluded.recording_type, files.recording_type),
             codec       = excluded.codec,
             width       = excluded.width,
             height      = excluded.height,
@@ -132,6 +145,7 @@ def _store_probe(
             recording_id,
             camera,
             path,
+            recording_type,
             info.get("codec"),
             info.get("width"),
             info.get("height"),
@@ -218,6 +232,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                         rec["camera"],
                         rec["path"],
                         info,
+                        recording_type=rec.get("recording_type"),
                     )
                     probed += 1
                 else:

@@ -402,3 +402,249 @@ def test_fmt_none():
 
 def test_fmt_float():
     assert fc._fmt(1536.0) == "1.5KB"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# files_stats materialised aggregate + triggers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _stats_rows(conn: sqlite3.Connection) -> dict:
+    """Read files_stats into a dict keyed by (camera, rtype)."""
+    return {
+        (r[0], r[1]): {
+            "files_count": r[2],
+            "tier0_bytes": r[3],
+            "tier1_bytes": r[4],
+            "tier2_bytes": r[5],
+        }
+        for r in conn.execute(
+            "SELECT camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes"
+            " FROM files_stats"
+        )
+    }
+
+
+def _verify(conn: sqlite3.Connection) -> None:
+    """Assert the trigger-maintained stats match a fresh aggregation."""
+    assert fc.verify_files_stats(conn), "files_stats drifted from files"
+
+
+def test_files_stats_insert_tier0(tmp_path):
+    """INSERT of an unprobed-looking row bumps tier0_bytes + files_count."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000)"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")] == {
+        "files_count": 1,
+        "tier0_bytes": 1000,
+        "tier1_bytes": 0,
+        "tier2_bytes": 0,
+    }
+    _verify(conn)
+
+
+def test_files_stats_default_rtype_is_continuous(tmp_path):
+    """A row inserted with NULL recording_type is bucketed as continuous."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, file_size)"
+        " VALUES ('r1', 'cam', '/p', 500)"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "continuous")]["files_count"] == 1
+    assert s[("cam", "continuous")]["tier0_bytes"] == 500
+    _verify(conn)
+
+
+def test_files_stats_update_tier0_to_tier1(tmp_path):
+    """Promoting a row to tier-1 moves bytes from tier0 to tier1."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'continuous', 1000)"
+    )
+    conn.execute(
+        "UPDATE files SET t1_status = 'ok', t1_file_size = 400"
+        " WHERE recording_id = 'r1'"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "continuous")] == {
+        "files_count": 1,
+        "tier0_bytes": 0,
+        "tier1_bytes": 400,
+        "tier2_bytes": 0,
+    }
+    _verify(conn)
+
+
+def test_files_stats_update_tier1_to_tier2(tmp_path):
+    """Promoting tier-1 to tier-2 moves bytes from tier1 to tier2."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 400)"
+    )
+    conn.execute(
+        "UPDATE files SET t2_status = 'ok', t2_file_size = 100"
+        " WHERE recording_id = 'r1'"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")] == {
+        "files_count": 1,
+        "tier0_bytes": 0,
+        "tier1_bytes": 0,
+        "tier2_bytes": 100,
+    }
+    _verify(conn)
+
+
+def test_files_stats_update_segment_update_failed_is_compressed(tmp_path):
+    """'segment_update_failed' is treated the same as 'ok' for bucketing."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'continuous', 1000, 'segment_update_failed', 300)"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "continuous")]["tier1_bytes"] == 300
+    assert s[("cam", "continuous")]["tier0_bytes"] == 0
+    _verify(conn)
+
+
+def test_files_stats_update_error_stays_tier0(tmp_path):
+    """status='error' doesn't count as compressed — stays in tier0."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000)"
+    )
+    conn.execute(
+        "UPDATE files SET t1_status = 'error', t1_file_size = 0"
+        " WHERE recording_id = 'r1'"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")]["tier0_bytes"] == 1000
+    assert s[("cam", "motion")]["tier1_bytes"] == 0
+    _verify(conn)
+
+
+def test_files_stats_update_rtype_rebuckets(tmp_path):
+    """Changing recording_type moves all of the file's bytes to the new bucket."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'continuous', 1000)"
+    )
+    conn.execute("UPDATE files SET recording_type = 'motion' WHERE recording_id = 'r1'")
+    conn.commit()
+    s = _stats_rows(conn)
+    assert ("cam", "continuous") in s
+    assert s[("cam", "continuous")]["files_count"] == 0
+    assert s[("cam", "continuous")]["tier0_bytes"] == 0
+    assert s[("cam", "motion")]["files_count"] == 1
+    assert s[("cam", "motion")]["tier0_bytes"] == 1000
+    _verify(conn)
+
+
+def test_files_stats_delete(tmp_path):
+    """Deleting a row decrements its bucket."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 300)"
+    )
+    conn.execute("DELETE FROM files WHERE recording_id = 'r1'")
+    conn.commit()
+    s = _stats_rows(conn)
+    # Row stays in stats but counts drop to zero.
+    if ("cam", "motion") in s:
+        assert s[("cam", "motion")]["files_count"] == 0
+        assert s[("cam", "motion")]["tier0_bytes"] == 0
+        assert s[("cam", "motion")]["tier1_bytes"] == 0
+    _verify(conn)
+
+
+def test_files_stats_multiple_cameras_and_tiers(tmp_path):
+    """End-to-end: mix of cameras, rtypes, and tier states agree with aggregation."""
+    conn = _open_compress_db(tmp_path)
+    conn.executescript(
+        """
+        INSERT INTO files (recording_id, camera, path, recording_type, file_size)
+        VALUES
+          ('a', 'front', '/a', 'continuous', 100),
+          ('b', 'front', '/b', 'motion',     200),
+          ('c', 'back',  '/c', 'object',     300);
+        UPDATE files SET t1_status = 'ok', t1_file_size = 50 WHERE recording_id = 'b';
+        UPDATE files SET t1_status = 'ok', t1_file_size = 100,
+                         t2_status = 'ok', t2_file_size = 40
+            WHERE recording_id = 'c';
+        """
+    )
+    conn.commit()
+    _verify(conn)
+    s = _stats_rows(conn)
+    # front/continuous: 100 @ tier0
+    assert s[("front", "continuous")] == {
+        "files_count": 1,
+        "tier0_bytes": 100,
+        "tier1_bytes": 0,
+        "tier2_bytes": 0,
+    }
+    # front/motion: 50 @ tier1
+    assert s[("front", "motion")]["tier1_bytes"] == 50
+    # back/object: 40 @ tier2
+    assert s[("back", "object")]["tier2_bytes"] == 40
+
+
+def test_files_stats_backfill_from_existing_files(tmp_path):
+    """If a DB pre-dates the triggers, reopening it populates files_stats."""
+    # First open: install schema + triggers.  Insert rows with triggers active.
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 700)"
+    )
+    conn.commit()
+    # Simulate a DB that pre-dates the stats table by emptying it.
+    conn.execute("DELETE FROM files_stats")
+    conn.commit()
+    conn.close()
+
+    # Reopening should notice stats is empty and rebuild from files.
+    conn = _open_compress_db(tmp_path)
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")]["files_count"] == 1
+    assert s[("cam", "motion")]["tier0_bytes"] == 700
+    _verify(conn)
+
+
+def test_files_stats_audit_rebuilds_on_drift(tmp_path):
+    """If files_stats drifts out of sync, reopening detects it and rebuilds."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('r1', 'cam', '/p', 'continuous', 500)"
+    )
+    conn.commit()
+    # Manually corrupt files_stats to simulate trigger drift.
+    conn.execute("UPDATE files_stats SET tier0_bytes = 9999 WHERE camera = 'cam'")
+    conn.commit()
+    conn.close()
+
+    conn = _open_compress_db(tmp_path)
+    s = _stats_rows(conn)
+    assert s[("cam", "continuous")]["tier0_bytes"] == 500  # rebuilt, not 9999
+    _verify(conn)
