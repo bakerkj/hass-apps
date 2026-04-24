@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
+"""Entry-point orchestration: option parsing, MQTT lifecycle, turbostat loop."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,260 +15,15 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
-
-def log(level: str, msg: str, min_level: str = "INFO") -> None:
-    order = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
-    if order.get(level, 20) < order.get(min_level, 20):
-        return
-    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    print(f"{ts} [{level}] {msg}", flush=True)
-
-
-def sanitize_key(k: str) -> str:
-    k = k.strip()
-    k = k.replace("%", "_pct")
-    k = k.replace("/", "_per_")
-    k = k.replace("-", "_")
-    k = re.sub(r"[^A-Za-z0-9_]+", "_", k)
-    k = re.sub(r"_+", "_", k).strip("_")
-    return k.lower()
-
-
-def friendly_name(col: str) -> str:
-    replacements = {
-        "PkgWatt": "CPU Package Power",
-        "CorWatt": "CPU Cores Power",
-        "GFXWatt": "CPU iGPU Power",
-        "RAMWatt": "CPU DRAM Power",
-        "PkgTmp": "CPU Package Temperature",
-        "Busy%": "CPU Busy",
-        "CPU%": "CPU Busy",
-        "GFX%": "CPU iGPU Busy",
-        "CoreTmp": "CPU Core Temperature",
-        "Bzy_MHz": "CPU Busy Frequency",
-        "Avg_MHz": "CPU Average Frequency",
-        "TSC_MHz": "CPU Time Stamp Counter Frequency",
-        "Totl%C0": "CPU Total C0 (Active)",
-        "Any%C0": "CPU Any Core C0 (Active)",
-        "GFX%C0": "GPU C0 (Active)",
-        "CPUGFX%": "CPU+GPU C0 (Active)",
-        "Pkg%pc2": "CPU Package C2 Residency",
-        "Pkg%pc3": "CPU Package C3 Residency",
-        "Pkg%pc6": "CPU Package C6 Residency",
-        "Pkg%pc7": "CPU Package C7 Residency",
-        "Pkg%pc8": "CPU Package C8 Residency",
-        "Pkg%pc9": "CPU Package C9 Residency",
-        "Pkg%pc10": "CPU Package C10 Residency",
-        "Pk%pc10": "CPU Package C10 Residency",
-        "C1ACPI%": "ACPI C1 Residency",
-        "C2ACPI%": "ACPI C2 Residency",
-        "C3ACPI%": "ACPI C3 Residency",
-        "CPU%c1": "CPU C1 Residency",
-        "CPU%c6": "CPU C6 Residency",
-        "CPU%c7": "CPU C7 Residency",
-        "CPU%LPI": "CPU Low Power Idle Residency",
-        "SYS%LPI": "System Low Power Idle Residency",
-        "GFX%rc6": "GPU RC6 Residency",
-        "GFXAMHz": "GPU Frequency (Actual)",
-        "GFXMHz": "GPU Frequency (Requested)",
-        "IPC": "Instructions per Cycle",
-        "LLCkRPS": "CPU Last-Level Cache References",
-        "LLC%hi": "CPU Last-Level Cache Hit Rate",
-        "LLC%hit": "CPU Last-Level Cache Hit Rate",
-        "IRQ": "Interrupt Rate",
-        "NMI": "Non-maskable Interrupt Rate",
-        "SMI": "System Management Interrupt Rate",
-        "POLL%": "CPU Polling Time",
-    }
-    return replacements.get(col, f"Turbostat {col}")
-
-
-def guess_meta(original_col: str) -> tuple[str | None, str | None, str, int]:
-    col = original_col.strip()
-
-    if "%" in col or col in ("CPU%", "GFX%"):
-        return "%", None, "mdi:percent", 1
-
-    if col.lower().endswith("tmp") or "temp" in col.lower():
-        return "°C", "temperature", "mdi:thermometer", 0
-
-    if "mhz" in col.lower():
-        return "MHz", "frequency", "mdi:sine-wave", 0
-
-    if "watt" in col.lower():
-        return "W", "power", "mdi:flash", 1
-
-    if col.lower().endswith("_j") or col.lower().endswith("j"):
-        return "J", None, "mdi:counter", 0
-
-    if col.lower().endswith("rps") or "/s" in col.lower() or col.lower().endswith("_s"):
-        return "1/s", None, "mdi:chart-line", 0
-
-    if col.lower() in {"sec", "seconds"} or col.lower().endswith("sec"):
-        return "s", None, "mdi:timer-outline", 1
-
-    if "irq" in col.lower():
-        return None, None, "mdi:chart-line", 0
-
-    return None, None, "mdi:chart-line", 2
-
-
-class MqttHealth:
-    def __init__(self) -> None:
-        self.connected: bool = False
-        self.last_connect_ok: float = 0.0
-        self.last_disconnect: float = 0.0
-        self.last_state_publish_ok: float = 0.0
-
-
-def mqtt_publish(
-    client: mqtt.Client,
-    topic: str,
-    payload: str,
-    *,
-    qos: int,
-    retain: bool,
-    log_level: str,
-    health: MqttHealth,
-    mark_state: bool = False,
-) -> bool:
-    try:
-        info = client.publish(topic, payload=payload, qos=qos, retain=retain)
-        if info.rc == mqtt.MQTT_ERR_SUCCESS:
-            if mark_state:
-                health.last_state_publish_ok = time.time()
-            return True
-        log("WARNING", f"MQTT publish rc={info.rc} topic={topic}", log_level)
-    except Exception as e:
-        log("WARNING", f"MQTT publish failed topic={topic}: {e}", log_level)
-    return False
-
-
-def connect_mqtt_with_retry(
-    client: mqtt.Client,
-    mqtt_host: str,
-    mqtt_port: int,
-    log_level: str,
-) -> None:
-    delay = 5
-    while True:
-        try:
-            client.connect(mqtt_host, mqtt_port, keepalive=60)
-            return
-        except Exception as e:
-            log(
-                "WARNING",
-                f"Cannot connect to MQTT broker {mqtt_host}:{mqtt_port}: {e} — retrying in {delay}s",
-                log_level,
-            )
-            time.sleep(delay)
-            delay = min(delay * 2, 60)
-
-
-def build_discovery_payloads(
-    discovery_prefix: str,
-    device_id: str,
-    device_name: str,
-    state_topic: str,
-    base_topic: str,
-    availability_topic: str,
-    cols: dict[str, str],
-    expire_after_s: int,
-) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-
-    device = {
-        "identifiers": [device_id],
-        "name": device_name,
-        "manufacturer": "turbostat",
-        "model": "turbostat summary",
-    }
-
-    expire_after = expire_after_s
-
-    for original_col, json_key in cols.items():
-        name = friendly_name(original_col)
-        unit, device_class, icon, sdp = guess_meta(original_col)
-
-        payload: dict[str, Any] = {
-            "name": name,
-            "unique_id": f"{device_id}_{json_key}",
-            "state_topic": f"{base_topic}/{json_key}/state",
-            "json_attributes_topic": state_topic,
-            "icon": icon,
-            "device": device,
-            "entity_category": "diagnostic",
-            "state_class": "measurement",
-            "suggested_display_precision": int(sdp),
-            "availability_topic": availability_topic,
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "expire_after": expire_after,
-        }
-
-        if unit is not None:
-            payload["unit_of_measurement"] = unit
-        if device_class is not None:
-            payload["device_class"] = device_class
-
-        disc_topic = f"{discovery_prefix}/sensor/{device_id}/{json_key}/config"
-        out[disc_topic] = payload
-
-    return out
-
-
-def start_turbostat(interval_s: float) -> subprocess.Popen:
-    cmd = [
-        "turbostat",
-        "--Summary",
-        "--quiet",
-        "--enable",
-        "all",
-        "--interval",
-        str(interval_s),
-    ]
-    return subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-    )
-
-
-class TurbostatParser:
-    def __init__(self) -> None:
-        self.header: list[str] | None = None
-        self.num_re = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
-
-    def reset(self) -> None:
-        self.header = None
-
-    def parse_line(self, raw_line: str) -> tuple[list[str], dict[str, str], str] | None:
-        line = raw_line.rstrip("\n")
-        if not line.strip():
-            return None
-
-        parts = re.split(r"\s+", line.strip())
-
-        def is_number(s: str) -> bool:
-            return self.num_re.match(s) is not None
-
-        if self.header is None:
-            if all((not is_number(p)) for p in parts):
-                self.header = parts
-            return None
-
-        if all((not is_number(p)) for p in parts):
-            self.header = parts
-            return None
-
-        if len(parts) != len(self.header):
-            return None
-
-        values = dict(zip(self.header, parts))
-        return self.header, values, line
+from .metadata import friendly_name
+from .mqtt import (
+    MqttHealth,
+    build_discovery_payloads,
+    connect_mqtt_with_retry,
+    mqtt_publish,
+)
+from .parser import TurbostatParser, start_turbostat
+from .util import log, sanitize_key
 
 
 def main() -> int:
@@ -754,7 +511,3 @@ def main() -> int:
             pass
 
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
