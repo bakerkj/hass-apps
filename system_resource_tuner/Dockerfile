@@ -12,8 +12,9 @@ RUN apk add --no-cache \
   docker-cli=29.1.3-r4
 
 COPY run.sh /run.sh
-COPY system_resource_tuner.py /system_resource_tuner.py
+COPY system_resource_tuner /opt/system_resource_tuner
 
-RUN chmod +x /run.sh
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/system_resource_tuner
 
 ENTRYPOINT ["/run.sh"]

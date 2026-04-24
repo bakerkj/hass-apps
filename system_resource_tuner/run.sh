@@ -8,4 +8,5 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /system_resource_tuner.py --options "$OPTIONS"
+export PYTHONPATH=/opt
+exec python3 -m system_resource_tuner --options "$OPTIONS"
