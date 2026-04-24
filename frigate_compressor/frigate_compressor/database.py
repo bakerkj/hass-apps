@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_camera ON files(camera);
+
+-- Status indexes: eligibility polls, backlog queries, and the MQTT stats
+-- aggregator filter on t1_status / t2_status.  Without these, every scan
+-- reads all 820K+ rows from SQLite page cache every publish cycle —
+-- cheap per-call but continuous.  The composite covers both tier-1
+-- (leftmost-prefix) and tier-1+tier-2 filters; the standalone t2 index
+-- covers t2-only filters (e.g. tier-2 pending stats).
+CREATE INDEX IF NOT EXISTS idx_files_t1_t2_status ON files(t1_status, t2_status);
+CREATE INDEX IF NOT EXISTS idx_files_t2_status ON files(t2_status);
 """
 
 VIEWS = f"""
