@@ -8,4 +8,5 @@ if [[ ! -f "$OPTIONS" ]]; then
   exit 1
 fi
 
-exec python3 /intel_gpu_mqtt.py --options "$OPTIONS"
+export PYTHONPATH=/opt
+exec python3 -m intel_gpu_mqtt --options "$OPTIONS"
