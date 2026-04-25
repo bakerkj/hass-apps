@@ -181,6 +181,8 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
     )
     probe_conn.row_factory = sqlite3.Row
     probe_conn.execute("PRAGMA journal_mode=WAL")
+    probe_conn.execute("PRAGMA synchronous=NORMAL")
+    probe_conn.execute("PRAGMA cache_size=-196608")
     probe_conn.execute("PRAGMA busy_timeout=10000")
 
     # Cursor state (in-memory only): ``None`` means the next iteration

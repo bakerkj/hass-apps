@@ -30,7 +30,11 @@ from .database import (
     open_frigate_db_rw,
     vacuum_compress_db,
 )
-from .eligibility import get_eligible_recordings, time_until_next_eligible
+from .eligibility import (
+    _open_eligible_conn,
+    get_eligible_recordings,
+    time_until_next_eligible,
+)
 from .ffmpeg import check_encoder_works, detect_encoder
 from .housekeeping import run_housekeeping
 from .mqtt import MqttPublisher
@@ -165,10 +169,18 @@ def main() -> int:
                 log("INFO", f"        {rtype:<12}: {_fmt_type(ts)}")
     log("INFO", "════════════════════════════════════════")
 
+    # Persistent ro connection for the main loop's eligibility query —
+    # opened once and reused so its page cache stays warm across the
+    # every-60s query.  Has Frigate attached as ``frigate_eligible``
+    # so the UNION-ALL + join query can range-scan our partial indexes
+    # and then PK-look up paths from Frigate without re-attaching.
+    eligibility_ro = _open_eligible_conn(cfg)
+
     ctx = CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
         frigate_rw=frigate_rw,
+        eligibility_ro=eligibility_ro,
     )
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
@@ -217,6 +229,7 @@ def main() -> int:
                 log("WARNING", f"MQTT publisher stop failed: {e}")
         log("INFO", "Frigate Compressor stopped")
         compress_db.close()
+        eligibility_ro.close()
         frigate_ro.close()
         frigate_rw.close()
 

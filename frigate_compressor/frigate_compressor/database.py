@@ -538,6 +538,21 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # synchronous=NORMAL is SQLite's recommended setting for WAL mode:
+    # fsync only on checkpoint instead of every commit.  On power loss
+    # we may lose the last couple of status updates, but the DB stays
+    # intact — and our writes are idempotent re-compressions anyway, so
+    # "lose last update → re-compress one file next startup" is the
+    # worst case.
+    conn.execute("PRAGMA synchronous=NORMAL")
+    # cache_size=-196608 → up to 192 MB per connection.  Comfortably
+    # fits the steady-state hot set (partial indexes + top of PK/camera
+    # indexes + recent rows ≈ 45 MB) with plenty of headroom for DB
+    # growth through the 120-day retention window.  Lazy — only
+    # allocated as pages get touched, so idle connections cost nothing.
+    # Applied on every long-lived rw connection (worker threads, probe
+    # loop, housekeeping).
+    conn.execute("PRAGMA cache_size=-196608")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     _migrate_to_files_table(conn)
