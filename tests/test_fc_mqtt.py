@@ -128,25 +128,30 @@ def _record_probed(
     *,
     file_size: int = 0,
     recording_type: str | None = None,
+    start_time: float | None = None,
 ) -> None:
     """Insert a probed-but-not-compressed row into the compress DB.
 
     Matches what the probe loop writes: ``scanned_at`` set, ``file_size``
-    populated, ``recording_type`` set based on motion/objects classification.
-    ``files_stats`` triggers rely on ``recording_type`` + ``file_size``
-    to bucket the row correctly, so tests simulating a probed recording
-    need to pass both to mirror the real probe flow.
+    populated, ``recording_type`` set based on motion/objects classification,
+    ``start_time`` denormalised from Frigate.  ``files_stats`` triggers
+    rely on ``recording_type`` + ``file_size`` to bucket the row correctly,
+    and the eligibility/backlog queries range-scan on ``start_time``, so
+    tests simulating a probed recording need to pass these to mirror the
+    real probe flow.
     """
     ctx.compress_db.execute(
         "INSERT OR IGNORE INTO files"
-        " (recording_id, camera, path, recording_type, file_size, scanned_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
+        " (recording_id, camera, path, recording_type, file_size,"
+        "  start_time, scanned_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             rid,
             camera,
             f"/media/{camera}/{rid}.mp4",
             recording_type,
             file_size,
+            start_time,
             "2026-01-01T00:00:00",
         ),
     )
@@ -195,6 +200,7 @@ def _insert_probed(
         camera,
         file_size=int(segment_size_mb * _MB),
         recording_type=_rtype_for(motion, objects),
+        start_time=start_time,
     )
 
 
@@ -498,8 +504,9 @@ def test_tier1_backlog_flags_when_past_timeout(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
         # 2 hours past the tier1 eligibility cutoff (default timeout: 1 hour).
-        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
-        _record_probed(ctx, "r1", "cam")
+        st = time.time() - _T1_MIN_DAYS * 86400 - 7200
+        _insert_rec(writer, "r1", "cam", st)
+        _record_probed(ctx, "r1", "cam", start_time=st)
         cs = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs.tier1_backlog_error is True
         # tier2 doesn't consider r1 — r1 hasn't been promoted to tier1 yet.
@@ -514,8 +521,9 @@ def test_tier2_backlog_requires_tier1_compressed(tmp_path):
     try:
         now = time.time()
         # Old enough for tier2 eligibility and past the 1-hour timeout.
-        _insert_rec(writer, "r1", "cam", now - _T2_MIN_DAYS * 86400 - 7200)
-        _record_probed(ctx, "r1", "cam")
+        st = now - _T2_MIN_DAYS * 86400 - 7200
+        _insert_rec(writer, "r1", "cam", st)
+        _record_probed(ctx, "r1", "cam", start_time=st)
         # Without compression record → still tier0, tier2 doesn't flag.
         cs_before = fc.collect_frigate_stats(ctx).cameras["cam"]
         assert cs_before.tier1_backlog_error is True
@@ -577,8 +585,9 @@ def test_backlog_respects_custom_timeout(tmp_path):
     ctx, writer = _make_stats_ctx(tmp_path)
     try:
         # 120s past the tier1 eligibility cutoff.
-        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 120)
-        _record_probed(ctx, "r1", "cam")
+        st = time.time() - _T1_MIN_DAYS * 86400 - 120
+        _insert_rec(writer, "r1", "cam", st)
+        _record_probed(ctx, "r1", "cam", start_time=st)
         # With a 60s timeout the 120s-past-cutoff file becomes a backlog.
         ctx.cfg.mqtt.backlog_timeout_seconds = 60
         cs = fc.collect_frigate_stats(ctx).cameras["cam"]
@@ -837,8 +846,9 @@ def test_publisher_publishes_backlog_binary_state(tmp_path, monkeypatch):
         # enabled by default in the test defaults.  Insert a file well past
         # tier1 eligibility and the backlog timeout, probed but not yet
         # compressed.
-        _insert_rec(writer, "r1", "cam", time.time() - _T1_MIN_DAYS * 86400 - 7200)
-        _record_probed(ctx, "r1", "cam")
+        st = time.time() - _T1_MIN_DAYS * 86400 - 7200
+        _insert_rec(writer, "r1", "cam", st)
+        _record_probed(ctx, "r1", "cam", start_time=st)
         publisher.publish_once()
         by_topic = {t: p for t, p, _ in client.publishes}
         assert by_topic["frigate_compressor/cam/tier1_backlog_error/state"] == "ON"
