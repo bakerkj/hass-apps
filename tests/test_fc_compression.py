@@ -392,6 +392,7 @@ def _setup_compress_one(tmp_path):
             "file_size": 10000,
         },
     )
+    ctx.compress_db.commit()
 
     return ctx, src
 
