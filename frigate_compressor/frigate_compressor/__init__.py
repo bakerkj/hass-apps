@@ -38,6 +38,7 @@ from .database import (  # noqa: E402,F401
     _backfill_files_stats,
     _record,
     _recording_type,
+    backfill_files_start_time,
     check_frigate_schema,
     open_compress_db,
     open_frigate_db,

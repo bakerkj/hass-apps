@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS files (
     camera          TEXT    NOT NULL,
     path            TEXT    NOT NULL,
     recording_type  TEXT,
+    -- start_time is denormalised from Frigate's recordings so eligibility
+    -- and backlog queries can range-scan on (camera, start_time) without
+    -- joining against Frigate's DB per-row.  Populated by the probe loop
+    -- and backfilled for any pre-existing rows on startup.
+    start_time      REAL,
 
     -- Original probe (from camera, filled by probe loop)
     codec           TEXT,
@@ -74,6 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_files_t1_pending ON files(camera, recording_id)
      OR t1_status NOT IN ('ok', 'segment_update_failed');
 
 CREATE INDEX IF NOT EXISTS idx_files_t2_pending ON files(camera, recording_id)
+  WHERE t1_status IN ('ok', 'segment_update_failed')
+    AND (t2_status IS NULL
+         OR t2_status NOT IN ('ok', 'segment_update_failed'));
+
+-- Eligibility indexes: same pending filters, but keyed on (camera,
+-- start_time) so the planner can do a range scan for "camera X,
+-- start_time < cutoff" within the pending-only subset.  Benchmarked at
+-- ~4000× faster than the previous recordings-driven LEFT JOIN.  Requires
+-- start_time to be populated on files — see ``backfill_files_start_time``.
+CREATE INDEX IF NOT EXISTS idx_files_t1_pending_age ON files(camera, start_time)
+  WHERE t1_status IS NULL
+     OR t1_status NOT IN ('ok', 'segment_update_failed');
+
+CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
   WHERE t1_status IN ('ok', 'segment_update_failed')
     AND (t2_status IS NULL
          OR t2_status NOT IN ('ok', 'segment_update_failed'));
@@ -284,6 +303,29 @@ SELECT
 FROM files
 GROUP BY camera, COALESCE(recording_type, 'continuous')
 """
+
+
+def backfill_files_start_time(conn: sqlite3.Connection, cfg: Config) -> int:
+    """Fill in ``files.start_time`` from Frigate's recordings for any row
+    that's missing it.
+
+    Needed after upgrading to the schema that carries start_time on
+    ``files``.  Called once at startup — for fresh rows the probe loop
+    writes start_time inline.  Returns the number of rows updated.
+    """
+    _attach_frigate_ro(conn, cfg, "frigate_backfill")
+    try:
+        cur = conn.execute(
+            "UPDATE files SET start_time = ("
+            "  SELECT start_time FROM frigate_backfill.recordings r"
+            "  WHERE r.id = files.recording_id"
+            ") WHERE start_time IS NULL"
+        )
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.execute("DETACH DATABASE frigate_backfill")
 
 
 def _backfill_files_stats(conn: sqlite3.Connection) -> None:

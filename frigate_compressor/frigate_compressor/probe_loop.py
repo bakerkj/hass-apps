@@ -113,25 +113,28 @@ def _store_probe(
     path: str,
     info: dict,
     recording_type: str | None = None,
+    start_time: float | None = None,
 ) -> None:
     """Insert or update probe results in the files table.
 
     ``recording_type`` is written on insert so the ``files_stats``
-    triggers can bucket the row correctly.  If ``None`` (caller from
-    older code paths that don't classify), the trigger falls back to
-    'continuous' and the bucket will self-correct on the next status
-    update that includes a valid recording_type.
+    triggers can bucket the row correctly.  ``start_time`` is
+    denormalised onto files so eligibility/backlog queries can
+    range-scan on (camera, start_time) without joining Frigate per-row.
+    Both default to ``None`` for callers that don't have them — the
+    ON CONFLICT path preserves existing values in that case.
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     conn.execute(
         """
         INSERT INTO files
-            (recording_id, camera, path, recording_type,
+            (recording_id, camera, path, recording_type, start_time,
              codec, width, height,
              fps, bitrate, duration_sec, file_size, scanned_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(recording_id) DO UPDATE SET
             recording_type = COALESCE(excluded.recording_type, files.recording_type),
+            start_time  = COALESCE(excluded.start_time, files.start_time),
             codec       = excluded.codec,
             width       = excluded.width,
             height      = excluded.height,
@@ -146,6 +149,7 @@ def _store_probe(
             camera,
             path,
             recording_type,
+            start_time,
             info.get("codec"),
             info.get("width"),
             info.get("height"),
@@ -233,6 +237,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                         rec["path"],
                         info,
                         recording_type=rec.get("recording_type"),
+                        start_time=rec.get("start_time"),
                     )
                     probed += 1
                 else:

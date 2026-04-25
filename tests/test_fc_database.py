@@ -631,6 +631,45 @@ def test_files_stats_backfill_from_existing_files(tmp_path):
     _verify(conn)
 
 
+def test_backfill_files_start_time_populates_missing(tmp_path):
+    """backfill_files_start_time copies start_time from Frigate's recordings
+    onto files rows that don't have it yet (e.g. existed before the schema
+    gained the column)."""
+    from fc_helpers import _insert_recording, _make_config, _make_frigate_db
+
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(frigate_conn, "r1", "cam", "/p", 1234567.0)
+    _insert_recording(frigate_conn, "r2", "cam", "/q", 2345678.0)
+    frigate_conn.close()
+
+    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    conn = _open_compress_db(tmp_path)
+    # Insert files rows without start_time (simulates pre-upgrade rows).
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path) VALUES (?, ?, ?)",
+        ("r1", "cam", "/p"),
+    )
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, start_time)"
+        " VALUES (?, ?, ?, ?)",
+        ("r2", "cam", "/q", 2345678.0),  # already set, should be skipped
+    )
+    conn.commit()
+
+    n = fc.backfill_files_start_time(conn, cfg)
+    assert n == 1  # only r1 needed backfill
+
+    rows = dict(
+        conn.execute(
+            "SELECT recording_id, start_time FROM files ORDER BY recording_id"
+        ).fetchall()
+    )
+    assert rows["r1"] == 1234567.0
+    assert rows["r2"] == 2345678.0
+    conn.close()
+
+
 def test_files_stats_audit_rebuilds_on_drift(tmp_path):
     """If files_stats drifts out of sync, reopening detects it and rebuilds."""
     conn = _open_compress_db(tmp_path)

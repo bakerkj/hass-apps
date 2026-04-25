@@ -23,6 +23,7 @@ from .config import (
 )
 from .context import CompressorContext
 from .database import (
+    backfill_files_start_time,
     check_frigate_schema,
     open_compress_db,
     open_frigate_db,
@@ -101,6 +102,20 @@ def main() -> int:
     except RuntimeError as e:
         log("ERROR", f"Startup aborted: {e}")
         return 1
+
+    # Backfill files.start_time from Frigate's recordings for any rows
+    # that pre-date the column being added.  New rows get start_time
+    # written inline by the probe loop, so this is a one-time cost on
+    # the first run after the schema upgrade.
+    try:
+        n_backfilled = backfill_files_start_time(compress_db, cfg)
+        if n_backfilled:
+            log(
+                "INFO",
+                f"Backfilled files.start_time for {n_backfilled} pre-existing rows",
+            )
+    except Exception as e:
+        log("WARNING", f"files.start_time backfill failed (non-fatal): {e}")
 
     log("INFO", "════════════════════════════════════════")
     log("INFO", f"Frigate Compressor v{__version__} starting")
