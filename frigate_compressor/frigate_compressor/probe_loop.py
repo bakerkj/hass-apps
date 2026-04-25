@@ -10,9 +10,8 @@ import threading
 import time
 from pathlib import Path
 
-from .config import Config
 from .context import CompressorContext
-from .database import _attach_frigate_ro, _recording_type
+from .database import _recording_type
 from .ffmpeg import _probe
 from .util import log
 
@@ -32,7 +31,6 @@ _PROBE_FULL_RESCAN_SEC = 24.0 * 60.0 * 60.0
 
 
 def _get_unprobed_recordings(
-    cfg: Config,
     conn: sqlite3.Connection,
     cursor: float | None = None,
 ) -> list[dict]:
@@ -43,40 +41,39 @@ def _get_unprobed_recordings(
     a Unix timestamp, scans only recordings with ``start_time >= cursor -
     _PROBE_SAFETY_WINDOW_SEC`` — a bounded window around the newest thing
     we've already seen.  Capped at ``_PROBE_BATCH_SIZE`` rows per call.
+
+    The connection must have Frigate's recordings attached as ``frigate``
+    (the daemon attaches it once at startup; tests must do the same).
     """
-    _attach_frigate_ro(conn, cfg, "frigate_probe")
-    try:
-        if cursor is None:
-            rows = conn.execute(
-                """
-                SELECT r.id, r.camera, r.path, r.start_time,
-                       r.motion, r.objects
-                FROM   frigate_probe.recordings r
-                LEFT JOIN files f ON f.recording_id = r.id
-                WHERE  f.recording_id IS NULL
-                   OR  f.scanned_at IS NULL
-                ORDER BY r.start_time ASC
-                LIMIT ?
-                """,
-                (_PROBE_BATCH_SIZE,),
-            ).fetchall()
-        else:
-            floor = cursor - _PROBE_SAFETY_WINDOW_SEC
-            rows = conn.execute(
-                """
-                SELECT r.id, r.camera, r.path, r.start_time,
-                       r.motion, r.objects
-                FROM   frigate_probe.recordings r
-                LEFT JOIN files f ON f.recording_id = r.id
-                WHERE  r.start_time >= ?
-                  AND (f.recording_id IS NULL OR f.scanned_at IS NULL)
-                ORDER BY r.start_time ASC
-                LIMIT ?
-                """,
-                (floor, _PROBE_BATCH_SIZE),
-            ).fetchall()
-    finally:
-        conn.execute("DETACH DATABASE frigate_probe")
+    if cursor is None:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.camera, r.path, r.start_time,
+                   r.motion, r.objects
+            FROM   frigate.recordings r
+            LEFT JOIN files f ON f.recording_id = r.id
+            WHERE  f.recording_id IS NULL
+               OR  f.scanned_at IS NULL
+            ORDER BY r.start_time ASC
+            LIMIT ?
+            """,
+            (_PROBE_BATCH_SIZE,),
+        ).fetchall()
+    else:
+        floor = cursor - _PROBE_SAFETY_WINDOW_SEC
+        rows = conn.execute(
+            """
+            SELECT r.id, r.camera, r.path, r.start_time,
+                   r.motion, r.objects
+            FROM   frigate.recordings r
+            LEFT JOIN files f ON f.recording_id = r.id
+            WHERE  r.start_time >= ?
+              AND (f.recording_id IS NULL OR f.scanned_at IS NULL)
+            ORDER BY r.start_time ASC
+            LIMIT ?
+            """,
+            (floor, _PROBE_BATCH_SIZE),
+        ).fetchall()
 
     return [
         {
@@ -90,19 +87,16 @@ def _get_unprobed_recordings(
     ]
 
 
-def _max_recording_start_time(cfg: Config, conn: sqlite3.Connection) -> float | None:
+def _max_recording_start_time(conn: sqlite3.Connection) -> float | None:
     """``MAX(start_time)`` across Frigate's recordings table.
 
     Used to seed the cursor when a full scan finds nothing to probe so
-    subsequent iterations can run the cheap incremental query.
+    subsequent iterations can run the cheap incremental query.  The
+    connection must have Frigate attached as ``frigate``.
     """
-    _attach_frigate_ro(conn, cfg, "frigate_max_st")
-    try:
-        row = conn.execute(
-            "SELECT MAX(start_time) AS mx FROM frigate_max_st.recordings"
-        ).fetchone()
-    finally:
-        conn.execute("DETACH DATABASE frigate_max_st")
+    row = conn.execute(
+        "SELECT MAX(start_time) AS mx FROM frigate.recordings"
+    ).fetchone()
     return float(row["mx"]) if row and row["mx"] is not None else None
 
 
@@ -179,74 +173,84 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
     worth of recordings, which keeps the per-poll cost tiny even as
     the table grows to hundreds of thousands of rows.
 
-    Opens its own read-write connection to the compress DB so it never
-    contends with the compression loop.
+    Uses ``ctx.compress_db`` (with Frigate attached as ``frigate``) under
+    ``ctx.compress_db_lock``.  ``_probe`` (ffprobe) runs outside the lock
+    so it can't block other DB ops; the lock is acquired only around the
+    quick query / batched insert / commit operations.
     """
-    probe_conn = sqlite3.connect(
-        f"file:{ctx.cfg.compress_db}", uri=True, check_same_thread=False
-    )
-    probe_conn.row_factory = sqlite3.Row
-    probe_conn.execute("PRAGMA journal_mode=WAL")
-    probe_conn.execute("PRAGMA synchronous=NORMAL")
-    # 64 MB: same narrow write locality as the compression workers —
-    # probe INSERTs hit a small window of recent recording_ids in each
-    # index, so a larger cache wouldn't see reuse.
-    probe_conn.execute("PRAGMA cache_size=-65536")
-    probe_conn.execute("PRAGMA busy_timeout=10000")
+    compress_db = ctx.compress_db
+    compress_db_lock = ctx.compress_db_lock
 
     # Cursor state (in-memory only): ``None`` means the next iteration
     # does a full scan.  Set on startup and every ``_PROBE_FULL_RESCAN_SEC``.
     cursor: float | None = None
     last_full_scan: float = 0.0
 
-    try:
-        while not stopping.is_set():
-            now_mono = time.monotonic()
-            # Periodic belt-and-suspenders full rescan.
-            if last_full_scan and (now_mono - last_full_scan) >= _PROBE_FULL_RESCAN_SEC:
-                log("INFO", "Probe loop: periodic full rescan (cursor reset)")
-                cursor = None
+    while not stopping.is_set():
+        now_mono = time.monotonic()
+        # Periodic belt-and-suspenders full rescan.
+        if last_full_scan and (now_mono - last_full_scan) >= _PROBE_FULL_RESCAN_SEC:
+            log("INFO", "Probe loop: periodic full rescan (cursor reset)")
+            cursor = None
 
-            was_full_scan = cursor is None
-            try:
-                unprobed = _get_unprobed_recordings(ctx.cfg, probe_conn, cursor)
-            except Exception as e:
-                log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
-                stopping.wait(timeout=PROBE_SLEEP_SEC)
-                continue
+        was_full_scan = cursor is None
+        try:
+            with compress_db_lock:
+                unprobed = _get_unprobed_recordings(compress_db, cursor)
+        except Exception as e:
+            log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
+            stopping.wait(timeout=PROBE_SLEEP_SEC)
+            continue
 
+        if was_full_scan:
+            last_full_scan = now_mono
+
+        if not unprobed:
+            # Caught up.  If we just did a full scan with no results,
+            # seed the cursor from MAX(start_time) so the next iteration
+            # can run the cheap incremental query.
             if was_full_scan:
-                last_full_scan = now_mono
+                try:
+                    with compress_db_lock:
+                        mx = _max_recording_start_time(compress_db)
+                except Exception as e:
+                    log("WARNING", f"Probe loop: MAX(start_time) failed: {e}")
+                    mx = None
+                if mx is not None:
+                    cursor = mx
+            stopping.wait(timeout=PROBE_SLEEP_SEC)
+            continue
 
-            if not unprobed:
-                # Caught up.  If we just did a full scan with no results,
-                # seed the cursor from MAX(start_time) so the next iteration
-                # can run the cheap incremental query.
-                if was_full_scan:
-                    try:
-                        mx = _max_recording_start_time(ctx.cfg, probe_conn)
-                    except Exception as e:
-                        log("WARNING", f"Probe loop: MAX(start_time) failed: {e}")
-                        mx = None
-                    if mx is not None:
-                        cursor = mx
-                stopping.wait(timeout=PROBE_SLEEP_SEC)
-                continue
+        log("DEBUG", f"Probing {len(unprobed)} recording(s)")
+        probed = 0
+        max_observed = cursor if cursor is not None else 0.0
+        # ffprobe (a subprocess) runs OUTSIDE the lock so other threads
+        # can use compress_db while we wait on file IO.  We collect the
+        # probe results, then take the lock once for the bulk INSERT +
+        # commit.  Batching the commit (rather than per-row) avoids both
+        # WAL frame amplification and the cache-invalidation cycle that
+        # used to force eligibility queries to re-read on every commit.
+        probe_results: list[tuple[dict, dict]] = []
+        for rec in unprobed:
+            if stopping.is_set():
+                break
+            info = _probe(Path(rec["path"]))
+            if info is not None:
+                probe_results.append((rec, info))
+            else:
+                log(
+                    "DEBUG",
+                    f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
+                )
+            if rec["start_time"] > max_observed:
+                max_observed = rec["start_time"]
 
-            log("DEBUG", f"Probing {len(unprobed)} recording(s)")
-            probed = 0
-            max_observed = cursor if cursor is not None else 0.0
-            # Batch commit: one commit per poll instead of one per row.
-            # See ``_store_probe`` for why this matters (WAL amplification
-            # + reader cache invalidation).
-            try:
-                for rec in unprobed:
-                    if stopping.is_set():
-                        break
-                    info = _probe(Path(rec["path"]))
-                    if info is not None:
+        try:
+            with compress_db_lock:
+                try:
+                    for rec, info in probe_results:
                         _store_probe(
-                            probe_conn,
+                            compress_db,
                             rec["recording_id"],
                             rec["camera"],
                             rec["path"],
@@ -255,31 +259,24 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                             start_time=rec.get("start_time"),
                         )
                         probed += 1
-                    else:
-                        log(
-                            "DEBUG",
-                            f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
-                        )
-                    if rec["start_time"] > max_observed:
-                        max_observed = rec["start_time"]
-                probe_conn.commit()
-            except Exception:
-                probe_conn.rollback()
-                raise
+                    compress_db.commit()
+                except Exception:
+                    compress_db.rollback()
+                    raise
+        except Exception as e:
+            log("ERROR", f"Probe loop: store batch failed: {e}")
 
-            # Cursor advancement:
-            #  * If a full scan returned a FULL batch (==LIMIT rows), there's
-            #    likely more backlog — keep cursor=None so the next iteration
-            #    re-scans full to drain it.
-            #  * Otherwise, advance cursor to the newest start_time we just
-            #    observed so the next iteration runs the bounded incremental
-            #    query.
-            if was_full_scan and len(unprobed) >= _PROBE_BATCH_SIZE:
-                cursor = None
-            else:
-                cursor = max_observed
+        # Cursor advancement:
+        #  * If a full scan returned a FULL batch (==LIMIT rows), there's
+        #    likely more backlog — keep cursor=None so the next iteration
+        #    re-scans full to drain it.
+        #  * Otherwise, advance cursor to the newest start_time we just
+        #    observed so the next iteration runs the bounded incremental
+        #    query.
+        if was_full_scan and len(unprobed) >= _PROBE_BATCH_SIZE:
+            cursor = None
+        else:
+            cursor = max_observed
 
-            if probed:
-                log("DEBUG", f"Probed {probed} recording(s)")
-    finally:
-        probe_conn.close()
+        if probed:
+            log("DEBUG", f"Probed {probed} recording(s)")

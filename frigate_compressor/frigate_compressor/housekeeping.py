@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from .config import Config
@@ -13,29 +14,28 @@ from .context import CompressorContext
 from .database import (
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
-    _attach_frigate_ro,
 )
 from .ffmpeg import _TEMP_GLOB
 from .util import _display_path, _fmt, log
 
 
 def run_housekeeping(ctx: CompressorContext) -> None:
-    cfg = ctx.cfg
-    frigate_rw = ctx.frigate_rw
+    """Top-level housekeeping entrypoint.
 
-    compress_db = sqlite3.connect(
-        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
+    Runs on the main loop thread once per ``housekeeping_interval_days``,
+    using the shared ``ctx.compress_db`` (with Frigate attached as
+    ``frigate``) and ``ctx.frigate_rw``.  Each subroutine acquires the
+    appropriate lock around its work — pieces are independent enough that
+    holding the lock for the whole pass would needlessly block the probe
+    loop and workers for a noticeable stretch.
+    """
+    _run_housekeeping_inner(
+        ctx.cfg,
+        ctx.compress_db,
+        ctx.compress_db_lock,
+        ctx.frigate_rw,
+        ctx.frigate_rw_lock,
     )
-    compress_db.row_factory = sqlite3.Row
-    compress_db.execute("PRAGMA journal_mode=WAL")
-    compress_db.execute("PRAGMA synchronous=NORMAL")
-    compress_db.execute("PRAGMA cache_size=-131072")
-    compress_db.execute("PRAGMA busy_timeout=10000")
-
-    try:
-        _run_housekeeping_inner(cfg, compress_db, frigate_rw)
-    finally:
-        compress_db.close()
 
 
 def _hk_remove_temp_files(cfg: Config) -> None:
@@ -54,15 +54,18 @@ def _hk_remove_temp_files(cfg: Config) -> None:
 def _hk_retry_segment_updates(
     cfg: Config,
     compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
     frigate_rw: sqlite3.Connection,
+    frigate_rw_lock: threading.Lock,
 ) -> None:
     """Retry segment_size updates that failed during prior compress runs."""
-    pending_seg = compress_db.execute(
-        """SELECT recording_id, camera, path
-           FROM files
-           WHERE t1_status = ? OR t2_status = ?""",
-        (STATUS_SEGMENT_UPDATE_FAILED, STATUS_SEGMENT_UPDATE_FAILED),
-    ).fetchall()
+    with compress_db_lock:
+        pending_seg = compress_db.execute(
+            """SELECT recording_id, camera, path
+               FROM files
+               WHERE t1_status = ? OR t2_status = ?""",
+            (STATUS_SEGMENT_UPDATE_FAILED, STATUS_SEGMENT_UPDATE_FAILED),
+        ).fetchall()
 
     retried = promoted = 0
     for row in pending_seg:
@@ -87,29 +90,31 @@ def _hk_retry_segment_updates(
                 "DEBUG",
                 f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
-            frigate_rw.execute(
-                "UPDATE recordings SET segment_size = ? WHERE id = ?",
-                (actual_size_mb, row["recording_id"]),
-            )
-            frigate_rw.commit()
-            compress_db.execute(
-                """UPDATE files SET
-                     t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
-                     t1_error_msg = CASE WHEN t1_status = ? THEN NULL ELSE t1_error_msg END,
-                     t2_status = CASE WHEN t2_status = ? THEN ? ELSE t2_status END,
-                     t2_error_msg = CASE WHEN t2_status = ? THEN NULL ELSE t2_error_msg END
-                   WHERE recording_id = ?""",
-                (
-                    STATUS_SEGMENT_UPDATE_FAILED,
-                    STATUS_OK,
-                    STATUS_SEGMENT_UPDATE_FAILED,
-                    STATUS_SEGMENT_UPDATE_FAILED,
-                    STATUS_OK,
-                    STATUS_SEGMENT_UPDATE_FAILED,
-                    row["recording_id"],
-                ),
-            )
-            compress_db.commit()
+            with frigate_rw_lock:
+                frigate_rw.execute(
+                    "UPDATE recordings SET segment_size = ? WHERE id = ?",
+                    (actual_size_mb, row["recording_id"]),
+                )
+                frigate_rw.commit()
+            with compress_db_lock:
+                compress_db.execute(
+                    """UPDATE files SET
+                         t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
+                         t1_error_msg = CASE WHEN t1_status = ? THEN NULL ELSE t1_error_msg END,
+                         t2_status = CASE WHEN t2_status = ? THEN ? ELSE t2_status END,
+                         t2_error_msg = CASE WHEN t2_status = ? THEN NULL ELSE t2_error_msg END
+                       WHERE recording_id = ?""",
+                    (
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_OK,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        STATUS_OK,
+                        STATUS_SEGMENT_UPDATE_FAILED,
+                        row["recording_id"],
+                    ),
+                )
+                compress_db.commit()
             promoted += 1
             log(
                 "INFO",
@@ -130,17 +135,24 @@ def _hk_retry_segment_updates(
         log("DEBUG", "No pending segment_size retries")
 
 
-def _hk_prune_orphaned(cfg: Config, compress_db: sqlite3.Connection) -> None:
-    """Drop compress_db rows whose recording is no longer in Frigate's DB."""
+def _hk_prune_orphaned(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
+) -> None:
+    """Drop compress_db rows whose recording is no longer in Frigate's DB.
+
+    Uses the persistent ``frigate`` schema attached at startup — no
+    per-call ATTACH/DETACH.
+    """
     pruned = 0
-    _attach_frigate_ro(compress_db, cfg, "frigate_ro_hk")
-    try:
+    with compress_db_lock:
         if cfg.all_dry_run:
             pruned = compress_db.execute(
                 """
                 SELECT COUNT(*) FROM files
                 WHERE recording_id NOT IN (
-                    SELECT id FROM frigate_ro_hk.recordings
+                    SELECT id FROM frigate.recordings
                 )
                 """
             ).fetchone()[0]
@@ -150,14 +162,12 @@ def _hk_prune_orphaned(cfg: Config, compress_db: sqlite3.Connection) -> None:
                 """
                 DELETE FROM files
                 WHERE recording_id NOT IN (
-                    SELECT id FROM frigate_ro_hk.recordings
+                    SELECT id FROM frigate.recordings
                 )
                 """
             )
             pruned = cursor.rowcount
             compress_db.commit()
-    finally:
-        compress_db.execute("DETACH DATABASE frigate_ro_hk")
     if pruned:
         prefix = "DRY RUN: Would prune" if cfg.all_dry_run else "Pruned"
         log("INFO", f"{prefix} {pruned} orphaned DB entries")
@@ -165,11 +175,15 @@ def _hk_prune_orphaned(cfg: Config, compress_db: sqlite3.Connection) -> None:
         log("DEBUG", "No orphaned DB entries")
 
 
-def _hk_log_savings_summary(compress_db: sqlite3.Connection) -> None:
+def _hk_log_savings_summary(
+    compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
+) -> None:
     """Print the storage-savings table by camera."""
-    rows = compress_db.execute(
-        "SELECT * FROM savings_by_camera ORDER BY camera"
-    ).fetchall()
+    with compress_db_lock:
+        rows = compress_db.execute(
+            "SELECT * FROM savings_by_camera ORDER BY camera"
+        ).fetchall()
     if not rows:
         log("INFO", "No compression data yet")
         return
@@ -196,9 +210,13 @@ def _hk_log_savings_summary(compress_db: sqlite3.Connection) -> None:
         )
 
 
-def _hk_log_recent_errors(compress_db: sqlite3.Connection) -> None:
+def _hk_log_recent_errors(
+    compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
+) -> None:
     """Print the most recent compression errors (last 7 days, up to 20)."""
-    errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
+    with compress_db_lock:
+        errors = compress_db.execute("SELECT * FROM recent_errors LIMIT 20").fetchall()
     if not errors:
         return
     log("WARNING", "── Recent errors (last 7 days)")
@@ -211,12 +229,16 @@ def _hk_log_recent_errors(compress_db: sqlite3.Connection) -> None:
 def _run_housekeeping_inner(
     cfg: Config,
     compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
     frigate_rw: sqlite3.Connection,
+    frigate_rw_lock: threading.Lock,
 ) -> None:
     log("INFO", "── Housekeeping starting")
     _hk_remove_temp_files(cfg)
-    _hk_retry_segment_updates(cfg, compress_db, frigate_rw)
-    _hk_prune_orphaned(cfg, compress_db)
-    _hk_log_savings_summary(compress_db)
-    _hk_log_recent_errors(compress_db)
+    _hk_retry_segment_updates(
+        cfg, compress_db, compress_db_lock, frigate_rw, frigate_rw_lock
+    )
+    _hk_prune_orphaned(cfg, compress_db, compress_db_lock)
+    _hk_log_savings_summary(compress_db, compress_db_lock)
+    _hk_log_recent_errors(compress_db, compress_db_lock)
     log("INFO", "── Housekeeping complete")

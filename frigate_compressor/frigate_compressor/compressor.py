@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-import sqlite3
 import subprocess
-import threading
 import time
 from pathlib import Path
 
-from .config import Config, TypeSettings
+from .config import TypeSettings
 from .context import CompressorContext
 from .database import (
     STATUS_ERROR,
@@ -29,43 +27,6 @@ from .ffmpeg import (
 from .util import _display_path, _fmt, log
 
 
-# Per-worker-thread connection cache.  Populated by
-# ``init_worker_connections`` (the ``ThreadPoolExecutor`` initializer in
-# app.py).  ``compress_one`` falls back to per-call opens if the cache
-# isn't populated, which is what tests and one-shot callers get.
-_local = threading.local()
-
-
-def init_worker_connections(cfg: Config) -> None:
-    """``ThreadPoolExecutor`` initializer — open one set of DB connections
-    per worker thread, kept alive for the daemon's lifetime.
-
-    Replaces the prior "open + close 3 connections per file" pattern
-    (~210 opens/min at full tilt) with one open per thread at startup.
-    Each open reads the schema, WAL header, and several pages of
-    sqlite_master, so amortising it across the thread's lifetime makes
-    a meaningful dent in steady-state IO.
-    """
-    _local.compress_db = sqlite3.connect(
-        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
-    )
-    _local.compress_db.row_factory = sqlite3.Row
-    _local.compress_db.execute("PRAGMA journal_mode=WAL")
-    _local.compress_db.execute("PRAGMA synchronous=NORMAL")
-    # 64 MB: workers write per file (row + PK + camera idx + partial idx
-    # updates) with narrow "recent recording_ids" locality.  Larger cache
-    # wouldn't get used — write-side hot set is small.
-    _local.compress_db.execute("PRAGMA cache_size=-65536")
-    _local.compress_db.execute("PRAGMA busy_timeout=10000")
-    _local.frigate_ro = sqlite3.connect(
-        f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False
-    )
-    _local.frigate_ro.row_factory = sqlite3.Row
-    _local.frigate_rw = sqlite3.connect(str(cfg.frigate_db), check_same_thread=False)
-    _local.frigate_rw.row_factory = sqlite3.Row
-    _local.frigate_rw.execute("PRAGMA busy_timeout=10000")
-
-
 def compress_one(
     recording_id: str,
     path: str,
@@ -75,58 +36,22 @@ def compress_one(
     encoder: str,
     ctx: CompressorContext,
 ) -> bool:
-    cfg = ctx.cfg
-    compress_db = getattr(_local, "compress_db", None)
-    if compress_db is not None:
-        # Production path: the worker thread's pool initializer has
-        # already opened these connections.  Reuse them.
-        return _compress_one_inner(
-            recording_id,
-            path,
-            camera,
-            tier,
-            recording_type,
-            encoder,
-            cfg,
-            compress_db,
-            _local.frigate_ro,
-            _local.frigate_rw,
-        )
+    """Compress one recording end-to-end using the shared connections on ctx.
 
-    # Fallback: no thread-local connections (tests, ad-hoc callers).
-    # Open + close per call so caller doesn't have to manage lifetime.
-    compress_db = sqlite3.connect(
-        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
+    All DB access goes through ``ctx.compress_db`` (writes + reads of files,
+    plus reads of frigate's recordings via the attached ``frigate`` schema)
+    serialised by ``ctx.compress_db_lock``, and ``ctx.frigate_rw`` for the
+    post-encode segment_size update serialised by ``ctx.frigate_rw_lock``.
+    """
+    return _compress_one_inner(
+        recording_id,
+        path,
+        camera,
+        tier,
+        recording_type,
+        encoder,
+        ctx,
     )
-    compress_db.row_factory = sqlite3.Row
-    compress_db.execute("PRAGMA journal_mode=WAL")
-    compress_db.execute("PRAGMA synchronous=NORMAL")
-    compress_db.execute("PRAGMA cache_size=-65536")
-    compress_db.execute("PRAGMA busy_timeout=10000")
-    frigate_ro = sqlite3.connect(
-        f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False
-    )
-    frigate_ro.row_factory = sqlite3.Row
-    frigate_rw = sqlite3.connect(str(cfg.frigate_db), check_same_thread=False)
-    frigate_rw.row_factory = sqlite3.Row
-    frigate_rw.execute("PRAGMA busy_timeout=10000")
-    try:
-        return _compress_one_inner(
-            recording_id,
-            path,
-            camera,
-            tier,
-            recording_type,
-            encoder,
-            cfg,
-            compress_db,
-            frigate_ro,
-            frigate_rw,
-        )
-    finally:
-        compress_db.close()
-        frigate_ro.close()
-        frigate_rw.close()
 
 
 def _compress_one_inner(
@@ -136,11 +61,13 @@ def _compress_one_inner(
     tier: int,
     recording_type: str,
     encoder: str,
-    cfg: Config,
-    compress_db: sqlite3.Connection,
-    frigate_ro: sqlite3.Connection,
-    frigate_rw: sqlite3.Connection,
+    ctx: CompressorContext,
 ) -> bool:
+    cfg = ctx.cfg
+    compress_db = ctx.compress_db
+    compress_db_lock = ctx.compress_db_lock
+    frigate_rw = ctx.frigate_rw
+    frigate_rw_lock = ctx.frigate_rw_lock
 
     # Resolve per-camera settings.
     cam_cfg = cfg.cameras.get(camera)
@@ -171,20 +98,21 @@ def _compress_one_inner(
         status: str,
         error_msg: str | None = None,
     ) -> None:
-        _record(
-            compress_db,
-            recording_id=recording_id,
-            camera=camera,
-            path=path,
-            tier=tier,
-            recording_type=recording_type,
-            encoder=encoder,
-            size_before=size_before,
-            size_after=size_after,
-            duration_sec=duration_sec,
-            status=status,
-            error_msg=error_msg,
-        )
+        with compress_db_lock:
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=tier,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=size_before,
+                size_after=size_after,
+                duration_sec=duration_sec,
+                status=status,
+                error_msg=error_msg,
+            )
 
     filepath = Path(path)
 
@@ -202,10 +130,11 @@ def _compress_one_inner(
     size_before = filepath.stat().st_size
 
     # Require probe data before compressing.
-    probe_row = compress_db.execute(
-        "SELECT width, height, fps FROM files WHERE recording_id = ?",
-        (recording_id,),
-    ).fetchone()
+    with compress_db_lock:
+        probe_row = compress_db.execute(
+            "SELECT width, height, fps FROM files WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
     if not probe_row or not probe_row["width"] or not probe_row["height"]:
         log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
@@ -400,10 +329,12 @@ def _compress_one_inner(
         # Closes the race where Frigate removes the DB row (and possibly the
         # file) between the checks above and the atomic replace below.
         # Without this, we could create an orphan on disk that Frigate never
-        # cleans up.
-        db_row = frigate_ro.execute(
-            "SELECT id FROM recordings WHERE id = ?", (recording_id,)
-        ).fetchone()
+        # cleans up.  Read via the attached ``frigate`` schema on
+        # compress_db so it shares the daemon's single connection.
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
         if db_row is None:
             rec(
                 size_before=size_before,
@@ -464,11 +395,12 @@ def _compress_one_inner(
     seg_status = STATUS_OK
     seg_error: str | None = None
     try:
-        frigate_rw.execute(
-            "UPDATE recordings SET segment_size = ? WHERE id = ?",
-            (new_size_mb, recording_id),
-        )
-        frigate_rw.commit()
+        with frigate_rw_lock:
+            frigate_rw.execute(
+                "UPDATE recordings SET segment_size = ? WHERE id = ?",
+                (new_size_mb, recording_id),
+            )
+            frigate_rw.commit()
     except Exception as e:
         seg_status = STATUS_SEGMENT_UPDATE_FAILED
         seg_error = str(e)

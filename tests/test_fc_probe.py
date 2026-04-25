@@ -116,6 +116,9 @@ def _make_probe_ctx(tmp_path, frigate_db, compress_conn=None):
     if compress_conn is None:
         compress_conn = _open_compress_db(tmp_path)
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    # Mirror the daemon: attach Frigate to compress_db read-only as
+    # ``frigate``.  The probe-loop helpers require this attach.
+    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
     frigate_ro = sqlite3.connect(str(frigate_db))
     frigate_ro.row_factory = sqlite3.Row
     frigate_rw = sqlite3.connect(str(frigate_db))
@@ -130,7 +133,7 @@ def test_get_unprobed_returns_all_when_none_probed(tmp_path):
     _insert_recording(frigate_conn, "r2", "cam1", "/path/b.mp4", time.time())
 
     ctx = _make_probe_ctx(tmp_path, frigate_db)
-    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
+    unprobed = fc._get_unprobed_recordings(ctx.compress_db)
     assert len(unprobed) == 2
     ids = {r["recording_id"] for r in unprobed}
     assert ids == {"r1", "r2"}
@@ -157,7 +160,7 @@ def test_get_unprobed_skips_already_probed(tmp_path):
     )
     ctx.compress_db.commit()
 
-    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
+    unprobed = fc._get_unprobed_recordings(ctx.compress_db)
     assert len(unprobed) == 1
     assert unprobed[0]["recording_id"] == "r2"
 
@@ -180,7 +183,7 @@ def test_get_unprobed_returns_empty_when_all_probed(tmp_path):
     )
     ctx.compress_db.commit()
 
-    unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db)
+    unprobed = fc._get_unprobed_recordings(ctx.compress_db)
     assert unprobed == []
 
     ctx.compress_db.close()
@@ -204,7 +207,7 @@ def test_get_unprobed_full_scan_returns_start_time(tmp_path):
 
     ctx = _make_probe_ctx(tmp_path, frigate_db)
     try:
-        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, None)
+        unprobed = fc._get_unprobed_recordings(ctx.compress_db, None)
         by_id = {r["recording_id"]: r for r in unprobed}
         assert by_id["r1"]["start_time"] == 1000.0
         assert by_id["r2"]["start_time"] == 2000.0
@@ -231,12 +234,12 @@ def test_get_unprobed_incremental_cursor_filters_by_start_time(tmp_path):
         # cursor=6000, safety window=15min=900s → floor=5100 → keeps only "new"
         cursor_t = 6000.0
         assert cursor_t - _PROBE_SAFETY_WINDOW_SEC == pytest.approx(6000.0 - 900.0)
-        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, cursor_t)
+        unprobed = fc._get_unprobed_recordings(ctx.compress_db, cursor_t)
         ids = {r["recording_id"] for r in unprobed}
         assert ids == {"new"}
 
         # Looser cursor pulls "mid" in as well (5000 >= 5000-900=4100).
-        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, 5000.0)
+        unprobed = fc._get_unprobed_recordings(ctx.compress_db, 5000.0)
         ids = {r["recording_id"] for r in unprobed}
         assert ids == {"mid", "new"}
     finally:
@@ -259,7 +262,7 @@ def test_max_recording_start_time(tmp_path):
     try:
         from frigate_compressor.probe_loop import _max_recording_start_time
 
-        assert _max_recording_start_time(ctx.cfg, ctx.compress_db) == 3000.0
+        assert _max_recording_start_time(ctx.compress_db) == 3000.0
     finally:
         ctx.compress_db.close()
         ctx.frigate_ro.close()
@@ -276,7 +279,7 @@ def test_max_recording_start_time_empty(tmp_path):
     try:
         from frigate_compressor.probe_loop import _max_recording_start_time
 
-        assert _max_recording_start_time(ctx.cfg, ctx.compress_db) is None
+        assert _max_recording_start_time(ctx.compress_db) is None
     finally:
         ctx.compress_db.close()
         ctx.frigate_ro.close()
