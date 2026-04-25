@@ -49,6 +49,36 @@ def _make_eligible_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides
     )
 
 
+def _insert_probed(
+    frigate_conn,
+    compress_conn,
+    rid,
+    camera,
+    path,
+    start_time,
+    *,
+    motion=None,
+    objects=None,
+    file_size=1000,
+):
+    """Insert a recording into Frigate + a matching probed files row.
+
+    The eligibility query drives from ``files`` now, so a recording
+    is only visible to it after the probe loop has inserted a files
+    row.  Mirrors production where every recording gets probed within
+    a minute or so.
+    """
+    _insert_recording(frigate_conn, rid, camera, path, start_time, motion, objects)
+    rtype = "object" if objects else "motion" if motion else "continuous"
+    compress_conn.execute(
+        "INSERT OR REPLACE INTO files"
+        " (recording_id, camera, path, recording_type, file_size, start_time, scanned_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (rid, camera, path, rtype, file_size, start_time, "2026-01-01T00:00:00"),
+    )
+    compress_conn.commit()
+
+
 def _make_compress_one_ctx(tmp_path, src: Path, frigate_db: Path):
     """Build a CompressorContext for compress_one tests."""
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
@@ -102,8 +132,9 @@ def test_get_eligible_recordings_returns_old_enough(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     compress_conn = _open_compress_db(tmp_path)
-    _insert_recording(
+    _insert_probed(
         frigate_conn,
+        compress_conn,
         "rec1",
         "cam1",
         "/media/cam1/a.mp4",
@@ -167,11 +198,18 @@ def test_get_eligible_recordings_skips_already_done(tmp_path):
 def test_get_eligible_recordings_retries_errored(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
-    _insert_recording(
-        frigate_conn, "rec4", "cam1", "/media/cam1/d.mp4", time.time() - 10 * 86400
+    compress_conn = _open_compress_db(tmp_path)
+    # Probe first (sets start_time), then transition to error.
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rec4",
+        "cam1",
+        "/media/cam1/d.mp4",
+        time.time() - 10 * 86400,
     )
 
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
     fc._record(
         ctx.compress_db,
         recording_id="rec4",
@@ -197,11 +235,17 @@ def test_get_eligible_recordings_retries_errored(tmp_path):
 def test_get_eligible_recordings_tier2_assignment(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
-    _insert_recording(
-        frigate_conn, "rec5", "cam1", "/media/cam1/e.mp4", time.time() - 35 * 86400
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rec5",
+        "cam1",
+        "/media/cam1/e.mp4",
+        time.time() - 35 * 86400,
     )
 
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
 
     # Without tier 1 done, recording is eligible for tier 1 (not tier 2)
     results = fc.get_eligible_recordings(ctx)
@@ -235,8 +279,10 @@ def test_get_eligible_recordings_tier2_assignment(tmp_path):
 def test_get_eligible_recordings_object_type(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
-    _insert_recording(
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
         frigate_conn,
+        compress_conn,
         "rec6",
         "cam1",
         "/media/cam1/f.mp4",
@@ -245,7 +291,7 @@ def test_get_eligible_recordings_object_type(tmp_path):
         objects=3,
     )
 
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
     results = fc.get_eligible_recordings(ctx)
     assert results[0]["recording_type"] == "object"
 
@@ -258,17 +304,28 @@ def test_get_eligible_recordings_orders_tier1_before_tier2(tmp_path):
     tier-2 candidate is older — drains the bigger storage win first."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
 
     # Older recording: t1 already done → eligible for tier 2.
-    _insert_recording(
-        frigate_conn, "old-t2", "cam1", "/m/old.mp4", time.time() - 60 * 86400
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "old-t2",
+        "cam1",
+        "/m/old.mp4",
+        time.time() - 60 * 86400,
     )
     # Newer recording: t1 not done → eligible for tier 1.
-    _insert_recording(
-        frigate_conn, "new-t1", "cam1", "/m/new.mp4", time.time() - 10 * 86400
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "new-t1",
+        "cam1",
+        "/m/new.mp4",
+        time.time() - 10 * 86400,
     )
 
-    ctx = _make_eligible_ctx(tmp_path, frigate_db)
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
     fc._record(
         ctx.compress_db,
         recording_id="old-t2",

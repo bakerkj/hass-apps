@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS files (
     camera          TEXT    NOT NULL,
     path            TEXT    NOT NULL,
     recording_type  TEXT,
+    -- start_time is denormalised from Frigate's recordings so eligibility
+    -- and backlog queries can range-scan on (camera, start_time) without
+    -- joining against Frigate's DB per-row.  Populated by the probe loop
+    -- and backfilled for any pre-existing rows on startup.
+    start_time      REAL,
 
     -- Original probe (from camera, filled by probe loop)
     codec           TEXT,
@@ -61,7 +66,403 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_camera ON files(camera);
+
+-- Partial indexes for backlog-existence checks.  The MQTT publisher asks
+-- "does any recording for camera X with start_time < threshold still
+-- have tier-N compression pending?" once per camera per publish; driving
+-- that scan from a tiny pending-only index is far cheaper than LEFT-JOIN
+-- + CASE-aggregation across all 820K rows.  The WHERE clause on each
+-- index must match the query predicate exactly for the planner to use
+-- it — keep them in sync if the status vocabulary changes.
+CREATE INDEX IF NOT EXISTS idx_files_t1_pending ON files(camera, recording_id)
+  WHERE t1_status IS NULL
+     OR t1_status NOT IN ('ok', 'segment_update_failed');
+
+CREATE INDEX IF NOT EXISTS idx_files_t2_pending ON files(camera, recording_id)
+  WHERE t1_status IN ('ok', 'segment_update_failed')
+    AND (t2_status IS NULL
+         OR t2_status NOT IN ('ok', 'segment_update_failed'));
 """
+
+
+# Indexes that reference ``start_time``.  Kept separate from SCHEMA so we
+# can run the ALTER TABLE migration that adds the column (see
+# ``_migrate_add_columns``) before creating these indexes — otherwise the
+# CREATE INDEX statements would fail on upgrade with "no such column".
+#
+# Eligibility indexes: same pending filters as the backlog ones above,
+# but keyed on (camera, start_time) so the planner can do a range scan
+# for "camera X, start_time < cutoff" within the pending-only subset.
+# Benchmarked at ~4000× faster than the previous recordings-driven
+# LEFT JOIN.  Requires start_time to be populated on files — see
+# ``backfill_files_start_time``.
+START_TIME_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_files_t1_pending_age ON files(camera, start_time)
+  WHERE t1_status IS NULL
+     OR t1_status NOT IN ('ok', 'segment_update_failed');
+
+CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
+  WHERE t1_status IN ('ok', 'segment_update_failed')
+    AND (t2_status IS NULL
+         OR t2_status NOT IN ('ok', 'segment_update_failed'));
+"""
+
+
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
+    """Add columns that newer schemas introduced via ``ALTER TABLE``.
+
+    SQLite's ``CREATE TABLE IF NOT EXISTS`` is a no-op when the table
+    already exists — it does NOT add columns mentioned in the new schema.
+    This function bridges that gap for upgrades from older versions.
+
+    Idempotent: only ALTERs columns that are actually missing.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN start_time REAL")
+        conn.commit()
+        log("INFO", "Migrated: added files.start_time column")
+
+
+# Indexes from earlier development iterations that turned out to be
+# unhelpful — drop them on startup so leftover installs don't carry
+# their ~50 MB write overhead forever.  Safe to remove this list once
+# we're confident nobody has them anymore.
+_OBSOLETE_INDEXES = (
+    "idx_files_t1_t2_status",
+    "idx_files_t2_status",
+)
+
+
+def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
+    """Drop indexes from previous versions that are no longer useful."""
+    existing = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    for name in _OBSOLETE_INDEXES:
+        if name in existing:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+            log("INFO", f"Dropped obsolete index {name}")
+    conn.commit()
+
+
+def vacuum_compress_db(conn: sqlite3.Connection) -> None:
+    """Run VACUUM on the compress DB to reclaim free pages and defragment.
+
+    Called by ``app.py`` at the very end of the upgrade path — after both
+    schema migration (in ``open_compress_db``) and the row-rewriting
+    backfill of ``files.start_time``.  Running it once at the end is
+    cheaper than running it twice and reclaims fragmentation from both.
+
+    VACUUM is expensive (full DB rewrite, exclusive lock) so we never
+    run it on every startup; SQLite reuses freed pages for new inserts,
+    so the file reaches a natural steady state without periodic
+    vacuuming.
+
+    VACUUM cannot run inside a transaction, so we commit any pending
+    work and disable the sqlite3 module's implicit-transaction wrapping
+    around the call.
+    """
+    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    total = conn.execute("PRAGMA page_count").fetchone()[0]
+    log("INFO", f"Running VACUUM after upgrade ({free}/{total} pages free)")
+    conn.commit()
+    old_isolation = conn.isolation_level
+    conn.isolation_level = None
+    try:
+        conn.execute("VACUUM")
+    finally:
+        conn.isolation_level = old_isolation
+
+
+# Materialised aggregate table + triggers.
+#
+# ``files_stats`` keeps a per-(camera, rtype) rollup of file counts and
+# bytes in each tier, maintained transactionally by triggers on the
+# ``files`` table.  The MQTT publisher reads this table directly (a
+# handful of rows) instead of re-aggregating 800K+ rows every minute.
+#
+# Tier is derived from status:
+#   tier 2 = t2_status in (ok, segment_update_failed)
+#   tier 1 = t1_status in (ok, segment_update_failed) AND not tier 2
+#   tier 0 = neither
+#
+# Bytes for a file's current tier come from the matching size column:
+#   tier 0 → file_size   (original probe)
+#   tier 1 → t1_file_size
+#   tier 2 → t2_file_size
+#
+# Correctness contract: the three triggers together keep files_stats in
+# sync with ``files``.  A full rebuild is a straightforward GROUP BY
+# aggregation over ``files`` — see ``_backfill_files_stats`` and
+# ``verify_files_stats``.  If a trigger bug ever causes drift, the
+# audit hook detects it on startup and rebuilds from scratch.
+FILES_STATS_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS files_stats (
+    camera       TEXT    NOT NULL,
+    rtype        TEXT    NOT NULL,
+    files_count  INTEGER NOT NULL DEFAULT 0,
+    tier0_bytes  INTEGER NOT NULL DEFAULT 0,
+    tier1_bytes  INTEGER NOT NULL DEFAULT 0,
+    tier2_bytes  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (camera, rtype)
+);
+
+CREATE TRIGGER IF NOT EXISTS files_stats_after_insert
+AFTER INSERT ON files
+FOR EACH ROW
+BEGIN
+    INSERT INTO files_stats
+        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
+    VALUES (
+        NEW.camera,
+        COALESCE(NEW.recording_type, 'continuous'),
+        1,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            ELSE COALESCE(NEW.file_size, 0)
+        END,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(NEW.t1_file_size, 0)
+            ELSE 0
+        END,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(NEW.t2_file_size, 0)
+            ELSE 0
+        END
+    )
+    ON CONFLICT(camera, rtype) DO UPDATE SET
+        files_count = files_count + 1,
+        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
+        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
+        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_stats_after_delete
+AFTER DELETE ON files
+FOR EACH ROW
+BEGIN
+    UPDATE files_stats SET
+        files_count = files_count - 1,
+        tier0_bytes = tier0_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                ELSE COALESCE(OLD.file_size, 0)
+            END
+        ),
+        tier1_bytes = tier1_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN COALESCE(OLD.t1_file_size, 0)
+                ELSE 0
+            END
+        ),
+        tier2_bytes = tier2_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN COALESCE(OLD.t2_file_size, 0)
+                ELSE 0
+            END
+        )
+    WHERE camera = OLD.camera
+      AND rtype = COALESCE(OLD.recording_type, 'continuous');
+END;
+
+-- UPDATE uses the "subtract from OLD bucket, add to NEW bucket" pattern.
+-- When OLD and NEW share the same (camera, rtype) bucket, counts are a
+-- net zero and bytes adjust by the delta between OLD and NEW contributions.
+-- When they differ (tier transition or rtype change) the row correctly
+-- moves.
+CREATE TRIGGER IF NOT EXISTS files_stats_after_update
+AFTER UPDATE ON files
+FOR EACH ROW
+BEGIN
+    UPDATE files_stats SET
+        files_count = files_count - 1,
+        tier0_bytes = tier0_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                ELSE COALESCE(OLD.file_size, 0)
+            END
+        ),
+        tier1_bytes = tier1_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN 0
+                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN COALESCE(OLD.t1_file_size, 0)
+                ELSE 0
+            END
+        ),
+        tier2_bytes = tier2_bytes - (
+            CASE
+                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                    THEN COALESCE(OLD.t2_file_size, 0)
+                ELSE 0
+            END
+        )
+    WHERE camera = OLD.camera
+      AND rtype = COALESCE(OLD.recording_type, 'continuous');
+
+    INSERT INTO files_stats
+        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
+    VALUES (
+        NEW.camera,
+        COALESCE(NEW.recording_type, 'continuous'),
+        1,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            ELSE COALESCE(NEW.file_size, 0)
+        END,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN 0
+            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(NEW.t1_file_size, 0)
+            ELSE 0
+        END,
+        CASE
+            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(NEW.t2_file_size, 0)
+            ELSE 0
+        END
+    )
+    ON CONFLICT(camera, rtype) DO UPDATE SET
+        files_count = files_count + 1,
+        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
+        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
+        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+END;
+"""
+
+
+# Reused in the backfill + verify queries below; keeping the CASE logic
+# in one place avoids drift with the trigger bodies.
+_FILES_STATS_SELECT = f"""
+SELECT
+    camera,
+    COALESCE(recording_type, 'continuous') AS rtype,
+    COUNT(*) AS files_count,
+    SUM(CASE
+            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
+            WHEN t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
+            ELSE COALESCE(file_size, 0)
+        END) AS tier0_bytes,
+    SUM(CASE
+            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
+            WHEN t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(t1_file_size, 0)
+            ELSE 0
+        END) AS tier1_bytes,
+    SUM(CASE
+            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                THEN COALESCE(t2_file_size, 0)
+            ELSE 0
+        END) AS tier2_bytes
+FROM files
+GROUP BY camera, COALESCE(recording_type, 'continuous')
+"""
+
+
+def backfill_files_start_time(conn: sqlite3.Connection, cfg: Config) -> int:
+    """Fill in ``files.start_time`` from Frigate's recordings for any row
+    that's missing it.
+
+    Needed after upgrading to the schema that carries start_time on
+    ``files``.  Called once at startup — for fresh rows the probe loop
+    writes start_time inline.  Returns the number of rows updated.
+    """
+    _attach_frigate_ro(conn, cfg, "frigate_backfill")
+    try:
+        cur = conn.execute(
+            "UPDATE files SET start_time = ("
+            "  SELECT start_time FROM frigate_backfill.recordings r"
+            "  WHERE r.id = files.recording_id"
+            ") WHERE start_time IS NULL"
+        )
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.execute("DETACH DATABASE frigate_backfill")
+
+
+def _backfill_files_stats(conn: sqlite3.Connection) -> None:
+    """One-shot populate ``files_stats`` from the current ``files`` rows.
+
+    Called on first install, after a trigger-bug audit fails, or by
+    tests.  Safe to re-run — fully replaces the table contents.
+    """
+    conn.executescript("DELETE FROM files_stats;")
+    conn.execute(
+        "INSERT INTO files_stats "
+        "(camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes) "
+        + _FILES_STATS_SELECT
+    )
+    conn.commit()
+
+
+_ZERO_BUCKET = (0, 0, 0, 0)
+
+
+def verify_files_stats(conn: sqlite3.Connection) -> bool:
+    """Compare ``files_stats`` against a fresh aggregation of ``files``.
+
+    Returns True if they agree, False otherwise.  Intended as an
+    occasional audit (e.g. at startup); logs a warning + returns False
+    if drift is detected.  Call ``_backfill_files_stats`` to recover.
+
+    All-zero rows in ``files_stats`` (a bucket that once had files but
+    was drained by deletes or rtype changes) compare equal to "no such
+    row" in the fresh aggregation — triggers never prune zeroed rows,
+    and that's OK semantically since no query cares about them.
+    """
+
+    def _nonzero(rows):
+        return {k: v for k, v in rows if v != _ZERO_BUCKET}
+
+    expected = _nonzero(
+        ((row[0], row[1]), (row[2], row[3], row[4], row[5]))
+        for row in conn.execute(_FILES_STATS_SELECT)
+    )
+    observed = _nonzero(
+        ((row[0], row[1]), (row[2], row[3], row[4], row[5]))
+        for row in conn.execute(
+            "SELECT camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes"
+            " FROM files_stats"
+        )
+    )
+    if expected == observed:
+        return True
+    diff_keys = set(expected.keys()) ^ set(observed.keys())
+    log(
+        "WARNING",
+        f"files_stats drift detected: {len(expected)} aggregated buckets, "
+        f"{len(observed)} in table, {len(diff_keys)} keys differ",
+    )
+    return False
+
 
 VIEWS = f"""
 CREATE VIEW IF NOT EXISTS savings_by_camera AS
@@ -140,8 +541,35 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     _migrate_to_files_table(conn)
+    # Add columns added in newer schemas via ALTER TABLE for upgrades from
+    # earlier versions (CREATE TABLE IF NOT EXISTS won't add new columns
+    # to an existing table).  Must run BEFORE indexes that reference the
+    # new columns.  VACUUM (if needed) is run by ``app.py`` at the end of
+    # the full upgrade — including ``backfill_files_start_time`` which
+    # rewrites every row to populate the new column — so we don't run it
+    # here.
+    _migrate_add_columns(conn)
+    _drop_obsolete_indexes(conn)
+    # Indexes that reference newly-added columns — safe to create now.
+    conn.executescript(START_TIME_INDEXES)
     # Views are created after migration so they reference the final table.
     conn.executescript(VIEWS)
+    # Materialised aggregate table + triggers.  Triggers are installed
+    # BEFORE backfill so the audit can compare current-state rebuilds
+    # cleanly; backfill itself INSERTs into files_stats directly (not
+    # via triggers on files), so the order is safe either way.
+    conn.executescript(FILES_STATS_SCHEMA)
+    # Backfill if empty (first install, or migration from pre-stats schema)
+    # or if the table is out of sync with the raw files (audit failure
+    # recovery).
+    n_stats = conn.execute("SELECT COUNT(*) FROM files_stats").fetchone()[0]
+    n_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    if n_stats == 0 and n_files > 0:
+        log("INFO", f"files_stats is empty but {n_files} files present — backfilling")
+        _backfill_files_stats(conn)
+    elif n_files > 0 and not verify_files_stats(conn):
+        log("WARNING", "files_stats audit failed — rebuilding")
+        _backfill_files_stats(conn)
     return conn
 
 

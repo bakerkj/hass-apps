@@ -35,12 +35,16 @@ from .database import (  # noqa: E402,F401
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
     _attach_frigate_ro,
+    _backfill_files_stats,
     _record,
     _recording_type,
+    backfill_files_start_time,
     check_frigate_schema,
     open_compress_db,
     open_frigate_db,
     open_frigate_db_rw,
+    vacuum_compress_db,
+    verify_files_stats,
 )
 from .eligibility import (  # noqa: E402,F401
     _build_eligible_where,

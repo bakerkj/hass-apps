@@ -190,6 +190,101 @@ def test_get_unprobed_returns_empty_when_all_probed(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# _get_unprobed_recordings — cursor / incremental semantics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_get_unprobed_full_scan_returns_start_time(tmp_path):
+    """Full-scan mode (cursor=None) includes start_time so the loop can
+    advance its cursor from the probed batch."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(frigate_conn, "r1", "cam1", "/path/a.mp4", 1000.0)
+    _insert_recording(frigate_conn, "r2", "cam1", "/path/b.mp4", 2000.0)
+
+    ctx = _make_probe_ctx(tmp_path, frigate_db)
+    try:
+        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, None)
+        by_id = {r["recording_id"]: r for r in unprobed}
+        assert by_id["r1"]["start_time"] == 1000.0
+        assert by_id["r2"]["start_time"] == 2000.0
+    finally:
+        ctx.compress_db.close()
+        ctx.frigate_ro.close()
+        ctx.frigate_rw.close()
+        frigate_conn.close()
+
+
+def test_get_unprobed_incremental_cursor_filters_by_start_time(tmp_path):
+    """With a cursor set, only recordings inside the safety window are returned."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    # Three unprobed recordings spread across time:
+    _insert_recording(frigate_conn, "old", "cam1", "/path/old.mp4", 1000.0)
+    _insert_recording(frigate_conn, "mid", "cam1", "/path/mid.mp4", 5000.0)
+    _insert_recording(frigate_conn, "new", "cam1", "/path/new.mp4", 6000.0)
+
+    ctx = _make_probe_ctx(tmp_path, frigate_db)
+    try:
+        from frigate_compressor.probe_loop import _PROBE_SAFETY_WINDOW_SEC
+
+        # cursor=6000, safety window=15min=900s → floor=5100 → keeps only "new"
+        cursor_t = 6000.0
+        assert cursor_t - _PROBE_SAFETY_WINDOW_SEC == pytest.approx(6000.0 - 900.0)
+        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, cursor_t)
+        ids = {r["recording_id"] for r in unprobed}
+        assert ids == {"new"}
+
+        # Looser cursor pulls "mid" in as well (5000 >= 5000-900=4100).
+        unprobed = fc._get_unprobed_recordings(ctx.cfg, ctx.compress_db, 5000.0)
+        ids = {r["recording_id"] for r in unprobed}
+        assert ids == {"mid", "new"}
+    finally:
+        ctx.compress_db.close()
+        ctx.frigate_ro.close()
+        ctx.frigate_rw.close()
+        frigate_conn.close()
+
+
+def test_max_recording_start_time(tmp_path):
+    """``_max_recording_start_time`` returns the newest start_time across
+    the recordings table (used to seed the cursor after an empty full scan)."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(frigate_conn, "r1", "cam1", "/path/a.mp4", 1000.0)
+    _insert_recording(frigate_conn, "r2", "cam1", "/path/b.mp4", 3000.0)
+    _insert_recording(frigate_conn, "r3", "cam1", "/path/c.mp4", 2000.0)
+
+    ctx = _make_probe_ctx(tmp_path, frigate_db)
+    try:
+        from frigate_compressor.probe_loop import _max_recording_start_time
+
+        assert _max_recording_start_time(ctx.cfg, ctx.compress_db) == 3000.0
+    finally:
+        ctx.compress_db.close()
+        ctx.frigate_ro.close()
+        ctx.frigate_rw.close()
+        frigate_conn.close()
+
+
+def test_max_recording_start_time_empty(tmp_path):
+    """Returns None when the recordings table has no rows."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+
+    ctx = _make_probe_ctx(tmp_path, frigate_db)
+    try:
+        from frigate_compressor.probe_loop import _max_recording_start_time
+
+        assert _max_recording_start_time(ctx.cfg, ctx.compress_db) is None
+    finally:
+        ctx.compress_db.close()
+        ctx.frigate_ro.close()
+        ctx.frigate_rw.close()
+        frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # _store_probe
 # ═══════════════════════════════════════════════════════════════════════════════
 
