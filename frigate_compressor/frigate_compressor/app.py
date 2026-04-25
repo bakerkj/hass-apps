@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import __version__
-from .compressor import compress_one
+from .compressor import compress_one, init_worker_connections
 from .config import (
     Config,
     TypeSettings,
@@ -195,9 +195,21 @@ def main() -> int:
             log("ERROR", f"Failed to start MQTT publisher: {e}")
             publisher = None
 
+    # Persistent worker pool: one set of DB connections per worker thread
+    # for the daemon's lifetime, opened by ``init_worker_connections`` on
+    # thread start.  Avoids ~210 sqlite3.connect()/close() cycles per
+    # minute when running at full compression rate.
+    pool = ThreadPoolExecutor(
+        max_workers=cfg.max_parallel_jobs,
+        initializer=init_worker_connections,
+        initargs=(cfg,),
+        thread_name_prefix="compress",
+    )
+
     try:
-        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec)
+        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec, pool)
     finally:
+        pool.shutdown(wait=False, cancel_futures=True)
         if publisher is not None:
             try:
                 publisher.stop()
@@ -244,11 +256,15 @@ def run_main_loop(
     encoder: str,
     stopping: threading.Event,
     housekeeping_interval_sec: float,
+    pool: ThreadPoolExecutor,
 ) -> None:
     """Process eligible recordings forever, sleeping only when caught up.
 
     Extracted from ``main()`` so the loop's scheduling behavior (run-then-
-    re-check vs sleep-until-next) is testable in isolation.
+    re-check vs sleep-until-next) is testable in isolation.  ``pool`` is
+    a long-lived ``ThreadPoolExecutor`` whose workers carry their own
+    per-thread DB connections — see ``init_worker_connections`` in
+    ``compressor.py``.
     """
     cfg = ctx.cfg
     last_housekeeping = time.time()
@@ -287,7 +303,6 @@ def run_main_loop(
             )
             log("INFO", f"Compressing {len(eligible)}: {breakdown}{suffix}")
 
-            pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
                 pool.submit(
                     _pace_then_compress,
@@ -305,16 +320,16 @@ def run_main_loop(
             }
             for future in as_completed(futures):
                 if stopping.is_set():
+                    # Cancel anything still pending so we exit promptly;
+                    # leave the pool itself open — main() shuts it down.
+                    for f in futures:
+                        f.cancel()
                     break
                 r = futures[future]
                 try:
                     future.result()
                 except Exception as e:
                     log("ERROR", f"[{r['camera']}] unhandled error: {e}")
-            if stopping.is_set():
-                pool.shutdown(wait=False, cancel_futures=True)
-            else:
-                pool.shutdown(wait=True)
 
         # ── Sleep until the next iteration ───────────────────────────────
         # Three cases:

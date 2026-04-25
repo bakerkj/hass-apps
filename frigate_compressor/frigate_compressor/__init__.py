@@ -17,6 +17,7 @@ __version__ = os.environ.get("ADDON_VERSION", "dev")
 from .compressor import (  # noqa: E402,F401
     _compress_one_inner,
     compress_one,
+    init_worker_connections,
 )
 from .config import (  # noqa: E402,F401
     CameraConfig,

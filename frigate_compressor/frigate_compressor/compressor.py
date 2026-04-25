@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,38 @@ from .ffmpeg import (
 from .util import _display_path, _fmt, log
 
 
+# Per-worker-thread connection cache.  Populated by
+# ``init_worker_connections`` (the ``ThreadPoolExecutor`` initializer in
+# app.py).  ``compress_one`` falls back to per-call opens if the cache
+# isn't populated, which is what tests and one-shot callers get.
+_local = threading.local()
+
+
+def init_worker_connections(cfg: Config) -> None:
+    """``ThreadPoolExecutor`` initializer — open one set of DB connections
+    per worker thread, kept alive for the daemon's lifetime.
+
+    Replaces the prior "open + close 3 connections per file" pattern
+    (~210 opens/min at full tilt) with one open per thread at startup.
+    Each open reads the schema, WAL header, and several pages of
+    sqlite_master, so amortising it across the thread's lifetime makes
+    a meaningful dent in steady-state IO.
+    """
+    _local.compress_db = sqlite3.connect(
+        f"file:{cfg.compress_db}", uri=True, check_same_thread=False
+    )
+    _local.compress_db.row_factory = sqlite3.Row
+    _local.compress_db.execute("PRAGMA journal_mode=WAL")
+    _local.compress_db.execute("PRAGMA busy_timeout=10000")
+    _local.frigate_ro = sqlite3.connect(
+        f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    _local.frigate_ro.row_factory = sqlite3.Row
+    _local.frigate_rw = sqlite3.connect(str(cfg.frigate_db), check_same_thread=False)
+    _local.frigate_rw.row_factory = sqlite3.Row
+    _local.frigate_rw.execute("PRAGMA busy_timeout=10000")
+
+
 def compress_one(
     recording_id: str,
     path: str,
@@ -38,6 +71,25 @@ def compress_one(
     ctx: CompressorContext,
 ) -> bool:
     cfg = ctx.cfg
+    compress_db = getattr(_local, "compress_db", None)
+    if compress_db is not None:
+        # Production path: the worker thread's pool initializer has
+        # already opened these connections.  Reuse them.
+        return _compress_one_inner(
+            recording_id,
+            path,
+            camera,
+            tier,
+            recording_type,
+            encoder,
+            cfg,
+            compress_db,
+            _local.frigate_ro,
+            _local.frigate_rw,
+        )
+
+    # Fallback: no thread-local connections (tests, ad-hoc callers).
+    # Open + close per call so caller doesn't have to manage lifetime.
     compress_db = sqlite3.connect(
         f"file:{cfg.compress_db}", uri=True, check_same_thread=False
     )
