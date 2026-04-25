@@ -105,6 +105,22 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
   WHERE t1_status IN ('ok', 'segment_update_failed')
     AND (t2_status IS NULL
          OR t2_status NOT IN ('ok', 'segment_update_failed'));
+
+-- Partial indexes for the weekly housekeeping pass.  Each scans rows in a
+-- rare status; without these, housekeeping has to SCAN the full files
+-- table (sub-second per query but bursty I/O).  Maintenance cost is near
+-- zero — almost no row update transitions in/out of these states.
+-- Deferred (alongside the start_time indexes) because the t*_compressed_at
+-- columns may need an ALTER TABLE on upgrade from a vintage schema.
+CREATE INDEX IF NOT EXISTS idx_files_seg_retry ON files(recording_id)
+  WHERE t1_status = 'segment_update_failed'
+     OR t2_status = 'segment_update_failed';
+
+CREATE INDEX IF NOT EXISTS idx_files_t1_error ON files(t1_compressed_at)
+  WHERE t1_status = 'error';
+
+CREATE INDEX IF NOT EXISTS idx_files_t2_error ON files(t2_compressed_at)
+  WHERE t2_status = 'error';
 """
 
 
@@ -122,6 +138,14 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE files ADD COLUMN start_time REAL")
         conn.commit()
         log("INFO", "Migrated: added files.start_time column")
+    # The compressed_at columns are referenced by partial indexes for the
+    # housekeeping recent-errors view.  Vintage schemas predating these
+    # columns must get them via ALTER before the indexes can be created.
+    for col in ("t1_compressed_at", "t2_compressed_at"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE files ADD COLUMN {col} TEXT")
+            conn.commit()
+            log("INFO", f"Migrated: added files.{col} column")
 
 
 # Indexes from earlier development iterations that turned out to be

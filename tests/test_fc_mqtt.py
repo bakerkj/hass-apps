@@ -52,17 +52,20 @@ def _insert_rec(
     conn.commit()
 
 
-def _make_stats_ctx(tmp_path: Path) -> tuple[fc.CompressorContext, sqlite3.Connection]:
+def _make_stats_ctx(
+    tmp_path: Path, **cfg_overrides
+) -> tuple[fc.CompressorContext, sqlite3.Connection]:
     """Build a CompressorContext suitable for collect_frigate_stats tests.
 
     Returns (ctx, frigate_writer) — keep the writer connection so the test
     can insert rows after the ctx is built.  Caller is responsible for
-    closing both via _close_stats_ctx.
+    closing both via _close_stats_ctx.  Extra kwargs are forwarded to
+    ``_make_config`` (e.g. ``yaml_cameras=...``).
     """
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)  # writer for the test
     compress_conn = _open_compress_db(tmp_path)
-    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    cfg = _make_config(tmp_path, frigate_db=str(frigate_db), **cfg_overrides)
 
     frigate_ro = sqlite3.connect(str(frigate_db))
     frigate_ro.row_factory = sqlite3.Row
@@ -427,7 +430,7 @@ def test_recording_rate_zero_when_no_recent_activity(tmp_path):
 
 def test_recording_rate_per_camera_isolated(tmp_path):
     """Activity on one camera must not leak into another's rate."""
-    ctx, writer = _make_stats_ctx(tmp_path)
+    ctx, writer = _make_stats_ctx(tmp_path, yaml_cameras={"busy": {}, "idle": {}})
     window = float(ctx.cfg.mqtt.rate_window_seconds)
     try:
         now = time.time()
