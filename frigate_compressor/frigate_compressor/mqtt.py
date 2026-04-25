@@ -168,18 +168,19 @@ def collect_frigate_stats(
             ).fetchone()
             if row is not None and row[0] is not None:
                 oldest_by_camera[cam_name] = row[0]
-        # Per-camera backlog existence checks.  Replaces an earlier
-        # ``MIN(CASE ...)`` aggregation over the full recordings×files
-        # join — the Python side only needs to know whether *any*
-        # eligible recording is still pending past the backlog timeout,
-        # which is an EXISTS question.
+        # Per-camera backlog existence checks.  The Python side only needs
+        # to know whether *any* eligible recording is still pending past
+        # the backlog timeout — an EXISTS question.
         #
         # Driven from ``files`` via the partial index
-        # ``idx_files_t{1,2}_pending`` (camera, recording_id WHERE
-        # <pending>).  The planner range-seeks to camera=X within the
-        # partial index, then PK-looks up each recording's start_time
-        # to check the age threshold.  ``LIMIT 1`` stops at the first
-        # match.  Benchmarked at ~3× faster than the old aggregate.
+        # ``idx_files_t{1,2}_pending_age`` (camera, start_time WHERE
+        # <pending>).  Filtering on ``f.start_time`` (denormalised from
+        # Frigate at probe time) lets the planner do a 2-column range
+        # seek (camera=X AND start_time<threshold) and short-circuit on
+        # ``LIMIT 1``.  An earlier shape filtered start_time via EXISTS
+        # against ``frigate.recordings`` — that walked every pending row
+        # for the camera (~70K) before LIMIT could fire, because the
+        # start_time predicate wasn't pushed into the index.
         #
         # Semantic: a recording must have a files row (i.e. have been
         # probed) for its backlog to be visible here.  Not-yet-probed
@@ -200,13 +201,10 @@ def collect_frigate_stats(
                     SELECT 1
                     FROM files f
                     WHERE f.camera = ?
+                      AND f.start_time < ?
                       AND (f.t1_status IS NULL
                            OR f.t1_status NOT IN
                               ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
-                      AND EXISTS (
-                        SELECT 1 FROM frigate_stats.recordings r
-                        WHERE r.id = f.recording_id AND r.start_time < ?
-                      )
                     LIMIT 1
                     """,
                     (cam_name, threshold),
@@ -219,15 +217,12 @@ def collect_frigate_stats(
                     SELECT 1
                     FROM files f
                     WHERE f.camera = ?
+                      AND f.start_time < ?
                       AND f.t1_status IN
                           ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
                               ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
-                      AND EXISTS (
-                        SELECT 1 FROM frigate_stats.recordings r
-                        WHERE r.id = f.recording_id AND r.start_time < ?
-                      )
                     LIMIT 1
                     """,
                     (cam_name, threshold),
