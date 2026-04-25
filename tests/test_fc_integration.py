@@ -133,6 +133,7 @@ def _probe_and_store(
     info = fc._probe(path)
     assert info is not None, f"ffprobe failed for {path}"
     fc._store_probe(ctx.compress_db, recording_id, camera, str(path), info)
+    ctx.compress_db.commit()
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,6 @@ from .context import CompressorContext
 from .database import (
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
-    _attach_frigate_ro,
-    _recording_type,
 )
 from .throttle import MAX_SLEEP_SEC
 
@@ -34,10 +32,13 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     index — scans only the handful of actually-eligible rows.
 
     Returns ``("", [])`` if no enabled camera has any enabled tier.
-    """
-    _ok_statuses = (STATUS_OK, STATUS_SEGMENT_UPDATE_FAILED)
-    ok_placeholders = ",".join("?" for _ in _ok_statuses)
 
+    The status literals are inlined into the SQL (rather than bound as
+    parameters) so the planner can prove the query's WHERE implies the
+    partial index's WHERE — which uses the same literal strings.  With
+    placeholders, the implication check fails and SQLite errors out
+    on ``INDEXED BY`` ("no query solution").
+    """
     t1_parts: list[str] = []
     t1_params: list = []
     t2_parts: list[str] = []
@@ -47,51 +48,78 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             continue
         if cam.tier1.enabled:
             t1_cutoff = effective_now - (cam.tier1.min_days * 86400)
+            # ``INDEXED BY idx_files_t1_pending_age`` forces the planner to
+            # range-scan the partial index — keyed on (camera, start_time)
+            # WHERE t1 pending — instead of falling back to ``idx_files_camera``
+            # and scanning every row for the camera.  When path and
+            # recording_type were fetched via JOIN to Frigate's recordings,
+            # the planner picked the partial index automatically; reading
+            # those columns from ``files`` itself shifts the cost calculus
+            # and the planner regresses to the camera index without the hint.
+            #
+            # Per-branch ORDER BY + LIMIT: each (camera, tier) contributes
+            # at most ``_ELIGIBLE_BATCH_SIZE`` rows.  Without this, the
+            # outer ``ORDER BY tier, start_time`` sees a UNION ALL spanning
+            # all twelve branches and forces full materialisation of every
+            # pending row.  ``ORDER BY start_time`` here matches the
+            # partial index's order so SQLite can short-circuit at LIMIT
+            # without an extra sort step.
             t1_parts.append(
                 f"""
-                SELECT f.recording_id, f.camera, f.start_time, 1 AS tier
-                FROM files f
-                WHERE f.camera = ? AND f.start_time < ?
-                  AND (f.t1_status IS NULL
-                       OR f.t1_status NOT IN ({ok_placeholders}))
+                SELECT * FROM (
+                    SELECT f.recording_id, f.camera, f.path, f.recording_type,
+                           f.start_time, 1 AS tier
+                    FROM files f INDEXED BY idx_files_t1_pending_age
+                    WHERE f.camera = ? AND f.start_time < ?
+                      AND (f.t1_status IS NULL
+                           OR f.t1_status NOT IN
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                    ORDER BY f.start_time ASC
+                    LIMIT {_ELIGIBLE_BATCH_SIZE}
+                )
                 """
             )
-            t1_params.extend([name, t1_cutoff, *_ok_statuses])
+            t1_params.extend([name, t1_cutoff])
         if cam.tier2.enabled:
             t2_cutoff = effective_now - (cam.tier2.min_days * 86400)
             t2_parts.append(
                 f"""
-                SELECT f.recording_id, f.camera, f.start_time, 2 AS tier
-                FROM files f
-                WHERE f.camera = ? AND f.start_time < ?
-                  AND f.t1_status IN ({ok_placeholders})
-                  AND (f.t2_status IS NULL
-                       OR f.t2_status NOT IN ({ok_placeholders}))
+                SELECT * FROM (
+                    SELECT f.recording_id, f.camera, f.path, f.recording_type,
+                           f.start_time, 2 AS tier
+                    FROM files f INDEXED BY idx_files_t2_pending_age
+                    WHERE f.camera = ? AND f.start_time < ?
+                      AND f.t1_status IN
+                          ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                      AND (f.t2_status IS NULL
+                           OR f.t2_status NOT IN
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                    ORDER BY f.start_time ASC
+                    LIMIT {_ELIGIBLE_BATCH_SIZE}
+                )
                 """
             )
-            t2_params.extend([name, t2_cutoff, *_ok_statuses, *_ok_statuses])
+            t2_params.extend([name, t2_cutoff])
 
     parts = t1_parts + t2_parts
     if not parts:
         return "", []
-    # Combined UNION ALL over both tiers; the caller wraps this and
-    # joins back to Frigate to fetch motion/objects/path.
     return " UNION ALL ".join(parts), t1_params + t2_params
 
 
 def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
-    """Open a read-only compress-db connection with frigate.recordings attached."""
+    """Open a read-only compress-db connection.
+
+    The eligibility query is now self-contained on ``files`` (path and
+    recording_type are denormalised onto it), so we no longer ATTACH
+    Frigate.  Cache budget stays at 128 MB to comfortably hold the partial
+    eligibility indexes' top levels and recent leaf pages.
+    """
     conn = sqlite3.connect(
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
-    # The eligibility query is a single statement but a heavy one —
-    # UNION ALL over up to 12 camera/tier partial-index branches joined
-    # back to Frigate's recordings PK for each hit.  A bigger cache
-    # prevents mid-statement page eviction when the access pattern walks
-    # many Frigate PK pages in one go.
     conn.execute("PRAGMA cache_size=-131072")
-    _attach_frigate_ro(conn, cfg, "frigate_eligible")
     return conn
 
 
@@ -101,9 +129,10 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     that haven't been successfully compressed yet.  Each result dict has keys:
         recording_id, camera, path, tier, recording_type
 
-    Driven from the partial eligibility indexes on ``files`` — scans only
-    the pending rows per camera, range-seeking on start_time.  Benchmarked
-    at 4000×+ faster than the previous recordings-driven LEFT JOIN.
+    Driven entirely from the partial eligibility indexes on ``files``.
+    Path and recording_type are denormalised onto ``files`` at probe time,
+    so this query never touches Frigate's recordings table — it stays
+    inside the small partial-index hot set on every call.
     """
     cfg = ctx.cfg
     union_sql, params = _build_eligible_where(cfg, time.time())
@@ -123,11 +152,10 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     try:
         rows = conn.execute(
             f"""
-            SELECT sub.recording_id, sub.camera, r.path,
-                   sub.start_time, r.motion, r.objects, sub.tier
-            FROM ({union_sql}) sub
-            JOIN frigate_eligible.recordings r ON r.id = sub.recording_id
-            ORDER BY sub.tier ASC, sub.start_time ASC
+            SELECT recording_id, camera, path, recording_type,
+                   start_time, tier
+            FROM ({union_sql})
+            ORDER BY tier ASC, start_time ASC
             LIMIT ?
             """,
             params,
@@ -138,7 +166,11 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
     results = []
     for row in rows:
-        rtype = _recording_type(row["motion"], row["objects"])
+        # ``recording_type`` may be NULL on rows that pre-date the column
+        # being populated (the probe-time backfill writes it inline now,
+        # but very-old probed rows with NULL still exist).  Default to
+        # 'continuous' to match the trigger's COALESCE.
+        rtype = row["recording_type"] or "continuous"
         results.append(
             {
                 "recording_id": row["recording_id"],
