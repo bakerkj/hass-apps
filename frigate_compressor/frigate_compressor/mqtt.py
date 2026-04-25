@@ -129,32 +129,45 @@ def collect_frigate_stats(
             FROM files_stats
             """
         ).fetchall()
-        # Oldest start_time per camera — cheap with
-        # recordings_camera_start_time_end_time.  Kept separate from
-        # files_stats because maintaining MIN() under DELETE is expensive
-        # (it'd require finding the next minimum on every delete).
-        oldest_rows = conn.execute(
-            """
-            SELECT camera, MIN(start_time) AS oldest
-            FROM frigate_stats.recordings
-            GROUP BY camera
-            """
-        ).fetchall()
-        # Fresh bytes per camera within the rate window.  Filtered on
-        # start_time so in-flight segments (NULL segment_size) contribute
-        # 0 until finalised — a small under-count that self-corrects on
-        # the next publish.
+        # Fresh bytes per camera within the rate window.  ``INDEXED BY
+        # recordings_start_time`` forces a range scan on the small recent
+        # window (~minutes of rows) instead of the planner's default of
+        # scanning ``recordings_camera`` over all 800K+ rows and
+        # post-filtering on start_time.  Filtered on start_time so
+        # in-flight segments (NULL segment_size) contribute 0 until
+        # finalised — a small under-count that self-corrects on the
+        # next publish.
         recent_rows = conn.execute(
             f"""
             SELECT
                 camera                                          AS camera,
                 SUM(COALESCE(segment_size, 0) * {_MB_BYTES})    AS bytes
-            FROM frigate_stats.recordings
+            FROM frigate_stats.recordings INDEXED BY recordings_start_time
             WHERE start_time >= ?
             GROUP BY camera
             """,
             (rate_cutoff,),
         ).fetchall()
+        # Oldest start_time per camera.  One indexed seek per camera
+        # against ``recordings_camera_start_time_end_time`` —
+        # ``GROUP BY camera`` would force a full SCAN of the 800K+ row
+        # covering index because the planner can't skip-scan MIN over a
+        # DESC-ordered column.  We probe configured cameras plus any seen
+        # in the rollup or rate-window queries; that's the same set the
+        # publisher will end up reporting on downstream.
+        oldest_by_camera: dict[str, float | None] = {}
+        target_cameras = (
+            set(cfg.cameras)
+            | {row["camera"] for row in stats_rows}
+            | {row["camera"] for row in recent_rows}
+        )
+        for cam_name in target_cameras:
+            row = conn.execute(
+                "SELECT MIN(start_time) FROM frigate_stats.recordings WHERE camera = ?",
+                (cam_name,),
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                oldest_by_camera[cam_name] = row[0]
         # Per-camera backlog existence checks.  Replaces an earlier
         # ``MIN(CASE ...)`` aggregation over the full recordings×files
         # join — the Python side only needs to know whether *any*
@@ -227,9 +240,6 @@ def collect_frigate_stats(
 
     recording_rate: dict[str, float] = {
         r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
-    }
-    oldest_by_camera: dict[str, float | None] = {
-        r["camera"]: r["oldest"] for r in oldest_rows
     }
 
     cameras: dict[str, dict] = {}

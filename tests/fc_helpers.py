@@ -32,6 +32,13 @@ def _make_frigate_db(path: Path) -> sqlite3.Connection:
         )
         """
     )
+    # Mirror Frigate's production indexes used by the publisher's INDEXED BY
+    # hint and per-camera MIN seeks.
+    conn.execute("CREATE INDEX recordings_start_time ON recordings (start_time)")
+    conn.execute(
+        "CREATE INDEX recordings_camera_start_time_end_time"
+        " ON recordings (camera, start_time DESC, end_time DESC)"
+    )
     conn.commit()
     return conn
 
