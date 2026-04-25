@@ -52,7 +52,10 @@ def init_worker_connections(cfg: Config) -> None:
     _local.compress_db.row_factory = sqlite3.Row
     _local.compress_db.execute("PRAGMA journal_mode=WAL")
     _local.compress_db.execute("PRAGMA synchronous=NORMAL")
-    _local.compress_db.execute("PRAGMA cache_size=-196608")
+    # 64 MB: workers write per file (row + PK + camera idx + partial idx
+    # updates) with narrow "recent recording_ids" locality.  Larger cache
+    # wouldn't get used — write-side hot set is small.
+    _local.compress_db.execute("PRAGMA cache_size=-65536")
     _local.compress_db.execute("PRAGMA busy_timeout=10000")
     _local.frigate_ro = sqlite3.connect(
         f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False
@@ -98,7 +101,7 @@ def compress_one(
     compress_db.row_factory = sqlite3.Row
     compress_db.execute("PRAGMA journal_mode=WAL")
     compress_db.execute("PRAGMA synchronous=NORMAL")
-    compress_db.execute("PRAGMA cache_size=-196608")
+    compress_db.execute("PRAGMA cache_size=-65536")
     compress_db.execute("PRAGMA busy_timeout=10000")
     frigate_ro = sqlite3.connect(
         f"file:{cfg.frigate_db}?mode=ro", uri=True, check_same_thread=False

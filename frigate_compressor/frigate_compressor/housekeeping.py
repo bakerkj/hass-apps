@@ -29,7 +29,7 @@ def run_housekeeping(ctx: CompressorContext) -> None:
     compress_db.row_factory = sqlite3.Row
     compress_db.execute("PRAGMA journal_mode=WAL")
     compress_db.execute("PRAGMA synchronous=NORMAL")
-    compress_db.execute("PRAGMA cache_size=-196608")
+    compress_db.execute("PRAGMA cache_size=-131072")
     compress_db.execute("PRAGMA busy_timeout=10000")
 
     try:

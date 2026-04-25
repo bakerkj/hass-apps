@@ -90,7 +90,7 @@ def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
     # back to Frigate's recordings PK for each hit.  A bigger cache
     # prevents mid-statement page eviction when the access pattern walks
     # many Frigate PK pages in one go.
-    conn.execute("PRAGMA cache_size=-196608")
+    conn.execute("PRAGMA cache_size=-131072")
     _attach_frigate_ro(conn, cfg, "frigate_eligible")
     return conn
 

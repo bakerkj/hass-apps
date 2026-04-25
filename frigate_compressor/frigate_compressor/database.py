@@ -545,14 +545,13 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     # "lose last update → re-compress one file next startup" is the
     # worst case.
     conn.execute("PRAGMA synchronous=NORMAL")
-    # cache_size=-196608 → up to 192 MB per connection.  Comfortably
+    # cache_size=-131072 → up to 128 MB per connection.  Comfortably
     # fits the steady-state hot set (partial indexes + top of PK/camera
-    # indexes + recent rows ≈ 45 MB) with plenty of headroom for DB
-    # growth through the 120-day retention window.  Lazy — only
-    # allocated as pages get touched, so idle connections cost nothing.
-    # Applied on every long-lived rw connection (worker threads, probe
-    # loop, housekeeping).
-    conn.execute("PRAGMA cache_size=-196608")
+    # indexes + recent rows ≈ 45 MB) with ample headroom for DB growth.
+    # Lazy — only allocated as pages get touched, so idle connections
+    # cost nothing.  Applied on every long-lived rw connection (worker
+    # threads, probe loop, housekeeping).
+    conn.execute("PRAGMA cache_size=-131072")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     _migrate_to_files_table(conn)
@@ -703,7 +702,13 @@ def _attach_frigate_ro(conn: sqlite3.Connection, cfg: Config, alias: str) -> Non
     """ATTACH the Frigate DB to ``conn`` read-only under the given alias.
 
     Centralizes the path escaping so any future change to the URI format
-    happens in one place rather than four.
+    happens in one place rather than four.  Also bumps the attached
+    schema's cache to 64 MB — SQLite's page cache is *per-attached-file*,
+    not per-connection, so the main-db cache_size we set elsewhere does
+    NOT apply to Frigate here.  64 MB comfortably fits the recordings PK
+    index top levels + the (camera, start_time) index, which is what our
+    eligibility joins, stats aggregates, and housekeeping prune all walk.
     """
     db_path = str(cfg.frigate_db).replace('"', "")
     conn.execute(f'ATTACH DATABASE "file:{db_path}?mode=ro" AS {alias}')
+    conn.execute(f"PRAGMA {alias}.cache_size=-65536")

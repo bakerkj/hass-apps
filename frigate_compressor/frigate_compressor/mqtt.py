@@ -82,7 +82,7 @@ def _open_stats_conn(cfg: Config) -> sqlite3.Connection:
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA cache_size=-196608")
+    conn.execute("PRAGMA cache_size=-131072")
     _attach_frigate_ro(conn, cfg, "frigate_stats")
     return conn
 

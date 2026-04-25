@@ -129,6 +129,13 @@ def main() -> int:
     except Exception as e:
         log("WARNING", f"files.start_time backfill failed (non-fatal): {e}")
 
+    # The main-thread compress_db is only used for startup migrations +
+    # backfill + VACUUM (above) and is idle for the rest of the daemon's
+    # life.  Close it now so the 128 MB cache cap + fd don't sit unused
+    # for days.  Workers, probe loop, eligibility, and MQTT each own
+    # their own persistent connections.
+    compress_db.close()
+
     log("INFO", "════════════════════════════════════════")
     log("INFO", f"Frigate Compressor v{__version__} starting")
     if cfg.all_dry_run:
@@ -228,7 +235,6 @@ def main() -> int:
             except Exception as e:
                 log("WARNING", f"MQTT publisher stop failed: {e}")
         log("INFO", "Frigate Compressor stopped")
-        compress_db.close()
         eligibility_ro.close()
         frigate_ro.close()
         frigate_rw.close()
