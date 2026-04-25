@@ -1,6 +1,6 @@
 {
   "name": "Frigate Compressor",
-  "version": "0.0.28",
+  "version": "0.0.29",
   "slug": "frigate_compressor",
   "description": "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age. Tracks state in a local SQLite database.",
   "url": "https://github.com/bakerkj/hass-apps",
