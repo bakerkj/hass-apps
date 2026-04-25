@@ -631,6 +631,68 @@ def test_files_stats_backfill_from_existing_files(tmp_path):
     _verify(conn)
 
 
+def test_open_compress_db_upgrades_pre_start_time_schema(tmp_path):
+    """Opening a DB whose ``files`` table predates ``start_time`` must
+    succeed: the column gets added via ALTER TABLE, indexes that reference
+    it are created afterwards, and existing rows are preserved."""
+    db_path = tmp_path / "compress.db"
+
+    # Build a "vintage" DB lacking the start_time column.
+    legacy = sqlite3.connect(str(db_path))
+    legacy.executescript(
+        """
+        CREATE TABLE files (
+            recording_id TEXT PRIMARY KEY,
+            camera TEXT NOT NULL,
+            path TEXT NOT NULL,
+            recording_type TEXT,
+            file_size INTEGER,
+            t1_status TEXT,
+            t1_file_size INTEGER,
+            t2_status TEXT,
+            t2_file_size INTEGER,
+            scanned_at TEXT
+        );
+        -- An obsolete index that we drop on migration.
+        CREATE INDEX idx_files_t2_status ON files(t2_status);
+        """
+    )
+    legacy.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size)"
+        " VALUES ('x', 'cam', '/p', 'motion', 500)"
+    )
+    legacy.commit()
+    legacy.close()
+
+    # Reopen via the production helper — should migrate cleanly.
+    conn = fc.open_compress_db(db_path)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(files)").fetchall()}
+    assert "start_time" in cols  # column added via ALTER TABLE
+
+    indexes = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert "idx_files_t2_status" not in indexes  # obsolete index dropped
+    assert "idx_files_t1_pending_age" in indexes  # new index created
+    assert "idx_files_t2_pending_age" in indexes
+
+    # Existing data preserved
+    assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+    # files_stats backfilled from the existing row
+    row = conn.execute(
+        "SELECT camera, rtype, files_count, tier0_bytes FROM files_stats"
+        " WHERE camera = 'cam' AND rtype = 'motion'"
+    ).fetchone()
+    assert row is not None
+    assert row[2] == 1  # files_count
+    assert row[3] == 500  # tier0_bytes
+    conn.close()
+
+
 def test_backfill_files_start_time_populates_missing(tmp_path):
     """backfill_files_start_time copies start_time from Frigate's recordings
     onto files rows that don't have it yet (e.g. existed before the schema

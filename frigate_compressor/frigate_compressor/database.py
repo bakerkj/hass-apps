@@ -82,12 +82,21 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_pending ON files(camera, recording_id)
   WHERE t1_status IN ('ok', 'segment_update_failed')
     AND (t2_status IS NULL
          OR t2_status NOT IN ('ok', 'segment_update_failed'));
+"""
 
--- Eligibility indexes: same pending filters, but keyed on (camera,
--- start_time) so the planner can do a range scan for "camera X,
--- start_time < cutoff" within the pending-only subset.  Benchmarked at
--- ~4000× faster than the previous recordings-driven LEFT JOIN.  Requires
--- start_time to be populated on files — see ``backfill_files_start_time``.
+
+# Indexes that reference ``start_time``.  Kept separate from SCHEMA so we
+# can run the ALTER TABLE migration that adds the column (see
+# ``_migrate_add_columns``) before creating these indexes — otherwise the
+# CREATE INDEX statements would fail on upgrade with "no such column".
+#
+# Eligibility indexes: same pending filters as the backlog ones above,
+# but keyed on (camera, start_time) so the planner can do a range scan
+# for "camera X, start_time < cutoff" within the pending-only subset.
+# Benchmarked at ~4000× faster than the previous recordings-driven
+# LEFT JOIN.  Requires start_time to be populated on files — see
+# ``backfill_files_start_time``.
+START_TIME_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_files_t1_pending_age ON files(camera, start_time)
   WHERE t1_status IS NULL
      OR t1_status NOT IN ('ok', 'segment_update_failed');
@@ -97,6 +106,47 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
     AND (t2_status IS NULL
          OR t2_status NOT IN ('ok', 'segment_update_failed'));
 """
+
+
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
+    """Add columns that newer schemas introduced via ``ALTER TABLE``.
+
+    SQLite's ``CREATE TABLE IF NOT EXISTS`` is a no-op when the table
+    already exists — it does NOT add columns mentioned in the new schema.
+    This function bridges that gap for upgrades from older versions.
+
+    Idempotent: only ALTERs columns that are actually missing.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN start_time REAL")
+        conn.commit()
+        log("INFO", "Migrated: added files.start_time column")
+
+
+# Indexes from earlier development iterations that turned out to be
+# unhelpful — drop them on startup so leftover installs don't carry
+# their ~50 MB write overhead forever.  Safe to remove this list once
+# we're confident nobody has them anymore.
+_OBSOLETE_INDEXES = (
+    "idx_files_t1_t2_status",
+    "idx_files_t2_status",
+)
+
+
+def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    for name in _OBSOLETE_INDEXES:
+        if name in existing:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+            log("INFO", f"Dropped obsolete index {name}")
+    conn.commit()
+
 
 # Materialised aggregate table + triggers.
 #
@@ -461,6 +511,14 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     _migrate_to_files_table(conn)
+    # Add columns added in newer schemas via ALTER TABLE for upgrades from
+    # earlier versions (CREATE TABLE IF NOT EXISTS won't add new columns
+    # to an existing table).  Must run BEFORE indexes that reference the
+    # new columns.
+    _migrate_add_columns(conn)
+    _drop_obsolete_indexes(conn)
+    # Indexes that reference newly-added columns — safe to create now.
+    conn.executescript(START_TIME_INDEXES)
     # Views are created after migration so they reference the final table.
     conn.executescript(VIEWS)
     # Materialised aggregate table + triggers.  Triggers are installed
