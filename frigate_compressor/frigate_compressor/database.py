@@ -108,23 +108,20 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
 """
 
 
-def _migrate_add_columns(conn: sqlite3.Connection) -> bool:
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
     """Add columns that newer schemas introduced via ``ALTER TABLE``.
 
     SQLite's ``CREATE TABLE IF NOT EXISTS`` is a no-op when the table
     already exists — it does NOT add columns mentioned in the new schema.
     This function bridges that gap for upgrades from older versions.
 
-    Idempotent: only ALTERs columns that are actually missing.  Returns
-    True if any column was added (signal for the caller to run VACUUM).
+    Idempotent: only ALTERs columns that are actually missing.
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
     if "start_time" not in cols:
         conn.execute("ALTER TABLE files ADD COLUMN start_time REAL")
         conn.commit()
         log("INFO", "Migrated: added files.start_time column")
-        return True
-    return False
 
 
 # Indexes from earlier development iterations that turned out to be
@@ -137,36 +134,33 @@ _OBSOLETE_INDEXES = (
 )
 
 
-def _drop_obsolete_indexes(conn: sqlite3.Connection) -> bool:
-    """Drop indexes from previous versions that are no longer useful.
-
-    Returns True if any index was dropped (signal for the caller to run
-    VACUUM to reclaim the freed pages).
-    """
+def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
+    """Drop indexes from previous versions that are no longer useful."""
     existing = {
         row[0]
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'"
         ).fetchall()
     }
-    dropped = False
     for name in _OBSOLETE_INDEXES:
         if name in existing:
             conn.execute(f"DROP INDEX IF EXISTS {name}")
             log("INFO", f"Dropped obsolete index {name}")
-            dropped = True
     conn.commit()
-    return dropped
 
 
-def _vacuum(conn: sqlite3.Connection) -> None:
-    """Run VACUUM on the compress DB to reclaim free pages.
+def vacuum_compress_db(conn: sqlite3.Connection) -> None:
+    """Run VACUUM on the compress DB to reclaim free pages and defragment.
 
-    Used only after a migration that frees a large number of pages
-    (dropped indexes, added columns) — VACUUM is expensive (full DB
-    rewrite, exclusive lock) so we don't run it on every startup.
-    SQLite reuses freed pages for new inserts, so the file reaches a
-    natural steady state without periodic vacuuming.
+    Called by ``app.py`` at the very end of the upgrade path — after both
+    schema migration (in ``open_compress_db``) and the row-rewriting
+    backfill of ``files.start_time``.  Running it once at the end is
+    cheaper than running it twice and reclaims fragmentation from both.
+
+    VACUUM is expensive (full DB rewrite, exclusive lock) so we never
+    run it on every startup; SQLite reuses freed pages for new inserts,
+    so the file reaches a natural steady state without periodic
+    vacuuming.
 
     VACUUM cannot run inside a transaction, so we commit any pending
     work and disable the sqlite3 module's implicit-transaction wrapping
@@ -550,10 +544,12 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     # Add columns added in newer schemas via ALTER TABLE for upgrades from
     # earlier versions (CREATE TABLE IF NOT EXISTS won't add new columns
     # to an existing table).  Must run BEFORE indexes that reference the
-    # new columns.  Both helpers report whether they did work — we use
-    # that to decide whether a one-shot VACUUM is worthwhile at the end.
-    added_cols = _migrate_add_columns(conn)
-    dropped_idx = _drop_obsolete_indexes(conn)
+    # new columns.  VACUUM (if needed) is run by ``app.py`` at the end of
+    # the full upgrade — including ``backfill_files_start_time`` which
+    # rewrites every row to populate the new column — so we don't run it
+    # here.
+    _migrate_add_columns(conn)
+    _drop_obsolete_indexes(conn)
     # Indexes that reference newly-added columns — safe to create now.
     conn.executescript(START_TIME_INDEXES)
     # Views are created after migration so they reference the final table.
@@ -574,15 +570,6 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     elif n_files > 0 and not verify_files_stats(conn):
         log("WARNING", "files_stats audit failed — rebuilding")
         _backfill_files_stats(conn)
-    # One-shot VACUUM after upgrade migrations.  Dropping the obsolete
-    # indexes can free tens of megabytes of pages; SQLite would reuse
-    # them eventually but VACUUM lets us return that disk to the user
-    # immediately.  No-op on fresh installs (nothing was migrated).
-    if added_cols or dropped_idx:
-        try:
-            _vacuum(conn)
-        except sqlite3.Error as e:
-            log("WARNING", f"VACUUM failed (non-fatal): {e}")
     return conn
 
 

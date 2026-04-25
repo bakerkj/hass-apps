@@ -43,6 +43,7 @@ from .database import (  # noqa: E402,F401
     open_compress_db,
     open_frigate_db,
     open_frigate_db_rw,
+    vacuum_compress_db,
     verify_files_stats,
 )
 from .eligibility import (  # noqa: E402,F401

@@ -28,6 +28,7 @@ from .database import (
     open_compress_db,
     open_frigate_db,
     open_frigate_db_rw,
+    vacuum_compress_db,
 )
 from .eligibility import get_eligible_recordings, time_until_next_eligible
 from .ffmpeg import check_encoder_works, detect_encoder
@@ -106,7 +107,10 @@ def main() -> int:
     # Backfill files.start_time from Frigate's recordings for any rows
     # that pre-date the column being added.  New rows get start_time
     # written inline by the probe loop, so this is a one-time cost on
-    # the first run after the schema upgrade.
+    # the first run after the schema upgrade.  When backfill actually
+    # runs (n > 0), follow with VACUUM to reclaim space from both the
+    # schema migration in open_compress_db AND the row-rewrite churn
+    # of this UPDATE pass — that's the true end of the upgrade.
     try:
         n_backfilled = backfill_files_start_time(compress_db, cfg)
         if n_backfilled:
@@ -114,6 +118,10 @@ def main() -> int:
                 "INFO",
                 f"Backfilled files.start_time for {n_backfilled} pre-existing rows",
             )
+            try:
+                vacuum_compress_db(compress_db)
+            except Exception as e:
+                log("WARNING", f"VACUUM failed (non-fatal): {e}")
     except Exception as e:
         log("WARNING", f"files.start_time backfill failed (non-fatal): {e}")
 

@@ -693,50 +693,32 @@ def test_open_compress_db_upgrades_pre_start_time_schema(tmp_path):
     conn.close()
 
 
-def test_open_compress_db_vacuums_after_upgrade(tmp_path):
-    """A vintage DB with an obsolete index has free pages after the upgrade
-    drops it; ``open_compress_db`` should run VACUUM to reclaim them."""
+def test_vacuum_compress_db_reclaims_free_pages(tmp_path):
+    """``vacuum_compress_db`` is the helper ``app.py`` calls at the end of
+    the upgrade.  Verify it reclaims free pages and clears the freelist."""
     db_path = tmp_path / "compress.db"
-
-    # Vintage schema with an obsolete index.  Inserting enough rows so the
-    # dropped index frees a non-trivial number of pages.
-    legacy = sqlite3.connect(str(db_path))
-    legacy.executescript(
-        """
-        CREATE TABLE files (
-            recording_id TEXT PRIMARY KEY,
-            camera TEXT NOT NULL,
-            path TEXT NOT NULL,
-            recording_type TEXT,
-            file_size INTEGER,
-            t1_status TEXT,
-            t1_file_size INTEGER,
-            t2_status TEXT,
-            t2_file_size INTEGER,
-            scanned_at TEXT
-        );
-        CREATE INDEX idx_files_t2_status ON files(t2_status);
-        """
-    )
-    legacy.executemany(
-        "INSERT INTO files"
-        " (recording_id, camera, path, recording_type, file_size, t1_status)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        [(f"rec{i:04d}", "cam", f"/p{i}", "motion", 1000, "ok") for i in range(2000)],
-    )
-    legacy.commit()
-    legacy.close()
-
     conn = fc.open_compress_db(db_path)
-    # After VACUUM the freelist is empty.
-    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
-    assert free == 0
+    # Seed and delete to manufacture freelist pages.
+    conn.executemany(
+        "INSERT INTO files (recording_id, camera, path) VALUES (?, ?, ?)",
+        [(f"rec{i:04d}", "cam", f"/p{i}") for i in range(2000)],
+    )
+    conn.commit()
+    conn.execute("DELETE FROM files")
+    conn.commit()
+    free_before = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert free_before > 0  # sanity: we manufactured some
+
+    fc.vacuum_compress_db(conn)
+    free_after = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert free_after == 0
     conn.close()
 
 
-def test_open_compress_db_skips_vacuum_without_migration(tmp_path):
-    """Opening a fresh DB (no migration) should NOT run VACUUM — it's
-    expensive and pointless when nothing was freed."""
+def test_open_compress_db_does_not_vacuum_on_its_own(tmp_path):
+    """``open_compress_db`` must NOT run VACUUM — that's the caller's job
+    after backfill.  Vacuuming inside open would miss the row-rewrite
+    fragmentation produced by ``backfill_files_start_time``."""
     # First open creates the schema; second open is a no-op migration-wise.
     fc.open_compress_db(tmp_path / "compress.db").close()
     conn = fc.open_compress_db(tmp_path / "compress.db")
