@@ -108,21 +108,18 @@ def _make_ctx(
     )
     cfg = fc.load_config(str(opts))
     compress_conn = _open_compress_db(tmp_path)
-    frigate_ro = sqlite3.connect(str(frigate_db))
-    frigate_ro.row_factory = sqlite3.Row
+    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
     frigate_rw = sqlite3.connect(str(frigate_db))
     frigate_rw.row_factory = sqlite3.Row
     return fc.CompressorContext(
         cfg=cfg,
-        frigate_ro=frigate_ro,
-        frigate_rw=frigate_rw,
         compress_db=compress_conn,
+        frigate_rw=frigate_rw,
     )
 
 
 def _close_ctx(ctx: fc.CompressorContext) -> None:
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
     ctx.frigate_rw.close()
 
 
@@ -349,15 +346,13 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
     )
     cfg = fc.load_config(str(opts))
     compress_conn = _open_compress_db(tmp_path)
-    frigate_ro = sqlite3.connect(str(frigate_db))
-    frigate_ro.row_factory = sqlite3.Row
+    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
     frigate_rw = sqlite3.connect(str(frigate_db))
     frigate_rw.row_factory = sqlite3.Row
     ctx = fc.CompressorContext(
         cfg=cfg,
-        frigate_ro=frigate_ro,
-        frigate_rw=frigate_rw,
         compress_db=compress_conn,
+        frigate_rw=frigate_rw,
     )
     _probe_and_store(ctx, "scale_r1", "cam1", rec_path)
 

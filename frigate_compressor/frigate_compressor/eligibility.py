@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 
 from .config import Config
@@ -107,22 +106,6 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     return " UNION ALL ".join(parts), t1_params + t2_params
 
 
-def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
-    """Open a read-only compress-db connection.
-
-    The eligibility query is now self-contained on ``files`` (path and
-    recording_type are denormalised onto it), so we no longer ATTACH
-    Frigate.  Cache budget stays at 128 MB to comfortably hold the partial
-    eligibility indexes' top levels and recent leaf pages.
-    """
-    conn = sqlite3.connect(
-        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA cache_size=-131072")
-    return conn
-
-
 def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     """
     Returns up to ``_ELIGIBLE_BATCH_SIZE`` recordings eligible for compression
@@ -140,17 +123,8 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
         return []
     params.append(_ELIGIBLE_BATCH_SIZE)
 
-    # In production ``ctx.eligibility_ro`` is a persistent conn opened at
-    # startup; reuse it so the cache stays warm across iterations.  Tests
-    # don't set it — fall back to opening a transient connection.
-    opened_here = ctx.eligibility_ro is None
-    conn = (
-        ctx.eligibility_ro
-        if ctx.eligibility_ro is not None
-        else _open_eligible_conn(cfg)
-    )
-    try:
-        rows = conn.execute(
+    with ctx.compress_db_lock:
+        rows = ctx.compress_db.execute(
             f"""
             SELECT recording_id, camera, path, recording_type,
                    start_time, tier
@@ -160,9 +134,6 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             """,
             params,
         ).fetchall()
-    finally:
-        if opened_here:
-            conn.close()
 
     results = []
     for row in rows:
@@ -207,11 +178,12 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
 
     min_t1_days = _min_tier1_min_days(cfg)
     t1_cutoff = now - (min_t1_days * 86400)
-    row = ctx.frigate_ro.execute(
-        "SELECT start_time FROM recordings"
-        " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
-        (t1_cutoff,),
-    ).fetchone()
+    with ctx.compress_db_lock:
+        row = ctx.compress_db.execute(
+            "SELECT start_time FROM frigate.recordings"
+            " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
+            (t1_cutoff,),
+        ).fetchone()
     if row is not None:
         soonest = min(soonest, row["start_time"] + min_t1_days * 86400 - now)
 
@@ -225,11 +197,12 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
     )
     if min_t2_days is not None:
         t2_cutoff = now - (min_t2_days * 86400)
-        row = ctx.frigate_ro.execute(
-            "SELECT start_time FROM recordings"
-            " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
-            (t2_cutoff,),
-        ).fetchone()
+        with ctx.compress_db_lock:
+            row = ctx.compress_db.execute(
+                "SELECT start_time FROM frigate.recordings"
+                " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
+                (t2_cutoff,),
+            ).fetchone()
         if row is not None:
             soonest = min(soonest, row["start_time"] + min_t2_days * 86400 - now)
 

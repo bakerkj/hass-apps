@@ -17,7 +17,6 @@ __version__ = os.environ.get("ADDON_VERSION", "dev")
 from .compressor import (  # noqa: E402,F401
     _compress_one_inner,
     compress_one,
-    init_worker_connections,
 )
 from .config import (  # noqa: E402,F401
     CameraConfig,
@@ -50,7 +49,6 @@ from .database import (  # noqa: E402,F401
 from .eligibility import (  # noqa: E402,F401
     _build_eligible_where,
     _ELIGIBLE_BATCH_SIZE,
-    _open_eligible_conn,
     get_eligible_recordings,
     time_until_next_eligible,
 )
