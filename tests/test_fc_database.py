@@ -693,6 +693,71 @@ def test_open_compress_db_upgrades_pre_start_time_schema(tmp_path):
     conn.close()
 
 
+def test_open_compress_db_vacuums_after_upgrade(tmp_path):
+    """A vintage DB with an obsolete index has free pages after the upgrade
+    drops it; ``open_compress_db`` should run VACUUM to reclaim them."""
+    db_path = tmp_path / "compress.db"
+
+    # Vintage schema with an obsolete index.  Inserting enough rows so the
+    # dropped index frees a non-trivial number of pages.
+    legacy = sqlite3.connect(str(db_path))
+    legacy.executescript(
+        """
+        CREATE TABLE files (
+            recording_id TEXT PRIMARY KEY,
+            camera TEXT NOT NULL,
+            path TEXT NOT NULL,
+            recording_type TEXT,
+            file_size INTEGER,
+            t1_status TEXT,
+            t1_file_size INTEGER,
+            t2_status TEXT,
+            t2_file_size INTEGER,
+            scanned_at TEXT
+        );
+        CREATE INDEX idx_files_t2_status ON files(t2_status);
+        """
+    )
+    legacy.executemany(
+        "INSERT INTO files"
+        " (recording_id, camera, path, recording_type, file_size, t1_status)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        [(f"rec{i:04d}", "cam", f"/p{i}", "motion", 1000, "ok") for i in range(2000)],
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = fc.open_compress_db(db_path)
+    # After VACUUM the freelist is empty.
+    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert free == 0
+    conn.close()
+
+
+def test_open_compress_db_skips_vacuum_without_migration(tmp_path):
+    """Opening a fresh DB (no migration) should NOT run VACUUM — it's
+    expensive and pointless when nothing was freed."""
+    # First open creates the schema; second open is a no-op migration-wise.
+    fc.open_compress_db(tmp_path / "compress.db").close()
+    conn = fc.open_compress_db(tmp_path / "compress.db")
+    # Add some data and delete it to seed freelist; reopening must NOT vacuum.
+    conn.executemany(
+        "INSERT INTO files (recording_id, camera, path) VALUES (?, ?, ?)",
+        [(f"rec{i}", "cam", f"/p{i}") for i in range(500)],
+    )
+    conn.commit()
+    conn.execute("DELETE FROM files")
+    conn.commit()
+    free_before = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    conn.close()
+
+    conn = fc.open_compress_db(tmp_path / "compress.db")
+    free_after = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    # No migration ran on the second open, so VACUUM should not have either.
+    assert free_after == free_before
+    conn.close()
+
+
 def test_backfill_files_start_time_populates_missing(tmp_path):
     """backfill_files_start_time copies start_time from Frigate's recordings
     onto files rows that don't have it yet (e.g. existed before the schema
