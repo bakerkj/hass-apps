@@ -123,6 +123,13 @@ def _store_probe(
     range-scan on (camera, start_time) without joining Frigate per-row.
     Both default to ``None`` for callers that don't have them — the
     ON CONFLICT path preserves existing values in that case.
+
+    Does NOT commit — the caller batches commits across the per-poll
+    batch.  Per-row commits caused two problems: (a) every commit added
+    a WAL frame and a fsync-equivalent metadata write, multiplying wchar
+    by ~250×; (b) every commit advanced the WAL snapshot, invalidating
+    the eligibility connection's page cache so the next eligibility
+    query paid the full cold cost.  One commit per poll fixes both.
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     conn.execute(
@@ -160,7 +167,6 @@ def _store_probe(
             now,
         ),
     )
-    conn.commit()
 
 
 def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
@@ -230,28 +236,36 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
             log("DEBUG", f"Probing {len(unprobed)} recording(s)")
             probed = 0
             max_observed = cursor if cursor is not None else 0.0
-            for rec in unprobed:
-                if stopping.is_set():
-                    break
-                info = _probe(Path(rec["path"]))
-                if info is not None:
-                    _store_probe(
-                        probe_conn,
-                        rec["recording_id"],
-                        rec["camera"],
-                        rec["path"],
-                        info,
-                        recording_type=rec.get("recording_type"),
-                        start_time=rec.get("start_time"),
-                    )
-                    probed += 1
-                else:
-                    log(
-                        "DEBUG",
-                        f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
-                    )
-                if rec["start_time"] > max_observed:
-                    max_observed = rec["start_time"]
+            # Batch commit: one commit per poll instead of one per row.
+            # See ``_store_probe`` for why this matters (WAL amplification
+            # + reader cache invalidation).
+            try:
+                for rec in unprobed:
+                    if stopping.is_set():
+                        break
+                    info = _probe(Path(rec["path"]))
+                    if info is not None:
+                        _store_probe(
+                            probe_conn,
+                            rec["recording_id"],
+                            rec["camera"],
+                            rec["path"],
+                            info,
+                            recording_type=rec.get("recording_type"),
+                            start_time=rec.get("start_time"),
+                        )
+                        probed += 1
+                    else:
+                        log(
+                            "DEBUG",
+                            f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
+                        )
+                    if rec["start_time"] > max_observed:
+                        max_observed = rec["start_time"]
+                probe_conn.commit()
+            except Exception:
+                probe_conn.rollback()
+                raise
 
             # Cursor advancement:
             #  * If a full scan returned a FULL batch (==LIMIT rows), there's

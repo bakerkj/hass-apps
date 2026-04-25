@@ -178,9 +178,8 @@ def main() -> int:
 
     # Persistent ro connection for the main loop's eligibility query —
     # opened once and reused so its page cache stays warm across the
-    # every-60s query.  Has Frigate attached as ``frigate_eligible``
-    # so the UNION-ALL + join query can range-scan our partial indexes
-    # and then PK-look up paths from Frigate without re-attaching.
+    # every-60s query.  Self-contained on ``files`` (no Frigate ATTACH
+    # needed since path + recording_type are denormalised onto files).
     eligibility_ro = _open_eligible_conn(cfg)
 
     ctx = CompressorContext(
