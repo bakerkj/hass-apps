@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -847,7 +848,8 @@ def test_run_main_loop_sleeps_remainder_after_partial_batch(monkeypatch, tmp_pat
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
 
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert eligible_calls["n"] == 1
     # elapsed ≈ 0 (instant mocked compress) → sleep ≈ full window.
@@ -904,7 +906,8 @@ def test_run_main_loop_skips_sleep_when_processing_overruns_window(
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     # Pass 1's processing took 90s (> 60s window), so no sleep was scheduled
     # — we went straight to pass 2.  Pass 2 was empty → no-work sleep
@@ -951,7 +954,8 @@ def test_run_main_loop_sleeps_until_next_eligible_when_no_work(monkeypatch, tmp_
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert eligible_calls["n"] == 1
     assert compress_calls["n"] == 0
@@ -980,7 +984,8 @@ def test_run_main_loop_no_work_sleep_capped_at_max(monkeypatch, tmp_path):
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert wait_timeouts == [fc.MAX_SLEEP_SEC]
 
@@ -1012,7 +1017,8 @@ def test_run_main_loop_no_work_sleep_handles_query_exception(monkeypatch, tmp_pa
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert wait_timeouts == [fc.MAX_SLEEP_SEC]
 
@@ -1048,7 +1054,8 @@ def test_run_main_loop_sets_target_to_batch_size(monkeypatch, tmp_path):
         return real_wait(timeout=0)
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert ctx.rate_limiter.target_per_min == 7
 
@@ -1076,7 +1083,8 @@ def test_run_main_loop_target_unchanged_when_no_work(monkeypatch, tmp_path):
     # Pre-set a sentinel target AFTER the limiter is otherwise idle; the
     # loop must not overwrite it on the empty pass.
     ctx.rate_limiter.set_target(123.0)
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     assert ctx.rate_limiter.target_per_min == pytest.approx(123.0)
 
@@ -1176,7 +1184,8 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(stopping, "wait", fake_wait)
 
-    fc.run_main_loop(ctx, "cpu", stopping, housekeeping_interval_sec=999_999)
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
     # Iter 1: 6 files at interval=10s.  First file fires immediately;
     #   workers sleep 10s × 5 between starts (50s total wall-clock).

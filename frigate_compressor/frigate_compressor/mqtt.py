@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import paho.mqtt.client as paho_mqtt
 
-from .config import MqttConfig, MqttHealth
+from .config import Config, MqttConfig, MqttHealth
 from .context import CompressorContext
 from .database import (
     STATUS_OK,
@@ -69,7 +69,28 @@ class FrigateStats:
 _MB_BYTES = 1024 * 1024
 
 
-def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
+def _open_stats_conn(cfg: Config) -> sqlite3.Connection:
+    """Open a read-only compress-db connection with Frigate attached as
+    ``frigate_stats`` — the shape expected by ``collect_frigate_stats``.
+
+    Bigger cache helps across the 15+ queries the publisher runs on this
+    connection (files_stats read, two Frigate aggregates, 12 backlog
+    EXISTS probes): the partial-index top levels and Frigate's
+    recordings PK pages get reused repeatedly.
+    """
+    conn = sqlite3.connect(
+        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA cache_size=-131072")
+    _attach_frigate_ro(conn, cfg, "frigate_stats")
+    return conn
+
+
+def collect_frigate_stats(
+    ctx: CompressorContext,
+    conn: sqlite3.Connection | None = None,
+) -> FrigateStats:
     """Snapshot the compress DB's per-camera rollup for MQTT publishing.
 
     The bulk of the data comes from the materialised ``files_stats`` table,
@@ -82,20 +103,21 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
       * oldest start_time per camera (can't maintain MIN under DELETE)
       * per-tier backlog existence (per-camera EXISTS with partial indexes)
 
-    Opens its own read-only connection so it never contends with the
-    probe or compression loops.
+    ``conn`` may be passed in by the publisher (reused across publishes so
+    the page cache stays warm).  If ``None`` — tests and ad-hoc callers —
+    opens a transient ro connection and closes it on return.
     """
     cfg = ctx.cfg
     now = time.time()
     rate_window = float(cfg.mqtt.rate_window_seconds)
     rate_cutoff = now - rate_window
 
-    conn = sqlite3.connect(
-        f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
-    )
-    conn.row_factory = sqlite3.Row
+    if conn is None:
+        conn = _open_stats_conn(cfg)
+        opened_here = True
+    else:
+        opened_here = False
     try:
-        _attach_frigate_ro(conn, cfg, "frigate_stats")
         # Per (camera, rtype) rollup from the materialised stats table.
         # files_stats carries tier0/tier1/tier2 bytes so each row is one
         # rtype bucket for a camera — the publisher fans it out into
@@ -200,7 +222,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
                 t2_err = row is not None
             backlog_errors[cam_name] = (t1_err, t2_err)
     finally:
-        conn.close()
+        if opened_here:
+            conn.close()
 
     recording_rate: dict[str, float] = {
         r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
@@ -572,6 +595,12 @@ class MqttPublisher:
         self.health = MqttHealth()
         self.client: paho_mqtt.Client | None = None
         self._thread: threading.Thread | None = None
+        # Persistent ro compress-db conn for ``collect_frigate_stats`` —
+        # lazy-opened on the publisher thread's first publish and reused
+        # for the publisher's lifetime.  Owned here (not on ctx) because
+        # SQLite connections aren't meant to be handed between threads,
+        # and the publisher is the only caller on its thread.
+        self._stats_conn: sqlite3.Connection | None = None
         # Devices for which we've already published HA discovery on the
         # current connection.  Cleared on (re)connect and on HA birth.
         self._discovery_published: set[str] = set()
@@ -605,6 +634,12 @@ class MqttPublisher:
     def stop(self) -> None:
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if self._stats_conn is not None:
+            try:
+                self._stats_conn.close()
+            except Exception:
+                pass
+            self._stats_conn = None
         client = self.client
         if client is None:
             return
@@ -751,7 +786,12 @@ class MqttPublisher:
         Public so tests can drive a single pass without spinning the loop
         thread.
         """
-        stats = collect_frigate_stats(self.ctx)
+        if self._stats_conn is None:
+            # First publish on this thread: open the persistent conn here
+            # (not in ``start()``) so the attach+schema-read happen on the
+            # publisher thread, which is the only thread that will use it.
+            self._stats_conn = _open_stats_conn(self.ctx.cfg)
+        stats = collect_frigate_stats(self.ctx, self._stats_conn)
         now = time.time()
 
         # Top-level "Frigate Storage" device

@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import __version__
-from .compressor import compress_one
+from .compressor import compress_one, init_worker_connections
 from .config import (
     Config,
     TypeSettings,
@@ -30,7 +30,11 @@ from .database import (
     open_frigate_db_rw,
     vacuum_compress_db,
 )
-from .eligibility import get_eligible_recordings, time_until_next_eligible
+from .eligibility import (
+    _open_eligible_conn,
+    get_eligible_recordings,
+    time_until_next_eligible,
+)
 from .ffmpeg import check_encoder_works, detect_encoder
 from .housekeeping import run_housekeeping
 from .mqtt import MqttPublisher
@@ -125,6 +129,13 @@ def main() -> int:
     except Exception as e:
         log("WARNING", f"files.start_time backfill failed (non-fatal): {e}")
 
+    # The main-thread compress_db is only used for startup migrations +
+    # backfill + VACUUM (above) and is idle for the rest of the daemon's
+    # life.  Close it now so the 128 MB cache cap + fd don't sit unused
+    # for days.  Workers, probe loop, eligibility, and MQTT each own
+    # their own persistent connections.
+    compress_db.close()
+
     log("INFO", "════════════════════════════════════════")
     log("INFO", f"Frigate Compressor v{__version__} starting")
     if cfg.all_dry_run:
@@ -165,10 +176,18 @@ def main() -> int:
                 log("INFO", f"        {rtype:<12}: {_fmt_type(ts)}")
     log("INFO", "════════════════════════════════════════")
 
+    # Persistent ro connection for the main loop's eligibility query —
+    # opened once and reused so its page cache stays warm across the
+    # every-60s query.  Has Frigate attached as ``frigate_eligible``
+    # so the UNION-ALL + join query can range-scan our partial indexes
+    # and then PK-look up paths from Frigate without re-attaching.
+    eligibility_ro = _open_eligible_conn(cfg)
+
     ctx = CompressorContext(
         cfg=cfg,
         frigate_ro=frigate_ro,
         frigate_rw=frigate_rw,
+        eligibility_ro=eligibility_ro,
     )
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
@@ -195,16 +214,28 @@ def main() -> int:
             log("ERROR", f"Failed to start MQTT publisher: {e}")
             publisher = None
 
+    # Persistent worker pool: one set of DB connections per worker thread
+    # for the daemon's lifetime, opened by ``init_worker_connections`` on
+    # thread start.  Avoids ~210 sqlite3.connect()/close() cycles per
+    # minute when running at full compression rate.
+    pool = ThreadPoolExecutor(
+        max_workers=cfg.max_parallel_jobs,
+        initializer=init_worker_connections,
+        initargs=(cfg,),
+        thread_name_prefix="compress",
+    )
+
     try:
-        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec)
+        run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec, pool)
     finally:
+        pool.shutdown(wait=False, cancel_futures=True)
         if publisher is not None:
             try:
                 publisher.stop()
             except Exception as e:
                 log("WARNING", f"MQTT publisher stop failed: {e}")
         log("INFO", "Frigate Compressor stopped")
-        compress_db.close()
+        eligibility_ro.close()
         frigate_ro.close()
         frigate_rw.close()
 
@@ -244,11 +275,15 @@ def run_main_loop(
     encoder: str,
     stopping: threading.Event,
     housekeeping_interval_sec: float,
+    pool: ThreadPoolExecutor,
 ) -> None:
     """Process eligible recordings forever, sleeping only when caught up.
 
     Extracted from ``main()`` so the loop's scheduling behavior (run-then-
-    re-check vs sleep-until-next) is testable in isolation.
+    re-check vs sleep-until-next) is testable in isolation.  ``pool`` is
+    a long-lived ``ThreadPoolExecutor`` whose workers carry their own
+    per-thread DB connections — see ``init_worker_connections`` in
+    ``compressor.py``.
     """
     cfg = ctx.cfg
     last_housekeeping = time.time()
@@ -287,7 +322,6 @@ def run_main_loop(
             )
             log("INFO", f"Compressing {len(eligible)}: {breakdown}{suffix}")
 
-            pool = ThreadPoolExecutor(max_workers=cfg.max_parallel_jobs)
             futures = {
                 pool.submit(
                     _pace_then_compress,
@@ -305,16 +339,16 @@ def run_main_loop(
             }
             for future in as_completed(futures):
                 if stopping.is_set():
+                    # Cancel anything still pending so we exit promptly;
+                    # leave the pool itself open — main() shuts it down.
+                    for f in futures:
+                        f.cancel()
                     break
                 r = futures[future]
                 try:
                     future.result()
                 except Exception as e:
                     log("ERROR", f"[{r['camera']}] unhandled error: {e}")
-            if stopping.is_set():
-                pool.shutdown(wait=False, cancel_futures=True)
-            else:
-                pool.shutdown(wait=True)
 
         # ── Sleep until the next iteration ───────────────────────────────
         # Three cases:

@@ -85,6 +85,12 @@ def _open_eligible_conn(cfg: Config) -> sqlite3.Connection:
         f"file:{cfg.compress_db}?mode=ro", uri=True, check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
+    # The eligibility query is a single statement but a heavy one —
+    # UNION ALL over up to 12 camera/tier partial-index branches joined
+    # back to Frigate's recordings PK for each hit.  A bigger cache
+    # prevents mid-statement page eviction when the access pattern walks
+    # many Frigate PK pages in one go.
+    conn.execute("PRAGMA cache_size=-131072")
     _attach_frigate_ro(conn, cfg, "frigate_eligible")
     return conn
 
@@ -105,7 +111,15 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
         return []
     params.append(_ELIGIBLE_BATCH_SIZE)
 
-    conn = _open_eligible_conn(cfg)
+    # In production ``ctx.eligibility_ro`` is a persistent conn opened at
+    # startup; reuse it so the cache stays warm across iterations.  Tests
+    # don't set it — fall back to opening a transient connection.
+    opened_here = ctx.eligibility_ro is None
+    conn = (
+        ctx.eligibility_ro
+        if ctx.eligibility_ro is not None
+        else _open_eligible_conn(cfg)
+    )
     try:
         rows = conn.execute(
             f"""
@@ -119,7 +133,8 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
             params,
         ).fetchall()
     finally:
-        conn.close()
+        if opened_here:
+            conn.close()
 
     results = []
     for row in rows:
