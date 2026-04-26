@@ -223,6 +223,33 @@ def _hk_log_recent_errors(
         log("WARNING", f"  [{ts}] {err['camera']} | {msg}")
 
 
+def _hk_sqlite_maintenance(
+    compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
+) -> None:
+    """Refresh planner stats and truncate the WAL.
+
+    ``PRAGMA optimize`` runs ANALYZE only on tables/indexes that have
+    changed enough to benefit; the ``analysis_limit`` set in
+    ``open_compress_db`` keeps each ANALYZE bounded.
+
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` flushes the WAL into the main
+    DB and shrinks the ``-wal`` file to zero bytes.  Without this the
+    WAL is bounded by autocheckpoint but never shrinks below its
+    high-water mark, so the prune burst can leave it sitting fat.
+    """
+    with compress_db_lock:
+        compress_db.execute("PRAGMA optimize")
+        row = compress_db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if row is not None:
+        busy, log_pages, ckpt_pages = row[0], row[1], row[2]
+        log(
+            "DEBUG",
+            f"SQLite maintenance: wal_checkpoint busy={busy} "
+            f"log_pages={log_pages} ckpt_pages={ckpt_pages}",
+        )
+
+
 def _run_housekeeping_inner(
     cfg: Config,
     compress_db: sqlite3.Connection,
@@ -234,4 +261,5 @@ def _run_housekeeping_inner(
     _hk_prune_orphaned(cfg, compress_db, compress_db_lock)
     _hk_log_savings_summary(compress_db, compress_db_lock)
     _hk_log_recent_errors(compress_db, compress_db_lock)
+    _hk_sqlite_maintenance(compress_db, compress_db_lock)
     log("INFO", "── Housekeeping complete")

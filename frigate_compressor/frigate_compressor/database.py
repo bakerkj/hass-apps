@@ -329,6 +329,15 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-262144")  # up to 256 MB
     conn.execute("PRAGMA busy_timeout=10000")
+    # Bound the per-index work that ``PRAGMA optimize`` (run from
+    # housekeeping) does on this long-running connection — without a
+    # cap, ANALYZE can full-scan the ``files`` table.  10k samples per
+    # index is well above SQLite's 100–1000 recommended range, picked
+    # because the partial indexes on ``files`` filter very skewed
+    # distributions (per-camera, per-status) and benefit from a denser
+    # sample; total cost is ~10k × index_count rows once per
+    # housekeeping pass, still trivial.
+    conn.execute("PRAGMA analysis_limit=10000")
     conn.executescript(SCHEMA)
     conn.executescript(VIEWS)
     # Materialised aggregate table + triggers.  Triggers are installed
