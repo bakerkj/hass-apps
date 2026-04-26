@@ -10,6 +10,7 @@ import logging
 import signal
 import time
 
+from . import __version__
 from .config import (
     load_options,
     parse_bool,
@@ -42,6 +43,7 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     log = logging.getLogger("system_resource_tuner")
+    log.info("System Resource Tuner v%s starting", __version__)
 
     interval_seconds = int(options.get("interval_seconds", 60))
     if interval_seconds < 5:

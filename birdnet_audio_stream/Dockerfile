@@ -1,6 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
 LABEL \
     org.opencontainers.image.title="BirdNET Audio Stream" \
     org.opencontainers.image.description="Stream ALSA microphone audio over RTSP for BirdNET using go2rtc" \

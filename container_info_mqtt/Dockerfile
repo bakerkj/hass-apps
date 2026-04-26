@@ -1,6 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
 LABEL \
     org.opencontainers.image.title="Container Info MQTT" \
     org.opencontainers.image.description="Collects Docker container stats and config limits (cpuset, CPU shares, blkio weight) and publishes Home Assistant MQTT Discovery sensors." \

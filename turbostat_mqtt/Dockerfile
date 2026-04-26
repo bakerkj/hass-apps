@@ -1,6 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
 LABEL \
     org.opencontainers.image.title="Turbostat to MQTT" \
     org.opencontainers.image.description="Runs turbostat and publishes to MQTT." \

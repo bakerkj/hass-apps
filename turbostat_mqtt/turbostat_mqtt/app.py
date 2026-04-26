@@ -15,6 +15,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from . import __version__
 from .metadata import friendly_name
 from .mqtt import (
     MqttHealth,
@@ -35,6 +36,7 @@ def main() -> int:
         opts = json.load(f)
 
     log_level = (opts.get("log_level") or "INFO").upper()
+    log("INFO", f"Turbostat to MQTT v{__version__} starting", log_level)
 
     interval = max(1.0, float(opts.get("interval_seconds", 10)))
     discovery_prefix = opts.get("mqtt_discovery_prefix", "homeassistant")

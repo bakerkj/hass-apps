@@ -4,6 +4,8 @@ set -euo pipefail
 
 source /usr/lib/bashio/bashio.sh
 
+bashio::log.info "BirdNET Audio Stream v${ADDON_VERSION:-dev} starting"
+
 CONFIG_PATH="/tmp/go2rtc.yaml"
 STREAM_NAME="$(bashio::config 'stream_name')"
 AUDIO_DEVICE="$(bashio::config 'alsa_device')"

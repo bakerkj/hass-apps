@@ -16,6 +16,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from . import __version__
 from .config import OPTION_KEYS, load_options_file
 from .docker import fetch_containers, run_cmd
 from .metrics import (
@@ -136,6 +137,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     log = logging.getLogger("container_info_mqtt")
+    log.info("Container Info MQTT v%s starting", __version__)
     interval_seconds = max(1, args.interval_seconds)
     expire_after_s = max(60, int(interval_seconds) * args.expire_after_multiplier)
     unknown_option_keys = sorted(key for key in opts.keys() if key not in OPTION_KEYS)
