@@ -120,14 +120,17 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     params.append(_ELIGIBLE_BATCH_SIZE)
 
     # Two-stage query: inner branches stay index-only and emit (rid,
-    # start_time, tier); the outer JOIN fetches path/recording_type for
-    # only the rows that survive the LIMIT.  At production scale this
-    # cuts row-fetch count from ~6000/call (500 per branch × 12 branches)
-    # to ~500/call.
+    # start_time, tier); the outer JOIN fetches path/recording_type +
+    # probe metadata (width/height/fps) for only the rows that survive
+    # the LIMIT.  Returning probe metadata here lets the worker skip its
+    # own per-file ``SELECT width, height, fps FROM files``, which used
+    # to be one of the bigger remaining IO sources at the production
+    # compression rate.
     with ctx.compress_db_lock:
         rows = ctx.compress_db.execute(
             f"""
             SELECT f.recording_id, f.camera, f.path, f.recording_type,
+                   f.width, f.height, f.fps,
                    sub.start_time, sub.tier
             FROM (
                 SELECT rid, start_time, tier
@@ -155,6 +158,11 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
                 "path": row["path"],
                 "tier": int(row["tier"]),
                 "recording_type": rtype,
+                # Probe metadata for the worker's pre-flight check (skips
+                # a per-file SELECT on the compress DB).
+                "width": row["width"],
+                "height": row["height"],
+                "fps": row["fps"],
             }
         )
     return results

@@ -67,21 +67,12 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE INDEX IF NOT EXISTS idx_files_camera ON files(camera);
 
--- Partial indexes for backlog-existence checks.  The MQTT publisher asks
--- "does any recording for camera X with start_time < threshold still
--- have tier-N compression pending?" once per camera per publish; driving
--- that scan from a tiny pending-only index is far cheaper than LEFT-JOIN
--- + CASE-aggregation across all 820K rows.  The WHERE clause on each
--- index must match the query predicate exactly for the planner to use
--- it — keep them in sync if the status vocabulary changes.
-CREATE INDEX IF NOT EXISTS idx_files_t1_pending ON files(camera, recording_id)
-  WHERE t1_status IS NULL
-     OR t1_status NOT IN ('ok', 'segment_update_failed');
-
-CREATE INDEX IF NOT EXISTS idx_files_t2_pending ON files(camera, recording_id)
-  WHERE t1_status IN ('ok', 'segment_update_failed')
-    AND (t2_status IS NULL
-         OR t2_status NOT IN ('ok', 'segment_update_failed'));
+-- Backlog-existence + eligibility partial indexes are defined below in
+-- ``START_TIME_INDEXES`` (they all reference start_time, which was
+-- added in a later schema upgrade).  An earlier iteration also kept
+-- (camera, recording_id) variants for the MQTT backlog queries — those
+-- have been dropped since the (camera, start_time) variants serve the
+-- same queries with one less index to maintain on every status change.
 """
 
 
@@ -155,6 +146,14 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
 _OBSOLETE_INDEXES = (
     "idx_files_t1_t2_status",
     "idx_files_t2_status",
+    # ``idx_files_t{1,2}_pending`` were (camera, recording_id) partial
+    # indexes used by an earlier shape of the MQTT backlog queries.  The
+    # current code drives backlog checks from the (camera, start_time)
+    # ``_pending_age`` variants, which serve those queries equally well
+    # AND the eligibility query.  Keeping the redundant pair around just
+    # doubled the partial-index maintenance cost on every status change.
+    "idx_files_t1_pending",
+    "idx_files_t2_pending",
 )
 
 

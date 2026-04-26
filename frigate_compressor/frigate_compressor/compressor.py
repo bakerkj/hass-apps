@@ -35,6 +35,7 @@ def compress_one(
     recording_type: str,
     encoder: str,
     ctx: CompressorContext,
+    probe_data: dict | None = None,
 ) -> bool:
     """Compress one recording end-to-end using the shared connections on ctx.
 
@@ -42,6 +43,12 @@ def compress_one(
     plus reads of frigate's recordings via the attached ``frigate`` schema)
     serialised by ``ctx.compress_db_lock``, and ``ctx.frigate_rw`` for the
     post-encode segment_size update serialised by ``ctx.frigate_rw_lock``.
+
+    ``probe_data``: when the caller already has the row's ``width`` /
+    ``height`` / ``fps`` (e.g. from ``get_eligible_recordings``), pass them
+    in so the worker skips its pre-flight SELECT.  Avoiding that SELECT
+    matters at production compression rates.  Tests and one-shot callers
+    leave ``probe_data=None`` and the worker falls back to fetching it.
     """
     return _compress_one_inner(
         recording_id,
@@ -51,6 +58,7 @@ def compress_one(
         recording_type,
         encoder,
         ctx,
+        probe_data,
     )
 
 
@@ -62,6 +70,7 @@ def _compress_one_inner(
     recording_type: str,
     encoder: str,
     ctx: CompressorContext,
+    probe_data: dict | None = None,
 ) -> bool:
     cfg = ctx.cfg
     compress_db = ctx.compress_db
@@ -129,17 +138,26 @@ def _compress_one_inner(
 
     size_before = filepath.stat().st_size
 
-    # Require probe data before compressing.
-    with compress_db_lock:
-        probe_row = compress_db.execute(
-            "SELECT width, height, fps FROM files WHERE recording_id = ?",
-            (recording_id,),
-        ).fetchone()
-    if not probe_row or not probe_row["width"] or not probe_row["height"]:
+    # Require probe data before compressing.  If the caller passed it in
+    # (production fast path — eligibility query already fetched these
+    # columns), skip the SELECT.  Tests and ad-hoc callers fall back to
+    # a per-file SELECT.
+    if probe_data is None:
+        with compress_db_lock:
+            row = compress_db.execute(
+                "SELECT width, height, fps FROM files WHERE recording_id = ?",
+                (recording_id,),
+            ).fetchone()
+        probe_data = (
+            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
+            if row is not None
+            else None
+        )
+    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
         log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
-    src_info = f"{probe_row['width']}x{probe_row['height']}"
+    src_info = f"{probe_data['width']}x{probe_data['height']}"
     src_info = f"{src_info:<10}"
 
     # Format target settings for log messages.
