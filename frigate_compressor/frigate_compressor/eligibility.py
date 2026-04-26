@@ -47,27 +47,24 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             continue
         if cam.tier1.enabled:
             t1_cutoff = effective_now - (cam.tier1.min_days * 86400)
-            # ``INDEXED BY idx_files_t1_pending_age`` forces the planner to
-            # range-scan the partial index — keyed on (camera, start_time)
-            # WHERE t1 pending — instead of falling back to ``idx_files_camera``
-            # and scanning every row for the camera.  When path and
-            # recording_type were fetched via JOIN to Frigate's recordings,
-            # the planner picked the partial index automatically; reading
-            # those columns from ``files`` itself shifts the cost calculus
-            # and the planner regresses to the camera index without the hint.
+            # Inner branch returns ONLY columns covered by the partial index
+            # (rowid + start_time, plus the literal ``tier`` constant).  No
+            # ``f.path`` / ``f.recording_type`` here — those would force a
+            # row fetch per matched index entry, and at production scale
+            # that's 500 row fetches × 12 branches = 6000 fetches per call,
+            # which dwarfs everything else in the daemon's IO profile.
+            # The outer SELECT in ``get_eligible_recordings`` JOINs back to
+            # ``files`` for those columns on only the final ~500 rows.
             #
-            # Per-branch ORDER BY + LIMIT: each (camera, tier) contributes
-            # at most ``_ELIGIBLE_BATCH_SIZE`` rows.  Without this, the
-            # outer ``ORDER BY tier, start_time`` sees a UNION ALL spanning
-            # all twelve branches and forces full materialisation of every
-            # pending row.  ``ORDER BY start_time`` here matches the
-            # partial index's order so SQLite can short-circuit at LIMIT
-            # without an extra sort step.
+            # ``INDEXED BY idx_files_t1_pending_age`` forces the planner to
+            # use the partial index (otherwise it can regress to
+            # idx_files_camera).  ``ORDER BY f.start_time ASC LIMIT N`` is
+            # naturally satisfied by the index's (camera, start_time) order
+            # so SQLite stops at the LIMIT without an extra sort.
             t1_parts.append(
                 f"""
                 SELECT * FROM (
-                    SELECT f.recording_id, f.camera, f.path, f.recording_type,
-                           f.start_time, 1 AS tier
+                    SELECT f.rowid AS rid, f.start_time, 1 AS tier
                     FROM files f INDEXED BY idx_files_t1_pending_age
                     WHERE f.camera = ? AND f.start_time < ?
                       AND (f.t1_status IS NULL
@@ -84,8 +81,7 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             t2_parts.append(
                 f"""
                 SELECT * FROM (
-                    SELECT f.recording_id, f.camera, f.path, f.recording_type,
-                           f.start_time, 2 AS tier
+                    SELECT f.rowid AS rid, f.start_time, 2 AS tier
                     FROM files f INDEXED BY idx_files_t2_pending_age
                     WHERE f.camera = ? AND f.start_time < ?
                       AND f.t1_status IN
@@ -123,14 +119,24 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
         return []
     params.append(_ELIGIBLE_BATCH_SIZE)
 
+    # Two-stage query: inner branches stay index-only and emit (rid,
+    # start_time, tier); the outer JOIN fetches path/recording_type for
+    # only the rows that survive the LIMIT.  At production scale this
+    # cuts row-fetch count from ~6000/call (500 per branch × 12 branches)
+    # to ~500/call.
     with ctx.compress_db_lock:
         rows = ctx.compress_db.execute(
             f"""
-            SELECT recording_id, camera, path, recording_type,
-                   start_time, tier
-            FROM ({union_sql})
-            ORDER BY tier ASC, start_time ASC
-            LIMIT ?
+            SELECT f.recording_id, f.camera, f.path, f.recording_type,
+                   sub.start_time, sub.tier
+            FROM (
+                SELECT rid, start_time, tier
+                FROM ({union_sql})
+                ORDER BY tier ASC, start_time ASC
+                LIMIT ?
+            ) sub
+            JOIN files f ON f.rowid = sub.rid
+            ORDER BY sub.tier ASC, sub.start_time ASC
             """,
             params,
         ).fetchall()
