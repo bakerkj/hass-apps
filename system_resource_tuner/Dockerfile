@@ -1,6 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
 LABEL \
     org.opencontainers.image.title="System Resource Tuner" \
     org.opencontainers.image.description="Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled." \
