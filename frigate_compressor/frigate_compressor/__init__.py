@@ -65,12 +65,14 @@ from .ffmpeg import (  # noqa: E402,F401
 )
 from .housekeeping import run_housekeeping  # noqa: E402,F401
 from .mqtt import (  # noqa: E402,F401
-    CameraStats,
-    FrigateStats,
     MqttPublisher,
     RateTracker,
-    _MB_BYTES,
     _slugify_camera,
+)
+from .mqtt_stats import (  # noqa: E402,F401
+    CameraStats,
+    FrigateStats,
+    _MB_BYTES,
     collect_frigate_stats,
 )
 from .probe_loop import (  # noqa: E402,F401
