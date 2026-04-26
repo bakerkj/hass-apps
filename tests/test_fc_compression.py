@@ -1097,7 +1097,7 @@ def test_pace_then_compress_acquires_before_compressing(monkeypatch):
     asserting the order here pins the fix."""
     events: list[str] = []
 
-    def fake_compress(rid, path, camera, tier, rtype, encoder, ctx):
+    def fake_compress(rid, path, camera, tier, rtype, encoder, ctx, probe_data=None):
         events.append("compress")
         return True
 

@@ -259,6 +259,7 @@ def _pace_then_compress(
     rtype: str,
     encoder: str,
     ctx: CompressorContext,
+    probe_data: dict | None = None,
 ) -> bool:
     """Worker wrapper: pace via the shared rate limiter, then run compress_one.
 
@@ -271,9 +272,15 @@ def _pace_then_compress(
     The limiter reads its current target from its own field (set by the
     main loop at the top of each iteration), so the worker doesn't need
     to know it.
+
+    ``probe_data`` is forwarded to ``compress_one`` so the worker can
+    skip its per-file ``SELECT width, height, fps`` — the eligibility
+    query already fetched those columns.
     """
     ctx.rate_limiter.acquire(stopping)
-    return compress_one(rid, path, camera, tier, rtype, encoder, ctx)
+    return compress_one(
+        rid, path, camera, tier, rtype, encoder, ctx, probe_data=probe_data
+    )
 
 
 def run_main_loop(
@@ -339,6 +346,14 @@ def run_main_loop(
                     r["recording_type"],
                     encoder,
                     ctx,
+                    # Tests that drive the main loop with hand-built eligible
+                    # dicts may omit width/height/fps; ``.get`` keeps the
+                    # worker on its SELECT-fallback path in that case.
+                    {
+                        "width": r.get("width"),
+                        "height": r.get("height"),
+                        "fps": r.get("fps"),
+                    },
                 ): r
                 for r in eligible
                 if not stopping.is_set()
