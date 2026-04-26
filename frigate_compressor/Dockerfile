@@ -17,14 +17,14 @@ LABEL \
 # repo to the second apk call only, so future stable updates can't
 # accidentally come from edge.
 RUN apk add --no-cache \
-      python3=3.12.13-r0 \
+      ffmpeg=8.0.1-r1 \
+      intel-media-driver=25.4.6-r0 \
+      libva=2.22.0-r1 \
+      libva-utils=2.22.0-r0 \
+      mesa-va-gallium=25.2.7-r1 \
       py3-paho-mqtt=1.6.1-r3 \
       py3-yaml=6.0.3-r0 \
-      ffmpeg=8.0.1-r1 \
-      libva=2.22.0-r1 \
-      intel-media-driver=25.4.6-r0 \
-      mesa-va-gallium=25.2.7-r1 \
-      libva-utils=2.22.0-r0 \
+      python3=3.12.13-r0 \
       sqlite=3.51.2-r0 \
  && apk add --no-cache \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
