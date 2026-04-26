@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from unittest.mock import MagicMock, patch
 
@@ -102,28 +101,18 @@ def test_probe_file_size_fallback(tmp_path):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class _ProbeTestCtx:
-    """Lightweight test context holding cfg + compress_db for probe tests."""
-
-    def __init__(self, cfg, compress_db, frigate_ro, frigate_rw):
-        self.cfg = cfg
-        self.compress_db = compress_db
-        self.frigate_ro = frigate_ro
-        self.frigate_rw = frigate_rw
-
-
 def _make_probe_ctx(tmp_path, frigate_db, compress_conn=None):
+    """Build a real ``fc.CompressorContext`` for probe-loop tests.
+
+    Mirrors the daemon's startup: open compress_db, ATTACH Frigate as
+    ``frigate``.  Probe-loop helpers only ever touch ``ctx.compress_db``
+    (with the attached schema), so the test ctx matches production.
+    """
     if compress_conn is None:
         compress_conn = _open_compress_db(tmp_path)
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
-    # Mirror the daemon: attach Frigate to compress_db read-only as
-    # ``frigate``.  The probe-loop helpers require this attach.
     fc._attach_frigate(compress_conn, cfg, "frigate")
-    frigate_ro = sqlite3.connect(str(frigate_db))
-    frigate_ro.row_factory = sqlite3.Row
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
-    return _ProbeTestCtx(cfg, compress_conn, frigate_ro, frigate_rw)
+    return fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
 
 
 def test_get_unprobed_returns_all_when_none_probed(tmp_path):
@@ -139,8 +128,6 @@ def test_get_unprobed_returns_all_when_none_probed(tmp_path):
     assert ids == {"r1", "r2"}
 
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
-    ctx.frigate_rw.close()
     frigate_conn.close()
 
 
@@ -165,8 +152,6 @@ def test_get_unprobed_skips_already_probed(tmp_path):
     assert unprobed[0]["recording_id"] == "r2"
 
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
-    ctx.frigate_rw.close()
     frigate_conn.close()
 
 
@@ -187,8 +172,6 @@ def test_get_unprobed_returns_empty_when_all_probed(tmp_path):
     assert unprobed == []
 
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
-    ctx.frigate_rw.close()
     frigate_conn.close()
 
 
@@ -213,8 +196,6 @@ def test_get_unprobed_full_scan_returns_start_time(tmp_path):
         assert by_id["r2"]["start_time"] == 2000.0
     finally:
         ctx.compress_db.close()
-        ctx.frigate_ro.close()
-        ctx.frigate_rw.close()
         frigate_conn.close()
 
 
@@ -244,8 +225,6 @@ def test_get_unprobed_incremental_cursor_filters_by_start_time(tmp_path):
         assert ids == {"mid", "new"}
     finally:
         ctx.compress_db.close()
-        ctx.frigate_ro.close()
-        ctx.frigate_rw.close()
         frigate_conn.close()
 
 
@@ -265,8 +244,6 @@ def test_max_recording_start_time(tmp_path):
         assert _max_recording_start_time(ctx.compress_db) == 3000.0
     finally:
         ctx.compress_db.close()
-        ctx.frigate_ro.close()
-        ctx.frigate_rw.close()
         frigate_conn.close()
 
 
@@ -282,8 +259,6 @@ def test_max_recording_start_time_empty(tmp_path):
         assert _max_recording_start_time(ctx.compress_db) is None
     finally:
         ctx.compress_db.close()
-        ctx.frigate_ro.close()
-        ctx.frigate_rw.close()
         frigate_conn.close()
 
 
@@ -321,8 +296,6 @@ def test_store_probe_writes_row(tmp_path):
     assert row["scanned_at"] is not None
 
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
-    ctx.frigate_rw.close()
 
 
 def test_store_probe_replaces_on_conflict(tmp_path):
@@ -359,5 +332,3 @@ def test_store_probe_replaces_on_conflict(tmp_path):
     assert rows[0]["file_size"] == 200
 
     ctx.compress_db.close()
-    ctx.frigate_ro.close()
-    ctx.frigate_rw.close()
