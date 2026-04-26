@@ -11,6 +11,7 @@ import signal
 import threading
 import time
 
+from . import __version__
 from .config import StreamCfg, load_mqtt_config
 from .mqtt import MqttPublisher
 from .retention import apply_retention_count, apply_retention_days
@@ -48,6 +49,7 @@ def main() -> int:
         opts = json.load(f)
 
     log_level = (opts.get("log_level") or "INFO").upper()
+    log("INFO", f"FFmpeg Snapshotter v{__version__} starting")
 
     streams = opts.get("streams") or []
     if not streams:

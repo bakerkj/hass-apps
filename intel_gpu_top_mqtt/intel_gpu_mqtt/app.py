@@ -15,6 +15,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from . import __version__
 from .device import (
     auto_select_device_arg,
     list_intel_gpu_top_devices,
@@ -113,6 +114,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     log = logging.getLogger("intel_gpu_mqtt")
+    log.info("Intel GPU Top MQTT v%s starting", __version__)
 
     interval_s = max(1, args.interval_seconds)
     interval_ms = interval_s * 1000
