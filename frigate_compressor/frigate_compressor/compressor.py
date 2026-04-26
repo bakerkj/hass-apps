@@ -135,6 +135,19 @@ def _compress_one_inner(
 
     size_before = filepath.stat().st_size
 
+    def fail(error_msg: str, *, size_after: int | None = None) -> bool:
+        """Record a STATUS_ERROR row with the current size_before/duration
+        and return False — saves the seven-line ``rec(...)`` boilerplate at
+        every post-probe failure branch."""
+        rec(
+            size_before=size_before,
+            size_after=size_after,
+            duration_sec=duration,
+            status=STATUS_ERROR,
+            error_msg=error_msg,
+        )
+        return False
+
     # Require probe data before compressing.  If the caller passed it in
     # (production fast path — eligibility query already fetched these
     # columns), skip the SELECT.  Tests and ad-hoc callers fall back to
@@ -192,45 +205,24 @@ def _compress_one_inner(
             )
         except subprocess.TimeoutExpired:
             duration = time.monotonic() - t_start
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg=f"timeout after {FFMPEG_TIMEOUT_SEC}s",
-            )
             log(
                 "WARNING",
                 f"[{camera}] ffmpeg timeout after {duration:.1f}s "
                 f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
             )
-            return False
+            return fail(f"timeout after {FFMPEG_TIMEOUT_SEC}s")
         except Exception as e:
             duration = time.monotonic() - t_start
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg=f"ffmpeg exception: {e}",
-            )
             log(
                 "ERROR",
                 f"[{camera}] ffmpeg raised unexpected exception after {duration:.1f}s: {e}",
             )
-            return False
+            return fail(f"ffmpeg exception: {e}")
 
         duration = time.monotonic() - t_start
 
         if result.returncode != 0:
             err = (result.stderr or "")[:FFMPEG_STDERR_MAX_LEN].strip()
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg=err,
-            )
             log(
                 "WARNING",
                 f"[{camera}] ffmpeg failed after {duration:.1f}s "
@@ -238,22 +230,15 @@ def _compress_one_inner(
             )
             if err:
                 log("DEBUG", f"[{camera}]   stderr: {err}")
-            return False
+            return fail(err)
 
         if not tmpfile.exists():
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg="output missing",
-            )
             log(
                 "WARNING",
                 f"[{camera}] output missing after encode ({duration:.1f}s): "
                 f"{_display_path(filepath)}",
             )
-            return False
+            return fail("output missing")
 
         size_after = tmpfile.stat().st_size
 
@@ -263,19 +248,14 @@ def _compress_one_inner(
             out_info = _probe(tmpfile)
             src_info_full = _probe(filepath)
             if out_info is None:
-                rec(
-                    size_before=size_before,
-                    size_after=size_after,
-                    duration_sec=duration,
-                    status=STATUS_ERROR,
-                    error_msg="output too small and ffprobe failed",
-                )
                 log(
                     "WARNING",
                     f"[{camera}] output small and invalid after {duration:.1f}s — "
                     f"keeping original: {_display_path(filepath)}",
                 )
-                return False
+                return fail(
+                    "output too small and ffprobe failed", size_after=size_after
+                )
             # Verify duration matches within 1 second.
             if (
                 src_info_full is not None
@@ -283,21 +263,19 @@ def _compress_one_inner(
                 and out_info.get("duration_sec")
                 and abs(src_info_full["duration_sec"] - out_info["duration_sec"]) > 1.0
             ):
-                rec(
-                    size_before=size_before,
-                    size_after=size_after,
-                    duration_sec=duration,
-                    status=STATUS_ERROR,
-                    error_msg=f"output too small and duration mismatch "
-                    f"({src_info_full['duration_sec']:.1f}s vs {out_info['duration_sec']:.1f}s)",
+                mismatch = (
+                    f"({src_info_full['duration_sec']:.1f}s vs"
+                    f" {out_info['duration_sec']:.1f}s)"
                 )
                 log(
                     "WARNING",
-                    f"[{camera}] output small and duration mismatch "
-                    f"({src_info_full['duration_sec']:.1f}s vs {out_info['duration_sec']:.1f}s) — "
+                    f"[{camera}] output small and duration mismatch {mismatch} — "
                     f"keeping original: {_display_path(filepath)}",
                 )
-                return False
+                return fail(
+                    f"output too small and duration mismatch {mismatch}",
+                    size_after=size_after,
+                )
             log(
                 "DEBUG",
                 f"[{camera}] output small ({size_after * 100 // size_before}% of "
@@ -310,35 +288,24 @@ def _compress_one_inner(
         # we were encoding.  If the file changed, the encode is based on stale
         # data.
         if not filepath.exists():
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg="original deleted by Frigate during compression",
-            )
             log(
                 "WARNING",
                 f"[{camera}] original deleted during compression ({duration:.1f}s) — "
                 f"discarding output: {_display_path(filepath)}",
             )
-            return False
+            return fail("original deleted by Frigate during compression")
 
         current_size = filepath.stat().st_size
         if current_size != size_before:
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg=f"original changed during compression ({size_before}→{current_size} bytes)",
-            )
             log(
                 "WARNING",
                 f"[{camera}] original changed during compression ({duration:.1f}s) — "
                 f"discarding output: {_display_path(filepath)}",
             )
-            return False
+            return fail(
+                f"original changed during compression"
+                f" ({size_before}→{current_size} bytes)"
+            )
 
         # Safety: confirm Frigate still has this recording in its DB.
         # Closes the race where Frigate removes the DB row (and possibly the
@@ -351,20 +318,13 @@ def _compress_one_inner(
                 "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
             ).fetchone()
         if db_row is None:
-            rec(
-                size_before=size_before,
-                size_after=None,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg="recording removed from Frigate DB during compression",
-            )
             log(
                 "WARNING",
                 f"[{camera}] recording removed from Frigate DB during compression "
                 f"({duration:.1f}s) — discarding output to prevent orphan: "
                 f"{_display_path(filepath)}",
             )
-            return False
+            return fail("recording removed from Frigate DB during compression")
 
         # Atomically replace original.
         log(
@@ -375,18 +335,11 @@ def _compress_one_inner(
         try:
             tmpfile.replace(filepath)
         except Exception as e:
-            rec(
-                size_before=size_before,
-                size_after=size_after,
-                duration_sec=duration,
-                status=STATUS_ERROR,
-                error_msg=f"replace failed: {e}",
-            )
             log(
                 "ERROR",
                 f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
             )
-            return False
+            return fail(f"replace failed: {e}", size_after=size_after)
     finally:
         # Ensure temp file is always cleaned up, even on thread cancellation.
         tmpfile.unlink(missing_ok=True)
