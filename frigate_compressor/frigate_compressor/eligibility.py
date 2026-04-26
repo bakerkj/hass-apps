@@ -35,8 +35,8 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     The status literals are inlined into the SQL (rather than bound as
     parameters) so the planner can prove the query's WHERE implies the
     partial index's WHERE — which uses the same literal strings.  With
-    placeholders, the implication check fails and SQLite errors out
-    on ``INDEXED BY`` ("no query solution").
+    placeholders, the implication check fails and the plan falls back
+    to a full files SCAN + temp-btree sort.
     """
     t1_parts: list[str] = []
     t1_params: list = []
@@ -47,25 +47,11 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             continue
         if cam.tier1.enabled:
             t1_cutoff = effective_now - (cam.tier1.min_days * 86400)
-            # Inner branch returns ONLY columns covered by the partial index
-            # (rowid + start_time, plus the literal ``tier`` constant).  No
-            # ``f.path`` / ``f.recording_type`` here — those would force a
-            # row fetch per matched index entry, and at production scale
-            # that's 500 row fetches × 12 branches = 6000 fetches per call,
-            # which dwarfs everything else in the daemon's IO profile.
-            # The outer SELECT in ``get_eligible_recordings`` JOINs back to
-            # ``files`` for those columns on only the final ~500 rows.
-            #
-            # ``INDEXED BY idx_files_t1_pending_age`` forces the planner to
-            # use the partial index (otherwise it can regress to
-            # idx_files_camera).  ``ORDER BY f.start_time ASC LIMIT N`` is
-            # naturally satisfied by the index's (camera, start_time) order
-            # so SQLite stops at the LIMIT without an extra sort.
             t1_parts.append(
                 f"""
                 SELECT * FROM (
                     SELECT f.rowid AS rid, f.start_time, 1 AS tier
-                    FROM files f INDEXED BY idx_files_t1_pending_age
+                    FROM files f
                     WHERE f.camera = ? AND f.start_time < ?
                       AND (f.t1_status IS NULL
                            OR f.t1_status NOT IN
@@ -82,7 +68,7 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                 f"""
                 SELECT * FROM (
                     SELECT f.rowid AS rid, f.start_time, 2 AS tier
-                    FROM files f INDEXED BY idx_files_t2_pending_age
+                    FROM files f
                     WHERE f.camera = ? AND f.start_time < ?
                       AND f.t1_status IN
                           ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
@@ -110,8 +96,7 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
 
     Driven entirely from the partial eligibility indexes on ``files``.
     Path and recording_type are denormalised onto ``files`` at probe time,
-    so this query never touches Frigate's recordings table — it stays
-    inside the small partial-index hot set on every call.
+    so this query never touches Frigate's recordings table.
     """
     cfg = ctx.cfg
     union_sql, params = _build_eligible_where(cfg, time.time())
@@ -122,10 +107,7 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     # Two-stage query: inner branches stay index-only and emit (rid,
     # start_time, tier); the outer JOIN fetches path/recording_type +
     # probe metadata (width/height/fps) for only the rows that survive
-    # the LIMIT.  Returning probe metadata here lets the worker skip its
-    # own per-file ``SELECT width, height, fps FROM files``, which used
-    # to be one of the bigger remaining IO sources at the production
-    # compression rate.
+    # the LIMIT.
     with ctx.compress_db_lock:
         rows = ctx.compress_db.execute(
             f"""
