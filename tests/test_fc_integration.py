@@ -16,7 +16,6 @@ compress_one() pipeline without mocking subprocess, verifying that:
 from __future__ import annotations
 
 import shutil
-import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -108,19 +107,15 @@ def _make_ctx(
     )
     cfg = fc.load_config(str(opts))
     compress_conn = _open_compress_db(tmp_path)
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     return fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
 
 
 def _close_ctx(ctx: fc.CompressorContext) -> None:
     ctx.compress_db.close()
-    ctx.frigate_rw.close()
 
 
 def _probe_and_store(
@@ -209,8 +204,8 @@ def test_compress_one_real_cpu_success(tmp_path, real_video):
     assert fc._probe_dims(info) is not None, "replaced file is not a valid video"
 
     # Frigate DB segment_size should have been updated.
-    seg = ctx.frigate_rw.execute(
-        "SELECT segment_size FROM recordings WHERE id='int_r1'"
+    seg = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='int_r1'"
     ).fetchone()
     assert seg is not None
     expected_mb = row["t1_file_size"] / (1024 * 1024)
@@ -263,8 +258,8 @@ def test_compress_one_real_dry_run_leaves_file_unchanged(tmp_path, real_video):
     assert row["t1_status"] is None
 
     # Frigate DB segment_size must remain NULL (never written).
-    seg = ctx.frigate_rw.execute(
-        "SELECT segment_size FROM recordings WHERE id='dry_r1'"
+    seg = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='dry_r1'"
     ).fetchone()
     assert seg["segment_size"] is None
 
@@ -346,13 +341,10 @@ def test_compress_one_halve_scale_produces_half_resolution(tmp_path, real_video)
     )
     cfg = fc.load_config(str(opts))
     compress_conn = _open_compress_db(tmp_path)
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     ctx = fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
     _probe_and_store(ctx, "scale_r1", "cam1", rec_path)
 

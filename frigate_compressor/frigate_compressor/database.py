@@ -65,14 +65,14 @@ CREATE TABLE IF NOT EXISTS files (
     t2_compressed_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_files_camera ON files(camera);
-
 -- Backlog-existence + eligibility partial indexes are defined below in
 -- ``START_TIME_INDEXES`` (they all reference start_time, which was
 -- added in a later schema upgrade).  An earlier iteration also kept
--- (camera, recording_id) variants for the MQTT backlog queries — those
--- have been dropped since the (camera, start_time) variants serve the
--- same queries with one less index to maintain on every status change.
+-- (camera, recording_id) variants for the MQTT backlog queries and a
+-- full ``(camera)`` index — those have been dropped since the (camera,
+-- start_time) ``_pending_age`` partials serve every query that filters
+-- by camera AND mean every files-row INSERT/UPDATE has fewer indexes
+-- to maintain.
 """
 
 
@@ -154,6 +154,12 @@ _OBSOLETE_INDEXES = (
     # doubled the partial-index maintenance cost on every status change.
     "idx_files_t1_pending",
     "idx_files_t2_pending",
+    # ``idx_files_camera`` was a full index on (camera).  No code path
+    # uses it: every WHERE camera=? query in the daemon either takes the
+    # PK-by-recording_id path or has an ``INDEXED BY idx_files_*_pending_age``
+    # hint that selects a partial index.  Each row INSERT was paying for
+    # one extra B-tree write to maintain it.
+    "idx_files_camera",
 )
 
 
@@ -645,6 +651,19 @@ def check_frigate_schema(conn: sqlite3.Connection) -> None:
     silently producing wrong results hours later.
     """
     rows = conn.execute("PRAGMA table_info(recordings)").fetchall()
+    _validate_frigate_columns(rows)
+
+
+def check_frigate_schema_attached(conn: sqlite3.Connection) -> None:
+    """Same as ``check_frigate_schema`` but checks the attached ``frigate``
+    schema on a compress.db connection — used at startup so we don't have
+    to open a separate frigate connection just for the schema check.
+    """
+    rows = conn.execute("PRAGMA frigate.table_info(recordings)").fetchall()
+    _validate_frigate_columns(rows)
+
+
+def _validate_frigate_columns(rows) -> None:
     if not rows:
         raise RuntimeError(
             "Frigate DB does not contain a 'recordings' table. "
@@ -721,8 +740,8 @@ def _record(
     conn.commit()
 
 
-def _attach_frigate_ro(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
-    """ATTACH the Frigate DB to ``conn`` read-only under the given alias.
+def _attach_frigate(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
+    """ATTACH the Frigate DB to ``conn`` read-write under the given alias.
 
     Centralizes the path escaping so any future change to the URI format
     happens in one place rather than four.  Also bumps the attached
@@ -731,7 +750,20 @@ def _attach_frigate_ro(conn: sqlite3.Connection, cfg: Config, alias: str) -> Non
     NOT apply to Frigate here.  64 MB comfortably fits the recordings PK
     index top levels + the (camera, start_time) index, which is what our
     eligibility joins, stats aggregates, and housekeeping prune all walk.
+
+    Read-write so the worker's ``UPDATE recordings SET segment_size``
+    and housekeeping's segment-retry can write through the same attached
+    schema — no separate ``frigate_rw`` connection needed.  Cuts the
+    daemon's frigate-side file descriptors in half and removes one lock
+    from the per-compression hot path.
     """
     db_path = str(cfg.frigate_db).replace('"', "")
-    conn.execute(f'ATTACH DATABASE "file:{db_path}?mode=ro" AS {alias}')
+    conn.execute(f'ATTACH DATABASE "file:{db_path}" AS {alias}')
     conn.execute(f"PRAGMA {alias}.cache_size=-65536")
+    conn.execute(f"PRAGMA {alias}.busy_timeout=10000")
+
+
+# Back-compat alias.  Older imports referenced ``_attach_frigate_ro``;
+# code paths that needed read-only semantics are gone (the rw attach
+# is a strict superset).  Callers and tests can use either name.
+_attach_frigate_ro = _attach_frigate

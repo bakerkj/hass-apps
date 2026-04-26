@@ -38,13 +38,10 @@ def _make_eligible_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides
     cfg = fc.load_config(
         str(_make_options(tmp_path, frigate_db=str(frigate_db), **cfg_overrides))
     )
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     return fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
 
 
@@ -82,13 +79,10 @@ def _make_compress_one_ctx(tmp_path, src: Path, frigate_db: Path):
     """Build a CompressorContext for compress_one tests."""
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
     compress_conn = _open_compress_db(tmp_path)
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     return fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
 
 
@@ -102,19 +96,15 @@ def _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn=None):
         frigate_db=str(frigate_db),
         recordings_dir=str(tmp_path / "recordings"),
     )
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     return fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
 
 
 def _close_ctx(ctx):
     ctx.compress_db.close()
-    ctx.frigate_rw.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -600,15 +590,13 @@ def test_compress_one_segment_size_update_fails(tmp_path):
         m.stderr = ""
         return m
 
-    # Make the segment_size UPDATE fail at the SQLite layer.  We can't rely
-    # on chmod-ing the Frigate DB file: the daemon now keeps a long-lived
-    # frigate_rw connection (opened by the test fixture before the chmod
-    # would happen), and SQLite's open file descriptor stays writable
-    # regardless of the on-disk permission bits.  Closing the connection
-    # ahead of compress_one reproduces the failure path: the UPDATE inside
-    # the worker raises ``ProgrammingError`` and ``compress_one`` records
-    # ``segment_update_failed`` for housekeeping to retry.
-    ctx.frigate_rw.close()
+    # Make the segment_size UPDATE fail at the SQLite layer.  Frigate is
+    # ATTACHed rw to compress_db as ``frigate``; re-attach as read-only
+    # (after detaching) so the safety-check SELECT still succeeds but the
+    # later ``UPDATE frigate.recordings`` raises ``OperationalError``.
+    ctx.compress_db.execute("DETACH DATABASE frigate")
+    fdb = str(ctx.cfg.frigate_db).replace('"', "")
+    ctx.compress_db.execute(f'ATTACH DATABASE "file:{fdb}?mode=ro" AS frigate')
 
     try:
         with patch("subprocess.run", side_effect=fake_run):
@@ -750,8 +738,8 @@ def test_housekeeping_retries_segment_update_failed(tmp_path):
     assert row["t1_status"] == fc.STATUS_OK
     assert row["t1_error_msg"] is None
 
-    seg_row = ctx.frigate_rw.execute(
-        "SELECT segment_size FROM recordings WHERE id='seg1'"
+    seg_row = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='seg1'"
     ).fetchone()
     assert seg_row["segment_size"] == pytest.approx(4096 / (1024 * 1024), rel=1e-4)
 

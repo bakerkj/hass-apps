@@ -118,7 +118,7 @@ def _make_probe_ctx(tmp_path, frigate_db, compress_conn=None):
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
     # Mirror the daemon: attach Frigate to compress_db read-only as
     # ``frigate``.  The probe-loop helpers require this attach.
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
+    fc._attach_frigate(compress_conn, cfg, "frigate")
     frigate_ro = sqlite3.connect(str(frigate_db))
     frigate_ro.row_factory = sqlite3.Row
     frigate_rw = sqlite3.connect(str(frigate_db))

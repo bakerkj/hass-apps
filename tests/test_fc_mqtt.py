@@ -67,21 +67,17 @@ def _make_stats_ctx(
     compress_conn = _open_compress_db(tmp_path)
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db), **cfg_overrides)
 
-    fc._attach_frigate_ro(compress_conn, cfg, "frigate")
-    frigate_rw = sqlite3.connect(str(frigate_db))
-    frigate_rw.row_factory = sqlite3.Row
+    fc._attach_frigate(compress_conn, cfg, "frigate")
 
     ctx = fc.CompressorContext(
         cfg=cfg,
         compress_db=compress_conn,
-        frigate_rw=frigate_rw,
     )
     return ctx, frigate_conn
 
 
 def _close_stats_ctx(ctx: fc.CompressorContext, writer: sqlite3.Connection) -> None:
     ctx.compress_db.close()
-    ctx.frigate_rw.close()
     writer.close()
 
 
