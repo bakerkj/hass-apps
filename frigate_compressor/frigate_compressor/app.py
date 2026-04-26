@@ -113,6 +113,10 @@ def main() -> int:
     log("INFO", f"  Log level      : {cfg.log_level}")
     log("INFO", f"  Housekeeping   : every {cfg.housekeeping_interval_days}d")
     log("INFO", "  Throttle       : auto (target = pending work/min)")
+    log(
+        "INFO",
+        f"  ffmpeg mode    : {'detached (init-orphan)' if cfg.detached_ffmpeg else 'inline subprocess.run'}",
+    )
     log("INFO", f"  Frigate DB     : {cfg.frigate_db}")
     log("INFO", f"  Recordings     : {cfg.recordings_dir}")
     log("INFO", f"  Compress DB    : {cfg.compress_db}")

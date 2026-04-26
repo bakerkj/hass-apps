@@ -17,6 +17,7 @@ from .database import (
     STATUS_SEGMENT_UPDATE_FAILED,
     _record,
 )
+from .detached_subprocess import DetachedResult, run_detached
 from .ffmpeg import (
     FFMPEG_STDERR_MAX_LEN,
     FFMPEG_TIMEOUT_SEC,
@@ -200,9 +201,20 @@ def _compress_one_inner(
     t_start = time.monotonic()
     try:
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
-            )
+            result: DetachedResult | subprocess.CompletedProcess[str]
+            if cfg.detached_ffmpeg:
+                # Spawn ffmpeg as an init-orphan so its IO accounting is
+                # reaped by PID 1 (s6-svscan in the addon container) rather
+                # than wait4()'d by this daemon.  See ``detached_subprocess.py``.
+                result = run_detached(
+                    cmd,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                    stderr_max_len=FFMPEG_STDERR_MAX_LEN,
+                )
+            else:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
+                )
         except subprocess.TimeoutExpired:
             duration = time.monotonic() - t_start
             log(

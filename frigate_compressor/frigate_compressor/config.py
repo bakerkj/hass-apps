@@ -114,6 +114,11 @@ class Config:
     compress_db: Path  # path to our SQLite DB
     log_level: str  # DEBUG | INFO | WARNING | ERROR
     cameras: dict[str, CameraConfig]  # camera_name → fully resolved config
+    # When True, spawn ffmpeg via the double-fork ``run_detached`` helper so
+    # ffmpeg's IO is reaped by PID 1 rather than wait4()'d by the daemon.
+    # See ``detached_subprocess.py``.  Default off; opt in to verify on real
+    # workloads before flipping the default.
+    detached_ffmpeg: bool = False
     mqtt: MqttConfig = field(
         default_factory=lambda: MqttConfig(
             host="",
@@ -409,6 +414,7 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         log_level=(opts.get("log_level") or "INFO").upper(),
         cameras=cameras,
         mqtt=mqtt_cfg,
+        detached_ffmpeg=bool(opts.get("detached_ffmpeg", False)),
     )
 
 

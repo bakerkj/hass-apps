@@ -429,6 +429,36 @@ def test_compress_one_ffmpeg_success(tmp_path):
     _close_ctx(ctx)
 
 
+def test_compress_one_detached_ffmpeg_calls_run_detached(tmp_path):
+    """When cfg.detached_ffmpeg is True, the worker dispatches via
+    run_detached instead of subprocess.run.  Verifies wiring only —
+    run_detached's own behaviour is covered in test_fc_detached_subprocess.
+    """
+    ctx, src = _setup_compress_one(tmp_path)
+    ctx.cfg.detached_ffmpeg = True
+
+    def fake_detached(cmd, *, timeout, stderr_max_len):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with (
+        patch(
+            "frigate_compressor.compressor.run_detached", side_effect=fake_detached
+        ) as run_detached_mock,
+        patch("subprocess.run") as subprocess_run_mock,
+    ):
+        result = _compress_one(ctx, src)
+
+    assert result is True
+    assert run_detached_mock.called
+    assert not subprocess_run_mock.called
+    assert _db_row(ctx)["t1_status"] == fc.STATUS_OK
+    _close_ctx(ctx)
+
+
 def test_compress_one_ffmpeg_failure(tmp_path):
     ctx, src = _setup_compress_one(tmp_path)
 
