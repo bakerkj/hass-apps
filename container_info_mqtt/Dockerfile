@@ -8,9 +8,9 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache \
-  python3=3.12.13-r0 \
+  docker-cli=29.1.3-r4 \
   py3-paho-mqtt=1.6.1-r3 \
-  docker-cli=29.1.3-r4
+  python3=3.12.13-r0
 
 COPY run.sh /run.sh
 COPY container_info_mqtt /opt/container_info_mqtt

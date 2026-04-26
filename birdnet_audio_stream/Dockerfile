@@ -10,8 +10,8 @@ LABEL \
 RUN set -eux; \
     apk add --no-cache \
         alsa-lib=1.2.14-r2 \
-        alsa-utils=1.2.14-r4 \
         alsa-plugins-pulse=1.2.12-r2 \
+        alsa-utils=1.2.14-r4 \
         ffmpeg=8.0.1-r1 \
         go2rtc=1.9.9-r12
 
