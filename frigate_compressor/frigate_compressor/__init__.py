@@ -35,7 +35,6 @@ from .database import (  # noqa: E402,F401
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
     _attach_frigate,
-    _attach_frigate_ro,
     _backfill_files_stats,
     _record,
     _recording_type,
@@ -43,8 +42,6 @@ from .database import (  # noqa: E402,F401
     check_frigate_schema,
     check_frigate_schema_attached,
     open_compress_db,
-    open_frigate_db,
-    open_frigate_db_rw,
     vacuum_compress_db,
     verify_files_stats,
 )
