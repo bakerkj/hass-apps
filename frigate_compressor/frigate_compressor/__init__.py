@@ -38,11 +38,9 @@ from .database import (  # noqa: E402,F401
     _backfill_files_stats,
     _record,
     _recording_type,
-    backfill_files_start_time,
     check_frigate_schema,
     check_frigate_schema_attached,
     open_compress_db,
-    vacuum_compress_db,
     verify_files_stats,
 )
 from .eligibility import (  # noqa: E402,F401

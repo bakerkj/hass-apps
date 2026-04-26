@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS files (
     recording_type  TEXT,
     -- start_time is denormalised from Frigate's recordings so eligibility
     -- and backlog queries can range-scan on (camera, start_time) without
-    -- joining against Frigate's DB per-row.  Populated by the probe loop
-    -- and backfilled for any pre-existing rows on startup.
+    -- joining against Frigate's DB per-row.
     start_time      REAL,
 
     -- Original probe (from camera, filled by probe loop)
@@ -65,29 +64,10 @@ CREATE TABLE IF NOT EXISTS files (
     t2_compressed_at TEXT
 );
 
--- Backlog-existence + eligibility partial indexes are defined below in
--- ``START_TIME_INDEXES`` (they all reference start_time, which was
--- added in a later schema upgrade).  An earlier iteration also kept
--- (camera, recording_id) variants for the MQTT backlog queries and a
--- full ``(camera)`` index — those have been dropped since the (camera,
--- start_time) ``_pending_age`` partials serve every query that filters
--- by camera AND mean every files-row INSERT/UPDATE has fewer indexes
--- to maintain.
-"""
-
-
-# Indexes that reference ``start_time``.  Kept separate from SCHEMA so we
-# can run the ALTER TABLE migration that adds the column (see
-# ``_migrate_add_columns``) before creating these indexes — otherwise the
-# CREATE INDEX statements would fail on upgrade with "no such column".
-#
-# Eligibility indexes: same pending filters as the backlog ones above,
-# but keyed on (camera, start_time) so the planner can do a range scan
-# for "camera X, start_time < cutoff" within the pending-only subset.
-# Benchmarked at ~4000× faster than the previous recordings-driven
-# LEFT JOIN.  Requires start_time to be populated on files — see
-# ``backfill_files_start_time``.
-START_TIME_INDEXES = """
+-- Eligibility partials: keyed on (camera, start_time) so the planner can
+-- range-scan "camera X, start_time < cutoff" within the pending-only
+-- subset.  ~4000× faster than the recordings-driven LEFT JOIN it
+-- replaced.
 CREATE INDEX IF NOT EXISTS idx_files_t1_pending_age ON files(camera, start_time)
   WHERE t1_status IS NULL
      OR t1_status NOT IN ('ok', 'segment_update_failed');
@@ -101,8 +81,6 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
 -- rare status; without these, housekeeping has to SCAN the full files
 -- table (sub-second per query but bursty I/O).  Maintenance cost is near
 -- zero — almost no row update transitions in/out of these states.
--- Deferred (alongside the start_time indexes) because the t*_compressed_at
--- columns may need an ALTER TABLE on upgrade from a vintage schema.
 CREATE INDEX IF NOT EXISTS idx_files_seg_retry ON files(recording_id)
   WHERE t1_status = 'segment_update_failed'
      OR t2_status = 'segment_update_failed';
@@ -113,98 +91,6 @@ CREATE INDEX IF NOT EXISTS idx_files_t1_error ON files(t1_compressed_at)
 CREATE INDEX IF NOT EXISTS idx_files_t2_error ON files(t2_compressed_at)
   WHERE t2_status = 'error';
 """
-
-
-def _migrate_add_columns(conn: sqlite3.Connection) -> None:
-    """Add columns that newer schemas introduced via ``ALTER TABLE``.
-
-    SQLite's ``CREATE TABLE IF NOT EXISTS`` is a no-op when the table
-    already exists — it does NOT add columns mentioned in the new schema.
-    This function bridges that gap for upgrades from older versions.
-
-    Idempotent: only ALTERs columns that are actually missing.
-    """
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
-    if "start_time" not in cols:
-        conn.execute("ALTER TABLE files ADD COLUMN start_time REAL")
-        conn.commit()
-        log("INFO", "Migrated: added files.start_time column")
-    # The compressed_at columns are referenced by partial indexes for the
-    # housekeeping recent-errors view.  Vintage schemas predating these
-    # columns must get them via ALTER before the indexes can be created.
-    for col in ("t1_compressed_at", "t2_compressed_at"):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE files ADD COLUMN {col} TEXT")
-            conn.commit()
-            log("INFO", f"Migrated: added files.{col} column")
-
-
-# Indexes from earlier development iterations that turned out to be
-# unhelpful — drop them on startup so leftover installs don't carry
-# their ~50 MB write overhead forever.  Safe to remove this list once
-# we're confident nobody has them anymore.
-_OBSOLETE_INDEXES = (
-    "idx_files_t1_t2_status",
-    "idx_files_t2_status",
-    # ``idx_files_t{1,2}_pending`` were (camera, recording_id) partial
-    # indexes used by an earlier shape of the MQTT backlog queries.  The
-    # current code drives backlog checks from the (camera, start_time)
-    # ``_pending_age`` variants, which serve those queries equally well
-    # AND the eligibility query.  Keeping the redundant pair around just
-    # doubled the partial-index maintenance cost on every status change.
-    "idx_files_t1_pending",
-    "idx_files_t2_pending",
-    # ``idx_files_camera`` was a full index on (camera).  No code path
-    # uses it: every WHERE camera=? query in the daemon either takes the
-    # PK-by-recording_id path or has an ``INDEXED BY idx_files_*_pending_age``
-    # hint that selects a partial index.  Each row INSERT was paying for
-    # one extra B-tree write to maintain it.
-    "idx_files_camera",
-)
-
-
-def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
-    """Drop indexes from previous versions that are no longer useful."""
-    existing = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
-    }
-    for name in _OBSOLETE_INDEXES:
-        if name in existing:
-            conn.execute(f"DROP INDEX IF EXISTS {name}")
-            log("INFO", f"Dropped obsolete index {name}")
-    conn.commit()
-
-
-def vacuum_compress_db(conn: sqlite3.Connection) -> None:
-    """Run VACUUM on the compress DB to reclaim free pages and defragment.
-
-    Called by ``app.py`` at the very end of the upgrade path — after both
-    schema migration (in ``open_compress_db``) and the row-rewriting
-    backfill of ``files.start_time``.  Running it once at the end is
-    cheaper than running it twice and reclaims fragmentation from both.
-
-    VACUUM is expensive (full DB rewrite, exclusive lock) so we never
-    run it on every startup; SQLite reuses freed pages for new inserts,
-    so the file reaches a natural steady state without periodic
-    vacuuming.
-
-    VACUUM cannot run inside a transaction, so we commit any pending
-    work and disable the sqlite3 module's implicit-transaction wrapping
-    around the call.
-    """
-    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
-    total = conn.execute("PRAGMA page_count").fetchone()[0]
-    log("INFO", f"Running VACUUM after upgrade ({free}/{total} pages free)")
-    conn.commit()
-    old_isolation = conn.isolation_level
-    conn.isolation_level = None
-    try:
-        conn.execute("VACUUM")
-    finally:
-        conn.isolation_level = old_isolation
 
 
 # Materialised aggregate table + triggers.
@@ -414,29 +300,6 @@ GROUP BY camera, COALESCE(recording_type, 'continuous')
 """
 
 
-def backfill_files_start_time(conn: sqlite3.Connection, cfg: Config) -> int:
-    """Fill in ``files.start_time`` from Frigate's recordings for any row
-    that's missing it.
-
-    Needed after upgrading to the schema that carries start_time on
-    ``files``.  Called once at startup — for fresh rows the probe loop
-    writes start_time inline.  Returns the number of rows updated.
-    """
-    _attach_frigate(conn, cfg, "frigate_backfill")
-    try:
-        cur = conn.execute(
-            "UPDATE files SET start_time = ("
-            "  SELECT start_time FROM frigate_backfill.recordings r"
-            "  WHERE r.id = files.recording_id"
-            ") WHERE start_time IS NULL"
-        )
-        n = cur.rowcount
-        conn.commit()
-        return n
-    finally:
-        conn.execute("DETACH DATABASE frigate_backfill")
-
-
 def _backfill_files_stats(conn: sqlite3.Connection) -> None:
     """One-shot populate ``files_stats`` from the current ``files`` rows.
 
@@ -519,49 +382,6 @@ ORDER BY COALESCE(t2_compressed_at, t1_compressed_at) DESC;
 """
 
 
-def _migrate_to_files_table(conn: sqlite3.Connection) -> None:
-    """Migrate data from the old compressed_files/probed_files tables to files."""
-    tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    if "compressed_files" not in tables:
-        return  # already migrated or fresh DB
-
-    conn.executescript(
-        """
-        INSERT OR IGNORE INTO files
-            (recording_id, camera, path, recording_type, file_size,
-             t1_encoder, t1_file_size, t1_encode_sec, t1_status,
-             t1_error_msg, t1_compressed_at)
-        SELECT recording_id, camera, path, recording_type, size_before,
-               encoder, size_after, duration_sec, status,
-               error_msg, last_attempted_at
-        FROM compressed_files
-        WHERE tier = 1;
-
-        INSERT OR IGNORE INTO files
-            (recording_id, camera, path, recording_type, file_size,
-             t2_encoder, t2_file_size, t2_encode_sec, t2_status,
-             t2_error_msg, t2_compressed_at)
-        SELECT recording_id, camera, path, recording_type, size_before,
-               encoder, size_after, duration_sec, status,
-               error_msg, last_attempted_at
-        FROM compressed_files
-        WHERE tier = 2;
-
-        DROP TABLE IF EXISTS compressed_files;
-        DROP TABLE IF EXISTS probed_files;
-        DROP VIEW IF EXISTS savings_by_camera;
-        DROP VIEW IF EXISTS recent_errors;
-        """
-    )
-    conn.commit()
-    log("INFO", "Migrated compressed_files → files table")
-
-
 def open_compress_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(f"file:{path}", uri=True, check_same_thread=False)
@@ -574,28 +394,13 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     # "lose last update → re-compress one file next startup" is the
     # worst case.
     conn.execute("PRAGMA synchronous=NORMAL")
-    # cache_size=-131072 → up to 128 MB per connection.  Comfortably
-    # fits the steady-state hot set (partial indexes + top of PK/camera
-    # indexes + recent rows ≈ 45 MB) with ample headroom for DB growth.
-    # Lazy — only allocated as pages get touched, so idle connections
-    # cost nothing.  Applied on every long-lived rw connection (worker
-    # threads, probe loop, housekeeping).
+    # cache_size=-131072 → up to 128 MB.  Comfortably fits the steady-
+    # state hot set (partial indexes + top of PK indexes + recent rows
+    # ≈ 45 MB) with ample headroom for DB growth.  Lazy — only allocated
+    # as pages get touched.
     conn.execute("PRAGMA cache_size=-131072")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
-    _migrate_to_files_table(conn)
-    # Add columns added in newer schemas via ALTER TABLE for upgrades from
-    # earlier versions (CREATE TABLE IF NOT EXISTS won't add new columns
-    # to an existing table).  Must run BEFORE indexes that reference the
-    # new columns.  VACUUM (if needed) is run by ``app.py`` at the end of
-    # the full upgrade — including ``backfill_files_start_time`` which
-    # rewrites every row to populate the new column — so we don't run it
-    # here.
-    _migrate_add_columns(conn)
-    _drop_obsolete_indexes(conn)
-    # Indexes that reference newly-added columns — safe to create now.
-    conn.executescript(START_TIME_INDEXES)
-    # Views are created after migration so they reference the final table.
     conn.executescript(VIEWS)
     # Materialised aggregate table + triggers.  Triggers are installed
     # BEFORE backfill so the audit can compare current-state rebuilds
