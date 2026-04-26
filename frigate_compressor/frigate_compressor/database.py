@@ -115,6 +115,71 @@ CREATE INDEX IF NOT EXISTS idx_files_t2_error ON files(t2_compressed_at)
 # aggregation over ``files`` — see ``_backfill_files_stats`` and
 # ``verify_files_stats``.  If a trigger bug ever causes drift, the
 # audit hook detects it on startup and rebuilds from scratch.
+
+
+def _tier_case(prefix: str, tier: int) -> str:
+    """CASE expression that bucketises one ``files`` row's bytes into
+    the given tier (0, 1, or 2).  ``prefix`` is the SQL row alias prefix
+    — ``"NEW."`` / ``"OLD."`` in triggers, ``""`` in plain SELECTs.
+
+    Single source of truth for the tier classification — trigger bodies
+    and the rebuild SELECT funnel through here so they can't drift.
+    """
+    if tier == 0:
+        # not yet compressed → original file_size
+        return (
+            f"CASE WHEN {prefix}t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0"
+            f" WHEN {prefix}t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0"
+            f" ELSE COALESCE({prefix}file_size, 0) END"
+        )
+    if tier == 1:
+        # t1 done, t2 not done → t1_file_size
+        return (
+            f"CASE WHEN {prefix}t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0"
+            f" WHEN {prefix}t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN COALESCE({prefix}t1_file_size, 0)"
+            f" ELSE 0 END"
+        )
+    if tier == 2:
+        # t2 done → t2_file_size
+        return (
+            f"CASE WHEN {prefix}t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN COALESCE({prefix}t2_file_size, 0)"
+            f" ELSE 0 END"
+        )
+    raise ValueError(f"unknown tier: {tier}")
+
+
+# Reused by the INSERT trigger and the UPDATE trigger's NEW half.
+# ON CONFLICT adds the new row's tier-buckets to whatever already exists.
+_INSERT_OR_BUMP_FROM_NEW = f"""
+    INSERT INTO files_stats
+        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
+    VALUES (
+        NEW.camera, COALESCE(NEW.recording_type, 'continuous'), 1,
+        {_tier_case("NEW.", 0)},
+        {_tier_case("NEW.", 1)},
+        {_tier_case("NEW.", 2)}
+    )
+    ON CONFLICT(camera, rtype) DO UPDATE SET
+        files_count = files_count + 1,
+        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
+        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
+        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+"""
+
+
+# Reused by the DELETE trigger and the UPDATE trigger's OLD half.
+# Subtracts the deleted/updated row's tier-buckets from its bucket row.
+_SUBTRACT_OLD = f"""
+    UPDATE files_stats SET
+        files_count = files_count - 1,
+        tier0_bytes = tier0_bytes - ({_tier_case("OLD.", 0)}),
+        tier1_bytes = tier1_bytes - ({_tier_case("OLD.", 1)}),
+        tier2_bytes = tier2_bytes - ({_tier_case("OLD.", 2)})
+    WHERE camera = OLD.camera
+      AND rtype = COALESCE(OLD.recording_type, 'continuous');
+"""
+
+
 FILES_STATS_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS files_stats (
     camera       TEXT    NOT NULL,
@@ -130,171 +195,39 @@ CREATE TRIGGER IF NOT EXISTS files_stats_after_insert
 AFTER INSERT ON files
 FOR EACH ROW
 BEGIN
-    INSERT INTO files_stats
-        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
-    VALUES (
-        NEW.camera,
-        COALESCE(NEW.recording_type, 'continuous'),
-        1,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            ELSE COALESCE(NEW.file_size, 0)
-        END,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(NEW.t1_file_size, 0)
-            ELSE 0
-        END,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(NEW.t2_file_size, 0)
-            ELSE 0
-        END
-    )
-    ON CONFLICT(camera, rtype) DO UPDATE SET
-        files_count = files_count + 1,
-        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
-        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
-        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+{_INSERT_OR_BUMP_FROM_NEW}
 END;
 
 CREATE TRIGGER IF NOT EXISTS files_stats_after_delete
 AFTER DELETE ON files
 FOR EACH ROW
 BEGIN
-    UPDATE files_stats SET
-        files_count = files_count - 1,
-        tier0_bytes = tier0_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                ELSE COALESCE(OLD.file_size, 0)
-            END
-        ),
-        tier1_bytes = tier1_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN COALESCE(OLD.t1_file_size, 0)
-                ELSE 0
-            END
-        ),
-        tier2_bytes = tier2_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN COALESCE(OLD.t2_file_size, 0)
-                ELSE 0
-            END
-        )
-    WHERE camera = OLD.camera
-      AND rtype = COALESCE(OLD.recording_type, 'continuous');
+{_SUBTRACT_OLD}
 END;
 
 -- UPDATE uses the "subtract from OLD bucket, add to NEW bucket" pattern.
--- When OLD and NEW share the same (camera, rtype) bucket, counts are a
--- net zero and bytes adjust by the delta between OLD and NEW contributions.
+-- When OLD and NEW share the same (camera, rtype) bucket, counts net to
+-- zero and bytes adjust by the delta between OLD and NEW contributions.
 -- When they differ (tier transition or rtype change) the row correctly
 -- moves.
 CREATE TRIGGER IF NOT EXISTS files_stats_after_update
 AFTER UPDATE ON files
 FOR EACH ROW
 BEGIN
-    UPDATE files_stats SET
-        files_count = files_count - 1,
-        tier0_bytes = tier0_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                ELSE COALESCE(OLD.file_size, 0)
-            END
-        ),
-        tier1_bytes = tier1_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN 0
-                WHEN OLD.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN COALESCE(OLD.t1_file_size, 0)
-                ELSE 0
-            END
-        ),
-        tier2_bytes = tier2_bytes - (
-            CASE
-                WHEN OLD.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                    THEN COALESCE(OLD.t2_file_size, 0)
-                ELSE 0
-            END
-        )
-    WHERE camera = OLD.camera
-      AND rtype = COALESCE(OLD.recording_type, 'continuous');
-
-    INSERT INTO files_stats
-        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
-    VALUES (
-        NEW.camera,
-        COALESCE(NEW.recording_type, 'continuous'),
-        1,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            ELSE COALESCE(NEW.file_size, 0)
-        END,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN 0
-            WHEN NEW.t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(NEW.t1_file_size, 0)
-            ELSE 0
-        END,
-        CASE
-            WHEN NEW.t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(NEW.t2_file_size, 0)
-            ELSE 0
-        END
-    )
-    ON CONFLICT(camera, rtype) DO UPDATE SET
-        files_count = files_count + 1,
-        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
-        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
-        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+{_SUBTRACT_OLD}
+{_INSERT_OR_BUMP_FROM_NEW}
 END;
 """
 
 
-# Reused in the backfill + verify queries below; keeping the CASE logic
-# in one place avoids drift with the trigger bodies.
 _FILES_STATS_SELECT = f"""
 SELECT
     camera,
     COALESCE(recording_type, 'continuous') AS rtype,
     COUNT(*) AS files_count,
-    SUM(CASE
-            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
-            WHEN t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
-            ELSE COALESCE(file_size, 0)
-        END) AS tier0_bytes,
-    SUM(CASE
-            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}') THEN 0
-            WHEN t1_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(t1_file_size, 0)
-            ELSE 0
-        END) AS tier1_bytes,
-    SUM(CASE
-            WHEN t2_status IN ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
-                THEN COALESCE(t2_file_size, 0)
-            ELSE 0
-        END) AS tier2_bytes
+    SUM({_tier_case("", 0)}) AS tier0_bytes,
+    SUM({_tier_case("", 1)}) AS tier1_bytes,
+    SUM({_tier_case("", 2)}) AS tier2_bytes
 FROM files
 GROUP BY camera, COALESCE(recording_type, 'continuous')
 """
