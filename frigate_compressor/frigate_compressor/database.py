@@ -394,11 +394,7 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     # "lose last update → re-compress one file next startup" is the
     # worst case.
     conn.execute("PRAGMA synchronous=NORMAL")
-    # cache_size=-131072 → up to 128 MB.  Comfortably fits the steady-
-    # state hot set (partial indexes + top of PK indexes + recent rows
-    # ≈ 45 MB) with ample headroom for DB growth.  Lazy — only allocated
-    # as pages get touched.
-    conn.execute("PRAGMA cache_size=-131072")
+    conn.execute("PRAGMA cache_size=-262144")  # up to 256 MB
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     conn.executescript(VIEWS)
@@ -526,16 +522,8 @@ def _record(
 
 
 def _attach_frigate(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
-    """ATTACH the Frigate DB to ``conn`` read-write under the given alias.
-
-    Bumps the attached schema's cache to 64 MB — SQLite's page cache is
-    *per-attached-file*, not per-connection, so the main-db cache_size we
-    set elsewhere does NOT apply to Frigate here.  64 MB comfortably fits
-    the recordings PK index top levels + the (camera, start_time) index,
-    which is what eligibility joins, stats aggregates, and housekeeping
-    prune all walk.
-    """
+    """ATTACH the Frigate DB to ``conn`` read-write under the given alias."""
     db_path = str(cfg.frigate_db).replace('"', "")
     conn.execute(f'ATTACH DATABASE "file:{db_path}" AS {alias}')
-    conn.execute(f"PRAGMA {alias}.cache_size=-65536")
+    conn.execute(f"PRAGMA {alias}.cache_size=-131072")  # up to 128 MB
     conn.execute(f"PRAGMA {alias}.busy_timeout=10000")
