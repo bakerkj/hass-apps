@@ -23,12 +23,10 @@ from .config import (
 )
 from .context import CompressorContext
 from .database import (
-    _attach_frigate_ro,
+    _attach_frigate,
     backfill_files_start_time,
-    check_frigate_schema,
+    check_frigate_schema_attached,
     open_compress_db,
-    open_frigate_db,
-    open_frigate_db_rw,
     vacuum_compress_db,
 )
 from .eligibility import (
@@ -100,36 +98,23 @@ def main() -> int:
 
     # Single shared compress.db connection used by every thread (workers,
     # probe loop, MQTT publisher, eligibility, housekeeping) under
-    # ``ctx.compress_db_lock``.  Frigate is ATTACHed read-only as ``frigate``
-    # for the daemon's lifetime so cross-DB queries don't ATTACH/DETACH per
-    # call.  See ``CompressorContext`` for the rationale (single shared
-    # cache eliminates the writer-invalidates-reader-cache amplification
-    # and cuts total cache memory from ~7 × 64–128 MB to one 128 MB pool).
-    # One-shot Frigate schema check before we commit to the shared layout.
-    # Uses a transient ro connection so a schema mismatch fails fast without
-    # touching anything we'd later need to clean up.
-    schema_check_conn = open_frigate_db(cfg.frigate_db)
+    # ``ctx.compress_db_lock``.  Frigate is ATTACHed read-write as
+    # ``frigate`` for the daemon's lifetime so cross-DB queries AND writes
+    # (worker's segment_size UPDATE, housekeeping retries) all go through
+    # the same connection — no separate frigate_rw handle.  See
+    # ``CompressorContext`` for the rationale.
+    compress_db = open_compress_db(cfg.compress_db)
+    _attach_frigate(compress_db, cfg, "frigate")
+
+    # Schema check goes through the just-attached ``frigate`` schema —
+    # one less transient connection at startup, three fewer FDs.  If the
+    # schema is wrong we abort before doing anything else expensive.
     try:
-        check_frigate_schema(schema_check_conn)
+        check_frigate_schema_attached(compress_db)
     except RuntimeError as e:
         log("ERROR", f"Startup aborted: {e}")
-        schema_check_conn.close()
+        compress_db.close()
         return 1
-    schema_check_conn.close()
-
-    # Single shared compress.db connection used by every thread (workers,
-    # probe loop, MQTT publisher, eligibility, housekeeping) under
-    # ``ctx.compress_db_lock``.  Frigate is ATTACHed read-only as ``frigate``
-    # for the daemon's lifetime so cross-DB queries don't ATTACH/DETACH per
-    # call.  See ``CompressorContext`` for the rationale (single shared
-    # cache eliminates the writer-invalidates-reader-cache amplification
-    # and cuts total cache memory from ~7 × 64–128 MB to one 128 MB pool).
-    compress_db = open_compress_db(cfg.compress_db)
-    _attach_frigate_ro(compress_db, cfg, "frigate")
-    # Separate rw frigate connection used only by the worker's segment_size
-    # update.  Reads of frigate go through the attached ``frigate`` schema
-    # on compress_db; only the UPDATE needs a direct rw handle.
-    frigate_rw = open_frigate_db_rw(cfg.frigate_db)
 
     # Backfill files.start_time from Frigate's recordings for any rows
     # that pre-date the column being added.  New rows get start_time
@@ -195,7 +180,6 @@ def main() -> int:
     ctx = CompressorContext(
         cfg=cfg,
         compress_db=compress_db,
-        frigate_rw=frigate_rw,
     )
 
     # Use threading.Event so signal handlers can wake the sleep loop immediately.
@@ -243,7 +227,6 @@ def main() -> int:
                 log("WARNING", f"MQTT publisher stop failed: {e}")
         log("INFO", "Frigate Compressor stopped")
         compress_db.close()
-        frigate_rw.close()
 
     if publisher is not None and publisher.exit_code is not None:
         return publisher.exit_code

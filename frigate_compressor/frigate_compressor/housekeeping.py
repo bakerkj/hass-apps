@@ -24,17 +24,15 @@ def run_housekeeping(ctx: CompressorContext) -> None:
 
     Runs on the main loop thread once per ``housekeeping_interval_days``,
     using the shared ``ctx.compress_db`` (with Frigate attached as
-    ``frigate``) and ``ctx.frigate_rw``.  Each subroutine acquires the
-    appropriate lock around its work — pieces are independent enough that
-    holding the lock for the whole pass would needlessly block the probe
-    loop and workers for a noticeable stretch.
+    ``frigate``).  Each subroutine acquires the lock around its work —
+    pieces are independent enough that holding the lock for the whole
+    pass would needlessly block the probe loop and workers for a
+    noticeable stretch.
     """
     _run_housekeeping_inner(
         ctx.cfg,
         ctx.compress_db,
         ctx.compress_db_lock,
-        ctx.frigate_rw,
-        ctx.frigate_rw_lock,
     )
 
 
@@ -55,8 +53,6 @@ def _hk_retry_segment_updates(
     cfg: Config,
     compress_db: sqlite3.Connection,
     compress_db_lock: threading.Lock,
-    frigate_rw: sqlite3.Connection,
-    frigate_rw_lock: threading.Lock,
 ) -> None:
     """Retry segment_size updates that failed during prior compress runs."""
     with compress_db_lock:
@@ -90,13 +86,14 @@ def _hk_retry_segment_updates(
                 "DEBUG",
                 f"[{row['camera']}] Retrying segment_size update ({actual_size_mb:.3f}MB): {_display_path(fpath)}",
             )
-            with frigate_rw_lock:
-                frigate_rw.execute(
-                    "UPDATE recordings SET segment_size = ? WHERE id = ?",
+            with compress_db_lock:
+                # Both writes happen on the same connection in the same
+                # transaction — if either fails the whole row stays
+                # ``segment_update_failed`` for the next run.
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                     (actual_size_mb, row["recording_id"]),
                 )
-                frigate_rw.commit()
-            with compress_db_lock:
                 compress_db.execute(
                     """UPDATE files SET
                          t1_status = CASE WHEN t1_status = ? THEN ? ELSE t1_status END,
@@ -230,14 +227,10 @@ def _run_housekeeping_inner(
     cfg: Config,
     compress_db: sqlite3.Connection,
     compress_db_lock: threading.Lock,
-    frigate_rw: sqlite3.Connection,
-    frigate_rw_lock: threading.Lock,
 ) -> None:
     log("INFO", "── Housekeeping starting")
     _hk_remove_temp_files(cfg)
-    _hk_retry_segment_updates(
-        cfg, compress_db, compress_db_lock, frigate_rw, frigate_rw_lock
-    )
+    _hk_retry_segment_updates(cfg, compress_db, compress_db_lock)
     _hk_prune_orphaned(cfg, compress_db, compress_db_lock)
     _hk_log_savings_summary(compress_db, compress_db_lock)
     _hk_log_recent_errors(compress_db, compress_db_lock)

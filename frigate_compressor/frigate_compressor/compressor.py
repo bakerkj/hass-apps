@@ -40,9 +40,8 @@ def compress_one(
     """Compress one recording end-to-end using the shared connections on ctx.
 
     All DB access goes through ``ctx.compress_db`` (writes + reads of files,
-    plus reads of frigate's recordings via the attached ``frigate`` schema)
-    serialised by ``ctx.compress_db_lock``, and ``ctx.frigate_rw`` for the
-    post-encode segment_size update serialised by ``ctx.frigate_rw_lock``.
+    plus reads + writes of frigate's recordings via the attached ``frigate``
+    schema) serialised by ``ctx.compress_db_lock``.
 
     ``probe_data``: when the caller already has the row's ``width`` /
     ``height`` / ``fps`` (e.g. from ``get_eligible_recordings``), pass them
@@ -75,8 +74,6 @@ def _compress_one_inner(
     cfg = ctx.cfg
     compress_db = ctx.compress_db
     compress_db_lock = ctx.compress_db_lock
-    frigate_rw = ctx.frigate_rw
-    frigate_rw_lock = ctx.frigate_rw_lock
 
     # Resolve per-camera settings.
     cam_cfg = cfg.cameras.get(camera)
@@ -402,9 +399,12 @@ def _compress_one_inner(
         f"{_fmt(size_before, 10)}→{_fmt(size_after, 10)}  {pct:>3.0f}%  {duration:>5.1f}s",
     )
 
-    # Update segment_size in Frigate's DB (MB, float).
-    # If this fails we record status='segment_update_failed' so housekeeping
-    # can retry; the file itself is already safely replaced.
+    # Update segment_size in Frigate's DB (MB, float) via the attached
+    # ``frigate`` schema on compress_db.  Goes through the same connection
+    # + lock as the compress.db UPDATE below, so frigate's segment_size
+    # and our t1/t2_status flip commit atomically.  If this fails we
+    # record ``segment_update_failed`` so housekeeping can retry; the
+    # file itself is already safely replaced.
     new_size_mb = size_after / (1024 * 1024)
     log(
         "DEBUG",
@@ -413,12 +413,12 @@ def _compress_one_inner(
     seg_status = STATUS_OK
     seg_error: str | None = None
     try:
-        with frigate_rw_lock:
-            frigate_rw.execute(
-                "UPDATE recordings SET segment_size = ? WHERE id = ?",
+        with compress_db_lock:
+            compress_db.execute(
+                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                 (new_size_mb, recording_id),
             )
-            frigate_rw.commit()
+            compress_db.commit()
     except Exception as e:
         seg_status = STATUS_SEGMENT_UPDATE_FAILED
         seg_error = str(e)
