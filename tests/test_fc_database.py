@@ -62,19 +62,6 @@ def test_schema_has_tier_columns(tmp_path):
     conn.close()
 
 
-def test_open_frigate_db_readonly_enforced(tmp_path):
-    frigate_db = tmp_path / "frigate.db"
-    setup = sqlite3.connect(str(frigate_db))
-    setup.execute("CREATE TABLE recordings (id TEXT PRIMARY KEY)")
-    setup.commit()
-    setup.close()
-
-    ro = fc.open_frigate_db(frigate_db)
-    with pytest.raises(sqlite3.OperationalError):
-        ro.execute("INSERT INTO recordings (id) VALUES ('x')")
-    ro.close()
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # check_frigate_schema
 # ═══════════════════════════════════════════════════════════════════════════════

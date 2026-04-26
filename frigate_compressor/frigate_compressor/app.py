@@ -96,13 +96,6 @@ def main() -> int:
         log("ERROR", "Hardware acceleration is not available. Aborting startup.")
         return 1
 
-    # Single shared compress.db connection used by every thread (workers,
-    # probe loop, MQTT publisher, eligibility, housekeeping) under
-    # ``ctx.compress_db_lock``.  Frigate is ATTACHed read-write as
-    # ``frigate`` for the daemon's lifetime so cross-DB queries AND writes
-    # (worker's segment_size UPDATE, housekeeping retries) all go through
-    # the same connection — no separate frigate_rw handle.  See
-    # ``CompressorContext`` for the rationale.
     compress_db = open_compress_db(cfg.compress_db)
     _attach_frigate(compress_db, cfg, "frigate")
 
@@ -276,10 +269,7 @@ def run_main_loop(
     """Process eligible recordings forever, sleeping only when caught up.
 
     Extracted from ``main()`` so the loop's scheduling behavior (run-then-
-    re-check vs sleep-until-next) is testable in isolation.  ``pool`` is
-    a long-lived ``ThreadPoolExecutor`` whose workers carry their own
-    per-thread DB connections — see ``init_worker_connections`` in
-    ``compressor.py``.
+    re-check vs sleep-until-next) is testable in isolation.
     """
     cfg = ctx.cfg
     last_housekeeping = time.time()

@@ -422,7 +422,7 @@ def backfill_files_start_time(conn: sqlite3.Connection, cfg: Config) -> int:
     ``files``.  Called once at startup — for fresh rows the probe loop
     writes start_time inline.  Returns the number of rows updated.
     """
-    _attach_frigate_ro(conn, cfg, "frigate_backfill")
+    _attach_frigate(conn, cfg, "frigate_backfill")
     try:
         cur = conn.execute(
             "UPDATE files SET start_time = ("
@@ -616,26 +616,6 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def open_frigate_db(path: Path) -> sqlite3.Connection:
-    """Open Frigate's DB read-only (WAL-safe)."""
-    conn = sqlite3.connect(
-        f"file:{path}?mode=ro",
-        uri=True,
-        check_same_thread=False,
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
-
-
-def open_frigate_db_rw(path: Path) -> sqlite3.Connection:
-    """Separate RW connection used only for segment_size updates."""
-    conn = sqlite3.connect(str(path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
-
-
 # Columns we read from or write to in Frigate's recordings table.
 _REQUIRED_FRIGATE_COLUMNS: frozenset[str] = frozenset(
     {"id", "camera", "path", "start_time", "motion", "objects", "segment_size"}
@@ -743,27 +723,14 @@ def _record(
 def _attach_frigate(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
     """ATTACH the Frigate DB to ``conn`` read-write under the given alias.
 
-    Centralizes the path escaping so any future change to the URI format
-    happens in one place rather than four.  Also bumps the attached
-    schema's cache to 64 MB — SQLite's page cache is *per-attached-file*,
-    not per-connection, so the main-db cache_size we set elsewhere does
-    NOT apply to Frigate here.  64 MB comfortably fits the recordings PK
-    index top levels + the (camera, start_time) index, which is what our
-    eligibility joins, stats aggregates, and housekeeping prune all walk.
-
-    Read-write so the worker's ``UPDATE recordings SET segment_size``
-    and housekeeping's segment-retry can write through the same attached
-    schema — no separate ``frigate_rw`` connection needed.  Cuts the
-    daemon's frigate-side file descriptors in half and removes one lock
-    from the per-compression hot path.
+    Bumps the attached schema's cache to 64 MB — SQLite's page cache is
+    *per-attached-file*, not per-connection, so the main-db cache_size we
+    set elsewhere does NOT apply to Frigate here.  64 MB comfortably fits
+    the recordings PK index top levels + the (camera, start_time) index,
+    which is what eligibility joins, stats aggregates, and housekeeping
+    prune all walk.
     """
     db_path = str(cfg.frigate_db).replace('"', "")
     conn.execute(f'ATTACH DATABASE "file:{db_path}" AS {alias}')
     conn.execute(f"PRAGMA {alias}.cache_size=-65536")
     conn.execute(f"PRAGMA {alias}.busy_timeout=10000")
-
-
-# Back-compat alias.  Older imports referenced ``_attach_frigate_ro``;
-# code paths that needed read-only semantics are gone (the rw attach
-# is a strict superset).  Callers and tests can use either name.
-_attach_frigate_ro = _attach_frigate
