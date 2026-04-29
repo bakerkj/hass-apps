@@ -218,6 +218,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                     mx = None
                 if mx is not None:
                     cursor = mx
+            log("INFO", "Probe loop idle — caught up")
             stopping.wait(timeout=PROBE_SLEEP_SEC)
             continue
 
@@ -279,4 +280,4 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
             cursor = max_observed
 
         if probed:
-            log("DEBUG", f"Probed {probed} recording(s)")
+            log("INFO", f"Probed {probed} recording(s)")
