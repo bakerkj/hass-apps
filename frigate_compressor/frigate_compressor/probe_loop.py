@@ -218,13 +218,20 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                     mx = None
                 if mx is not None:
                     cursor = mx
-            log("INFO", "Probe loop idle — caught up")
+            log("DEBUG", "Probe loop idle — caught up")
             stopping.wait(timeout=PROBE_SLEEP_SEC)
             continue
 
         log("DEBUG", f"Probing {len(unprobed)} recording(s)")
         probed = 0
         max_observed = cursor if cursor is not None else 0.0
+        # Pace the batch evenly across one ``PROBE_SLEEP_SEC`` window so
+        # ffprobe doesn't burst the whole batch in a few seconds and then
+        # leave the loop idle — mirrors the compression loop's RateLimiter
+        # pattern (see ``throttle.py`` / ``app.py``).  When the batch is
+        # huge (catchup), interval is tiny and ffprobe time dominates, so
+        # this becomes a no-op.
+        per_item_interval = PROBE_SLEEP_SEC / len(unprobed)
         # ffprobe (a subprocess) runs OUTSIDE the lock so other threads
         # can use compress_db while we wait on file IO.  We collect the
         # probe results, then take the lock once for the bulk INSERT +
@@ -245,6 +252,8 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                 )
             if rec["start_time"] > max_observed:
                 max_observed = rec["start_time"]
+            if not stopping.is_set():
+                stopping.wait(timeout=per_item_interval)
 
         try:
             with compress_db_lock:
