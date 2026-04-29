@@ -187,6 +187,20 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
     cursor: float | None = None
     last_full_scan: float = 0.0
 
+    # Persistent ``RateLimiter`` instance — paces probes evenly across
+    # ``PROBE_SLEEP_SEC`` using the same idiom the compression loop uses
+    # (``ctx.rate_limiter`` in ``app.py``).  Crucially, the same
+    # instance is reused across every iteration of the while loop:
+    # ``next_allowed`` carries over so iter N+1's first ``acquire``
+    # naturally waits for iter N's last slot to elapse, which makes the
+    # outer iter cycle land at exactly 60s with no explicit window-fill.
+    # A *fresh* limiter per iter (the previous design) instead reset the
+    # deadline to zero each time, letting the first probe fire
+    # immediately and shortening each iter by ~one interval.  Local
+    # instance — not ``ctx.rate_limiter`` — so workers' shared target
+    # is untouched.
+    limiter = RateLimiter()
+
     while not stopping.is_set():
         now_mono = time.monotonic()
         # Periodic belt-and-suspenders full rescan.
@@ -226,18 +240,10 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
         log("DEBUG", f"Probing {len(unprobed)} recording(s)")
         probed = 0
         max_observed = cursor if cursor is not None else 0.0
-        # Pace probes evenly across ``PROBE_SLEEP_SEC`` using the same
-        # deadline-based ``RateLimiter`` the compression loop uses (see
-        # ``throttle.py`` / ``_pace_then_compress`` in ``app.py``).
-        # ``acquire`` runs BEFORE each probe and waits up to the next
-        # deadline — ffprobe time is absorbed into the interval rather
-        # than added to it, so the batch lands at exactly
-        # ``len(unprobed) * (60s / len(unprobed)) = 60s`` regardless of
-        # per-probe duration.  A naive post-probe sleep would push the
-        # batch over 60s by roughly ``len * probe_time``, drifting the
-        # loop slower than Frigate's arrival rate.  Local instance —
-        # not ``ctx.rate_limiter`` — so workers' target is untouched.
-        limiter = RateLimiter()
+        # Update the (persistent) rate-limiter target to the current
+        # batch size — the limiter's ``next_allowed`` deadline carries
+        # over from the previous iter, so the first ``acquire`` naturally
+        # waits until that deadline before firing the first probe.
         limiter.set_target(len(unprobed))
         # ffprobe (a subprocess) runs OUTSIDE the lock so other threads
         # can use compress_db while we wait on file IO.  We collect the
