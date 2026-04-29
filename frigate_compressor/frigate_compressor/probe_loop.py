@@ -13,6 +13,7 @@ from pathlib import Path
 from .context import CompressorContext
 from .database import _recording_type
 from .ffmpeg import _probe
+from .throttle import RateLimiter
 from .util import log
 
 PROBE_SLEEP_SEC = 60.0
@@ -225,13 +226,19 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
         log("DEBUG", f"Probing {len(unprobed)} recording(s)")
         probed = 0
         max_observed = cursor if cursor is not None else 0.0
-        # Pace the batch evenly across one ``PROBE_SLEEP_SEC`` window so
-        # ffprobe doesn't burst the whole batch in a few seconds and then
-        # leave the loop idle — mirrors the compression loop's RateLimiter
-        # pattern (see ``throttle.py`` / ``app.py``).  When the batch is
-        # huge (catchup), interval is tiny and ffprobe time dominates, so
-        # this becomes a no-op.
-        per_item_interval = PROBE_SLEEP_SEC / len(unprobed)
+        # Pace probes evenly across ``PROBE_SLEEP_SEC`` using the same
+        # deadline-based ``RateLimiter`` the compression loop uses (see
+        # ``throttle.py`` / ``_pace_then_compress`` in ``app.py``).
+        # ``acquire`` runs BEFORE each probe and waits up to the next
+        # deadline — ffprobe time is absorbed into the interval rather
+        # than added to it, so the batch lands at exactly
+        # ``len(unprobed) * (60s / len(unprobed)) = 60s`` regardless of
+        # per-probe duration.  A naive post-probe sleep would push the
+        # batch over 60s by roughly ``len * probe_time``, drifting the
+        # loop slower than Frigate's arrival rate.  Local instance —
+        # not ``ctx.rate_limiter`` — so workers' target is untouched.
+        limiter = RateLimiter()
+        limiter.set_target(len(unprobed))
         # ffprobe (a subprocess) runs OUTSIDE the lock so other threads
         # can use compress_db while we wait on file IO.  We collect the
         # probe results, then take the lock once for the bulk INSERT +
@@ -242,6 +249,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
         for rec in unprobed:
             if stopping.is_set():
                 break
+            limiter.acquire(stopping)
             info = _probe(Path(rec["path"]))
             if info is not None:
                 probe_results.append((rec, info))
@@ -252,8 +260,6 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                 )
             if rec["start_time"] > max_observed:
                 max_observed = rec["start_time"]
-            if not stopping.is_set():
-                stopping.wait(timeout=per_item_interval)
 
         try:
             with compress_db_lock:
