@@ -12,8 +12,8 @@ LABEL \
 
 # turbostat is part of linux-tools on Alpine
 RUN apk add --no-cache \
-      cpupower=6.19.8-r0 \
-      linux-tools=6.19.8-r0 \
+      cpupower=6.19.14-r0 \
+      linux-tools=6.19.14-r0 \
       py3-paho-mqtt=1.6.1-r3 \
       python3=3.12.13-r0 \
       util-linux=2.41.4-r0
