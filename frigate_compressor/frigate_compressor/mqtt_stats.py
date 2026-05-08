@@ -31,6 +31,12 @@ class CameraStats:
     tier0_bytes: int  # not yet compressed
     tier1_bytes: int
     tier2_bytes: int
+    # Bytes of pre-encoded tier-2 files (``.t2.mp4``) parked alongside
+    # tier-1 primaries — populated when ``t2_status='direct'``.  Folded
+    # into ``total_bytes`` so disk-usage totals match ``du``; exposed
+    # separately so dashboards can show how much disk will be reclaimed
+    # when the next swap pass runs.
+    tier2_pre_encoded_bytes: int
     oldest_age_days: float | None  # None when the camera has no recordings
     # Fresh bytes written by this camera in the last ``rate_window_seconds``
     # divided by the window — i.e. how fast the camera is generating video.
@@ -56,6 +62,7 @@ class FrigateStats:
     tier0_bytes: int
     tier1_bytes: int
     tier2_bytes: int
+    tier2_pre_encoded_bytes: int
     cameras: dict[str, CameraStats]
 
 
@@ -97,7 +104,7 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
         stats_rows = conn.execute(
             """
             SELECT camera, rtype, files_count,
-                   tier0_bytes, tier1_bytes, tier2_bytes
+                   tier0_bytes, tier1_bytes, tier2_bytes, tier2_pre_encoded_bytes
             FROM files_stats
             """
         ).fetchall()
@@ -210,7 +217,22 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     top_total_bytes = 0
     top_total_files = 0
     top_tier_bytes = {0: 0, 1: 0, 2: 0}
+    top_pre_encoded_bytes = 0
     top_oldest: float | None = None
+
+    def _empty_cam() -> dict:
+        return {
+            "total_bytes": 0,
+            "total_files": 0,
+            "continuous_bytes": 0,
+            "motion_bytes": 0,
+            "object_bytes": 0,
+            "tier0_bytes": 0,
+            "tier1_bytes": 0,
+            "tier2_bytes": 0,
+            "tier2_pre_encoded_bytes": 0,
+            "oldest": None,
+        }
 
     for row in stats_rows:
         cam = row["camera"]
@@ -219,22 +241,17 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
         tier0 = int(row["tier0_bytes"] or 0)
         tier1 = int(row["tier1_bytes"] or 0)
         tier2 = int(row["tier2_bytes"] or 0)
-        bucket_bytes = tier0 + tier1 + tier2
+        pre_encoded = int(row["tier2_pre_encoded_bytes"] or 0)
+        # ``total_bytes`` (and the per-rtype rollups it fans into) is the
+        # actual disk footprint, so the pre-encoded files are part of it
+        # — that way dashboards line up with ``du`` instead of
+        # under-reporting by the pre-encoded pool size during the
+        # (tier1.min_days, tier2.min_days) window.  ``tier1_bytes`` stays
+        # primary-file-only so the per-tier breakdown still says where
+        # each row's *primary* file lives.
+        bucket_bytes = tier0 + tier1 + tier2 + pre_encoded
 
-        c = cameras.setdefault(
-            cam,
-            {
-                "total_bytes": 0,
-                "total_files": 0,
-                "continuous_bytes": 0,
-                "motion_bytes": 0,
-                "object_bytes": 0,
-                "tier0_bytes": 0,
-                "tier1_bytes": 0,
-                "tier2_bytes": 0,
-                "oldest": None,
-            },
-        )
+        c = cameras.setdefault(cam, _empty_cam())
         c["total_bytes"] += bucket_bytes
         c["total_files"] += files
         if rtype in ("continuous", "motion", "object"):
@@ -246,29 +263,18 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
         c["tier0_bytes"] += tier0
         c["tier1_bytes"] += tier1
         c["tier2_bytes"] += tier2
+        c["tier2_pre_encoded_bytes"] += pre_encoded
 
         top_total_bytes += bucket_bytes
         top_total_files += files
         top_tier_bytes[0] += tier0
         top_tier_bytes[1] += tier1
         top_tier_bytes[2] += tier2
+        top_pre_encoded_bytes += pre_encoded
 
     # Stitch in the oldest start_time per camera (separate query).
     for cam_name, oldest in oldest_by_camera.items():
-        c = cameras.setdefault(
-            cam_name,
-            {
-                "total_bytes": 0,
-                "total_files": 0,
-                "continuous_bytes": 0,
-                "motion_bytes": 0,
-                "object_bytes": 0,
-                "tier0_bytes": 0,
-                "tier1_bytes": 0,
-                "tier2_bytes": 0,
-                "oldest": None,
-            },
-        )
+        c = cameras.setdefault(cam_name, _empty_cam())
         if oldest is not None:
             if c["oldest"] is None or oldest < c["oldest"]:
                 c["oldest"] = oldest
@@ -290,6 +296,7 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             tier0_bytes=c["tier0_bytes"],
             tier1_bytes=c["tier1_bytes"],
             tier2_bytes=c["tier2_bytes"],
+            tier2_pre_encoded_bytes=c["tier2_pre_encoded_bytes"],
             oldest_age_days=_age(c["oldest"]),
             recording_bytes_rate=recording_rate.get(cam, 0.0),
             tier1_backlog_error=t1_err,
@@ -303,5 +310,6 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
         tier0_bytes=top_tier_bytes[0],
         tier1_bytes=top_tier_bytes[1],
         tier2_bytes=top_tier_bytes[2],
+        tier2_pre_encoded_bytes=top_pre_encoded_bytes,
         cameras=cam_stats,
     )

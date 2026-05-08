@@ -312,6 +312,37 @@ def test_collect_stats_compressed_tier_split(tmp_path):
         _close_stats_ctx(ctx, writer)
 
 
+def test_collect_stats_direct_row_contributes_sibling_bytes(tmp_path):
+    """A row in t2_status='direct' has a pre-encoded sibling .t2.mp4 on disk.
+    Its bytes show up as ``tier2_pre_encoded_bytes`` and are folded into
+    ``total_bytes`` so dashboards reflect the true on-disk footprint."""
+    ctx, writer = _make_stats_ctx(tmp_path)
+    try:
+        _insert_probed(writer, ctx, "d", "cam", time.time(), segment_size_mb=10)
+        # Land tier-1 at 5 MB primary and the sibling at 2 MB.
+        _record_compressed(ctx, "d", "cam", tier=1, size_after=5 * _MB)
+        _record_compressed(
+            ctx,
+            "d",
+            "cam",
+            tier=2,
+            status=fc.STATUS_DIRECT,
+            size_after=2 * _MB,
+        )
+        stats = fc.collect_frigate_stats(ctx)
+        # Primary file is tier-1 (5 MB), sibling is 2 MB, no tier-2 yet.
+        assert stats.tier1_bytes == 5 * _MB
+        assert stats.tier2_bytes == 0
+        assert stats.tier2_pre_encoded_bytes == 2 * _MB
+        # total_bytes includes the sibling so it matches actual disk usage.
+        assert stats.total_bytes == (5 + 2) * _MB
+        cs = stats.cameras["cam"]
+        assert cs.tier2_pre_encoded_bytes == 2 * _MB
+        assert cs.total_bytes == (5 + 2) * _MB
+    finally:
+        _close_stats_ctx(ctx, writer)
+
+
 def test_collect_stats_segment_update_failed_counts_as_compressed(tmp_path):
     """A row whose status is segment_update_failed has been compressed on disk
     even though Frigate's segment_size update failed — it must still be
@@ -752,9 +783,9 @@ def test_publisher_publishes_discovery_once_per_device(tmp_path, monkeypatch):
             for t, p, _ in client.publishes
             if t.startswith("homeassistant/sensor/")
         ]
-        # 10 top-level + 17 per-camera-sensor × 2 cameras = 44 (plain) sensors.
+        # 12 top-level + 19 per-camera-sensor × 2 cameras = 50 (plain) sensors.
         # Binary sensors (tier1/tier2 backlog) are routed to binary_sensor/.
-        assert len(first_discovery) == 10 + 17 * 2
+        assert len(first_discovery) == 12 + 19 * 2
         binary_discovery = [
             (t, p)
             for t, p, _ in client.publishes

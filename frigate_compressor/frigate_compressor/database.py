@@ -151,22 +151,41 @@ def _tier_case(prefix: str, tier: int) -> str:
     raise ValueError(f"unknown tier: {tier}")
 
 
+def _pre_encoded_case(prefix: str) -> str:
+    """CASE expression for a row's pre-encoded tier-2 bytes.
+
+    A row with ``t2_status='direct'`` has a pre-encoded tier-2 ``.t2.mp4``
+    sibling file on disk alongside its primary tier-1 file, awaiting the
+    swap at ``tier2.min_days``.  ``t2_file_size`` is set on those rows
+    (compress_direct fills it when the file is encoded), so we can sum
+    it here for a per-camera "extra disk parked on tier-1 rows" counter.
+    Same prefix convention as :func:`_tier_case`.
+    """
+    return (
+        f"CASE WHEN {prefix}t2_status = '{STATUS_DIRECT}'"
+        f" THEN COALESCE({prefix}t2_file_size, 0) ELSE 0 END"
+    )
+
+
 # Reused by the INSERT trigger and the UPDATE trigger's NEW half.
 # ON CONFLICT adds the new row's tier-buckets to whatever already exists.
 _INSERT_OR_BUMP_FROM_NEW = f"""
     INSERT INTO files_stats
-        (camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes)
+        (camera, rtype, files_count,
+         tier0_bytes, tier1_bytes, tier2_bytes, tier2_pre_encoded_bytes)
     VALUES (
         NEW.camera, COALESCE(NEW.recording_type, 'continuous'), 1,
         {_tier_case("NEW.", 0)},
         {_tier_case("NEW.", 1)},
-        {_tier_case("NEW.", 2)}
+        {_tier_case("NEW.", 2)},
+        {_pre_encoded_case("NEW.")}
     )
     ON CONFLICT(camera, rtype) DO UPDATE SET
-        files_count = files_count + 1,
-        tier0_bytes = tier0_bytes + excluded.tier0_bytes,
-        tier1_bytes = tier1_bytes + excluded.tier1_bytes,
-        tier2_bytes = tier2_bytes + excluded.tier2_bytes;
+        files_count         = files_count + 1,
+        tier0_bytes         = tier0_bytes + excluded.tier0_bytes,
+        tier1_bytes         = tier1_bytes + excluded.tier1_bytes,
+        tier2_bytes         = tier2_bytes + excluded.tier2_bytes,
+        tier2_pre_encoded_bytes = tier2_pre_encoded_bytes + excluded.tier2_pre_encoded_bytes;
 """
 
 
@@ -174,10 +193,11 @@ _INSERT_OR_BUMP_FROM_NEW = f"""
 # Subtracts the deleted/updated row's tier-buckets from its bucket row.
 _SUBTRACT_OLD = f"""
     UPDATE files_stats SET
-        files_count = files_count - 1,
-        tier0_bytes = tier0_bytes - ({_tier_case("OLD.", 0)}),
-        tier1_bytes = tier1_bytes - ({_tier_case("OLD.", 1)}),
-        tier2_bytes = tier2_bytes - ({_tier_case("OLD.", 2)})
+        files_count         = files_count - 1,
+        tier0_bytes         = tier0_bytes - ({_tier_case("OLD.", 0)}),
+        tier1_bytes         = tier1_bytes - ({_tier_case("OLD.", 1)}),
+        tier2_bytes         = tier2_bytes - ({_tier_case("OLD.", 2)}),
+        tier2_pre_encoded_bytes = tier2_pre_encoded_bytes - ({_pre_encoded_case("OLD.")})
     WHERE camera = OLD.camera
       AND rtype = COALESCE(OLD.recording_type, 'continuous');
 """
@@ -185,12 +205,18 @@ _SUBTRACT_OLD = f"""
 
 FILES_STATS_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS files_stats (
-    camera       TEXT    NOT NULL,
-    rtype        TEXT    NOT NULL,
-    files_count  INTEGER NOT NULL DEFAULT 0,
-    tier0_bytes  INTEGER NOT NULL DEFAULT 0,
-    tier1_bytes  INTEGER NOT NULL DEFAULT 0,
-    tier2_bytes  INTEGER NOT NULL DEFAULT 0,
+    camera               TEXT    NOT NULL,
+    rtype                TEXT    NOT NULL,
+    files_count          INTEGER NOT NULL DEFAULT 0,
+    tier0_bytes          INTEGER NOT NULL DEFAULT 0,
+    tier1_bytes          INTEGER NOT NULL DEFAULT 0,
+    tier2_bytes          INTEGER NOT NULL DEFAULT 0,
+    -- Bytes of pre-encoded tier-2 files (``.t2.mp4``) parked alongside
+    -- tier-1 primaries — populated when ``t2_status='direct'``.
+    -- Independent of tier1_bytes / tier2_bytes: a row contributes to
+    -- tier1_bytes for its primary file AND tier2_pre_encoded_bytes for
+    -- its pre-encoded tier-2 file simultaneously.
+    tier2_pre_encoded_bytes  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (camera, rtype)
 );
 
@@ -230,7 +256,8 @@ SELECT
     COUNT(*) AS files_count,
     SUM({_tier_case("", 0)}) AS tier0_bytes,
     SUM({_tier_case("", 1)}) AS tier1_bytes,
-    SUM({_tier_case("", 2)}) AS tier2_bytes
+    SUM({_tier_case("", 2)}) AS tier2_bytes,
+    SUM({_pre_encoded_case("")}) AS tier2_pre_encoded_bytes
 FROM files
 GROUP BY camera, COALESCE(recording_type, 'continuous')
 """
@@ -245,13 +272,14 @@ def _backfill_files_stats(conn: sqlite3.Connection) -> None:
     conn.executescript("DELETE FROM files_stats;")
     conn.execute(
         "INSERT INTO files_stats "
-        "(camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes) "
+        "(camera, rtype, files_count,"
+        " tier0_bytes, tier1_bytes, tier2_bytes, tier2_pre_encoded_bytes) "
         + _FILES_STATS_SELECT
     )
     conn.commit()
 
 
-_ZERO_BUCKET = (0, 0, 0, 0)
+_ZERO_BUCKET = (0, 0, 0, 0, 0)
 
 
 def verify_files_stats(conn: sqlite3.Connection) -> bool:
@@ -271,13 +299,14 @@ def verify_files_stats(conn: sqlite3.Connection) -> bool:
         return {k: v for k, v in rows if v != _ZERO_BUCKET}
 
     expected = _nonzero(
-        ((row[0], row[1]), (row[2], row[3], row[4], row[5]))
+        ((row[0], row[1]), (row[2], row[3], row[4], row[5], row[6]))
         for row in conn.execute(_FILES_STATS_SELECT)
     )
     observed = _nonzero(
-        ((row[0], row[1]), (row[2], row[3], row[4], row[5]))
+        ((row[0], row[1]), (row[2], row[3], row[4], row[5], row[6]))
         for row in conn.execute(
-            "SELECT camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes"
+            "SELECT camera, rtype, files_count,"
+            " tier0_bytes, tier1_bytes, tier2_bytes, tier2_pre_encoded_bytes"
             " FROM files_stats"
         )
     )
@@ -318,6 +347,55 @@ ORDER BY COALESCE(t2_compressed_at, t1_compressed_at) DESC;
 """
 
 
+_FILES_STATS_TRIGGERS = (
+    "files_stats_after_insert",
+    "files_stats_after_delete",
+    "files_stats_after_update",
+)
+
+
+def _migrate_files_stats(conn: sqlite3.Connection) -> None:
+    """Bring an existing ``files_stats`` schema up to the current version.
+
+    Two migrations:
+
+    * Add the ``tier2_pre_encoded_bytes`` column if it's missing.  This is
+      a non-destructive ``ALTER TABLE`` — existing rows get the column
+      default (0) and the post-install audit (``verify_files_stats``)
+      then triggers a backfill that fills it from ``files``.
+
+    * Drop the three trigger definitions unconditionally so the
+      subsequent ``CREATE TRIGGER`` (in ``FILES_STATS_SCHEMA``) installs
+      bodies that match the current column set.  ``CREATE TRIGGER IF
+      NOT EXISTS`` would otherwise leave stale trigger bodies in place
+      after an upgrade and they would silently never write the new
+      column.
+
+    Idempotent — safe to run on a fresh DB (table doesn't exist yet,
+    nothing to migrate).
+    """
+    has_table = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files_stats'"
+        ).fetchone()
+        is not None
+    )
+    if has_table:
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(files_stats)").fetchall()
+        }
+        if "tier2_pre_encoded_bytes" not in cols:
+            log("INFO", "Migrating files_stats: adding tier2_pre_encoded_bytes column")
+            conn.execute(
+                "ALTER TABLE files_stats"
+                " ADD COLUMN tier2_pre_encoded_bytes INTEGER NOT NULL DEFAULT 0"
+            )
+    for trig in _FILES_STATS_TRIGGERS:
+        conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+    conn.commit()
+
+
 def open_compress_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(f"file:{path}", uri=True, check_same_thread=False)
@@ -343,6 +421,11 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA analysis_limit=10000")
     conn.executescript(SCHEMA)
     conn.executescript(VIEWS)
+    # Migrate ``files_stats`` schema before re-installing triggers — on
+    # an upgrade the old triggers reference the old column set and would
+    # silently leave the new column at 0 forever.  Drop & recreate so
+    # the trigger bodies are always in lockstep with the current schema.
+    _migrate_files_stats(conn)
     # Materialised aggregate table + triggers.  Triggers are installed
     # BEFORE backfill so the audit can compare current-state rebuilds
     # cleanly; backfill itself INSERTs into files_stats directly (not

@@ -81,6 +81,14 @@ _TOP_SENSORS: list[_SensorSpec] = [
     ("tier1_bytes", "Tier 1 bytes", "B", "data_size", "mdi:database", False),
     ("tier2_bytes", "Tier 2 bytes", "B", "data_size", "mdi:database", False),
     (
+        "tier2_pre_encoded_bytes",
+        "Tier 2 pre-encoded bytes",
+        "B",
+        "data_size",
+        "mdi:database-clock",
+        False,
+    ),
+    (
         "total_bytes_rate",
         "Total bytes rate",
         "B/s",
@@ -112,6 +120,14 @@ _TOP_SENSORS: list[_SensorSpec] = [
         "mdi:chart-line",
         True,
     ),
+    (
+        "tier2_pre_encoded_bytes_rate",
+        "Tier 2 pre-encoded bytes rate",
+        "B/s",
+        "data_rate",
+        "mdi:chart-line",
+        True,
+    ),
 ]
 
 _CAMERA_SENSORS: list[_SensorSpec] = [
@@ -137,6 +153,14 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
     ),
     ("tier1_bytes", "Tier 1 bytes", "B", "data_size", "mdi:database", False),
     ("tier2_bytes", "Tier 2 bytes", "B", "data_size", "mdi:database", False),
+    (
+        "tier2_pre_encoded_bytes",
+        "Tier 2 pre-encoded bytes",
+        "B",
+        "data_size",
+        "mdi:database-clock",
+        False,
+    ),
     (
         "oldest_age_days",
         "Oldest recording age",
@@ -202,6 +226,14 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
         True,
     ),
     (
+        "tier2_pre_encoded_bytes_rate",
+        "Tier 2 pre-encoded bytes rate",
+        "B/s",
+        "data_rate",
+        "mdi:chart-line",
+        True,
+    ),
+    (
         "recording_bytes_rate",
         "Recording rate",
         "B/s",
@@ -236,6 +268,7 @@ _TOP_RATE_KEYS: tuple[str, ...] = (
     "tier0_bytes",
     "tier1_bytes",
     "tier2_bytes",
+    "tier2_pre_encoded_bytes",
 )
 
 # Bytes counters that get a corresponding _rate sensor per camera.
@@ -247,6 +280,7 @@ _CAMERA_RATE_KEYS: tuple[str, ...] = (
     "tier0_bytes",
     "tier1_bytes",
     "tier2_bytes",
+    "tier2_pre_encoded_bytes",
 )
 
 
@@ -562,6 +596,7 @@ class MqttPublisher:
             "tier0_bytes": stats.tier0_bytes,
             "tier1_bytes": stats.tier1_bytes,
             "tier2_bytes": stats.tier2_bytes,
+            "tier2_pre_encoded_bytes": stats.tier2_pre_encoded_bytes,
         }
         for k in _TOP_RATE_KEYS:
             v = values[k]
@@ -588,6 +623,7 @@ class MqttPublisher:
             "tier0_bytes": cs.tier0_bytes,
             "tier1_bytes": cs.tier1_bytes,
             "tier2_bytes": cs.tier2_bytes,
+            "tier2_pre_encoded_bytes": cs.tier2_pre_encoded_bytes,
             "oldest_age_days": cs.oldest_age_days,
         }
         for k in _CAMERA_RATE_KEYS:
