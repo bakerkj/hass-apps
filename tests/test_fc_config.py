@@ -171,23 +171,23 @@ def test_load_config_tier_equal_min_days_raises(tmp_path):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_tier2_source_default_is_chained(tmp_path):
+def test_tier2_source_default_is_direct(tmp_path):
     cfg = _make_config(tmp_path)
     cam = cfg.cameras["cam"]
-    assert cam.tier2.source == "chained"
+    assert cam.tier2.source == "direct"
 
 
-def test_tier1_source_default_is_chained(tmp_path):
+def test_tier1_source_default_is_direct(tmp_path):
     """Tier-1 always inherits the same default; the field is just unused there."""
     cfg = _make_config(tmp_path)
     cam = cfg.cameras["cam"]
-    assert cam.tier1.source == "chained"
+    assert cam.tier1.source == "direct"
 
 
-def test_tier2_source_direct_explicit(tmp_path):
-    cfg = _make_config(tmp_path, yaml_defaults={"tier2": {"source": "direct"}})
+def test_tier2_source_chained_explicit(tmp_path):
+    cfg = _make_config(tmp_path, yaml_defaults={"tier2": {"source": "chained"}})
     cam = cfg.cameras["cam"]
-    assert cam.tier2.source == "direct"
+    assert cam.tier2.source == "chained"
 
 
 def test_tier2_source_invalid_raises(tmp_path):

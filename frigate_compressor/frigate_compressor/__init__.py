@@ -18,6 +18,7 @@ from .compressor import (  # noqa: E402,F401
     _compress_one_inner,
     compress_direct,
     compress_one,
+    swap_t2,
 )
 from .config import (  # noqa: E402,F401
     CameraConfig,

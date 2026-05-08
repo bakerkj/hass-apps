@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import __version__
-from .compressor import compress_direct, compress_one
+from .compressor import compress_direct, compress_one, swap_t2
 from .config import (
     Config,
     TypeSettings,
@@ -23,6 +23,7 @@ from .config import (
 )
 from .context import CompressorContext
 from .database import (
+    STATUS_DIRECT,
     _attach_frigate,
     check_frigate_schema_attached,
     open_compress_db,
@@ -218,6 +219,7 @@ def _pace_then_compress(
     encoder: str,
     ctx: CompressorContext,
     probe_data: dict | None = None,
+    t2_status: str | None = None,
 ) -> bool:
     """Worker wrapper: pace via the shared rate limiter, then run compress_one.
 
@@ -236,11 +238,15 @@ def _pace_then_compress(
     query already fetched those columns.
     """
     ctx.rate_limiter.acquire(stopping)
+    # Tier-2 + t2_status='direct' rows are sibling-swap work, not encode
+    # work: rename the parked .t2.mp4 onto the primary path.  swap_t2
+    # itself falls back to chained encode if the sibling is missing.
+    if tier == 2 and t2_status == STATUS_DIRECT:
+        return swap_t2(rid, path, camera, rtype, encoder, ctx)
     # Dispatch to direct (dual-output) when the camera opts in via
     # tier2.source="direct" AND we're at the day-8 boundary AND tier-2 is
     # actually enabled for this rtype.  Otherwise fall through to the
-    # single-output compress_one (current behavior, default for all
-    # cameras unless explicitly opted in).
+    # single-output compress_one.
     if tier == 1:
         cam_cfg = ctx.cfg.cameras.get(camera)
         if cam_cfg is not None and cam_cfg.tier2.source == "direct":
@@ -322,6 +328,7 @@ def run_main_loop(
                         "height": r.get("height"),
                         "fps": r.get("fps"),
                     },
+                    r.get("t2_status"),
                 ): r
                 for r in eligible
                 if not stopping.is_set()
