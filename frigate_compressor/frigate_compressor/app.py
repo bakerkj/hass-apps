@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import __version__
-from .compressor import compress_one
+from .compressor import compress_direct, compress_one
 from .config import (
     Config,
     TypeSettings,
@@ -236,6 +236,19 @@ def _pace_then_compress(
     query already fetched those columns.
     """
     ctx.rate_limiter.acquire(stopping)
+    # Dispatch to direct (dual-output) when the camera opts in via
+    # tier2.source="direct" AND we're at the day-8 boundary AND tier-2 is
+    # actually enabled for this rtype.  Otherwise fall through to the
+    # single-output compress_one (current behavior, default for all
+    # cameras unless explicitly opted in).
+    if tier == 1:
+        cam_cfg = ctx.cfg.cameras.get(camera)
+        if cam_cfg is not None and cam_cfg.tier2.source == "direct":
+            t2_ts = getattr(cam_cfg.tier2, rtype, None)
+            if t2_ts is not None and t2_ts.enabled:
+                return compress_direct(
+                    rid, path, camera, rtype, encoder, ctx, probe_data=probe_data
+                )
     return compress_one(
         rid, path, camera, tier, rtype, encoder, ctx, probe_data=probe_data
     )

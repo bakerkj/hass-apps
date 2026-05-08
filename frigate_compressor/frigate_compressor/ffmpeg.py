@@ -363,54 +363,86 @@ _ENCODER_PARAMS: dict[str, dict] = {
 }
 
 
-def build_ffmpeg_cmd(
-    input_path: Path,
-    output_path: Path,
-    encoder: str,
-    ts: TypeSettings,
-) -> list[str]:
-    quality = ts.quality
-
-    # Run ffprobe only when needed (fraction modes require actual source values)
-    need_dims = ts.scale_mode == "fraction"
-    need_fps = ts.fps_mode == "fraction"
-    source_dims: tuple[int, int] | None = None
-    source_fps: float | None = None
-
-    if need_dims or need_fps:
-        info = _probe(input_path)
-        source_dims = _probe_dims(info)
-        source_fps = (info or {}).get("fps")
-
-    fps_filter = _build_fps_filter(ts.fps_mode, ts.fps_value, source_fps)
-    scale = _build_scale_filter(ts.scale_mode, ts.scale_value, encoder, source_dims)
-
-    vf_parts = [f for f in [fps_filter, scale] if f]
-    vf_filter = ",".join(vf_parts)
-
-    common_out = [
-        "-c:a",
-        "copy",
-        "-map_metadata",
-        "0",
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ]
-    vf_args = ["-vf", vf_filter] if vf_filter else []
-
+def _hwaccel_args(encoder: str) -> tuple[dict, list[str]]:
+    """Return (encoder_params_dict, ffmpeg_hwaccel_argv_prefix) for an encoder."""
     enc = _ENCODER_PARAMS.get(encoder, _ENCODER_PARAMS["cpu"])
-    hwaccel_args = (
-        [
+    if enc["hwaccel"]:
+        args = [
             "-hwaccel",
             enc["hwaccel"][0],
             "-hwaccel_output_format",
             enc["hwaccel"][1],
             *enc["hwaccel_extra"],
         ]
-        if enc["hwaccel"]
-        else []
-    )
+    else:
+        args = []
+    return enc, args
+
+
+def _output_args(
+    ts: TypeSettings,
+    output_path: Path,
+    encoder: str,
+    enc: dict,
+    source_dims: tuple[int, int] | None,
+    source_fps: float | None,
+    *,
+    audio: str = "copy",
+    use_map: bool = False,
+) -> list[str]:
+    """Build the per-output ffmpeg argument segment.
+
+    ``use_map=True`` prepends ``-map 0:v`` so multiple outputs can share one
+    input — required for the direct (dual-output) command.  Single-output
+    callers leave it False to preserve ffmpeg's default automatic stream
+    mapping.
+
+    ``audio``: ``"copy"`` to preserve the audio track; ``"none"`` to drop
+    audio (``-an``).  Direct outputs use ``"none"`` because ffmpeg cannot
+    fan one audio stream out to multiple ``copy`` outputs reliably.
+    """
+    fps_filter = _build_fps_filter(ts.fps_mode, ts.fps_value, source_fps)
+    scale = _build_scale_filter(ts.scale_mode, ts.scale_value, encoder, source_dims)
+    vf_parts = [f for f in [fps_filter, scale] if f]
+    vf_filter = ",".join(vf_parts)
+    vf_args = ["-vf", vf_filter] if vf_filter else []
+
+    audio_args = ["-c:a", "copy"] if audio == "copy" else ["-an"]
+    map_args = ["-map", "0:v"] if use_map else []
+
+    return [
+        *map_args,
+        *vf_args,
+        "-c:v",
+        enc["codec"],
+        enc["quality_flag"],
+        str(ts.quality),
+        enc["preset_flag"],
+        enc["preset"],
+        *audio_args,
+        "-map_metadata",
+        "0",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+
+
+def build_ffmpeg_cmd(
+    input_path: Path,
+    output_path: Path,
+    encoder: str,
+    ts: TypeSettings,
+) -> list[str]:
+    # Run ffprobe only when needed (fraction modes require actual source values)
+    source_dims: tuple[int, int] | None = None
+    source_fps: float | None = None
+    if ts.scale_mode == "fraction" or ts.fps_mode == "fraction":
+        info = _probe(input_path)
+        source_dims = _probe_dims(info)
+        source_fps = (info or {}).get("fps")
+
+    enc, hwaccel_args = _hwaccel_args(encoder)
     return [
         "ffmpeg",
         "-hide_banner",
@@ -419,12 +451,70 @@ def build_ffmpeg_cmd(
         *hwaccel_args,
         "-i",
         str(input_path),
-        *vf_args,
-        "-c:v",
-        enc["codec"],
-        enc["quality_flag"],
-        str(quality),
-        enc["preset_flag"],
-        enc["preset"],
-        *common_out,
+        *_output_args(
+            ts, output_path, encoder, enc, source_dims, source_fps, audio="copy"
+        ),
+    ]
+
+
+def build_direct_ffmpeg_cmd(
+    input_path: Path,
+    t1_output: Path,
+    t2_output: Path,
+    encoder: str,
+    t1_ts: TypeSettings,
+    t2_ts: TypeSettings,
+) -> list[str]:
+    """Build a single ffmpeg invocation that produces tier-1 + tier-2 outputs.
+
+    Used in direct mode: one read of the native source, two GPU encodes,
+    yielding tier-1 at ``t1_output`` (replacement for native) and tier-2 at
+    ``t2_output`` (sibling-parked, awaiting day-30 swap).  Saves one
+    generation of encode loss vs native→tier-1→tier-2.
+
+    Audio is dropped (``-an``) on both outputs.  Cameras that need audio
+    preservation in tier-1 should stay on chained mode.
+    """
+    # Probe once if either tier needs it
+    source_dims: tuple[int, int] | None = None
+    source_fps: float | None = None
+    if (
+        t1_ts.scale_mode == "fraction"
+        or t2_ts.scale_mode == "fraction"
+        or t1_ts.fps_mode == "fraction"
+        or t2_ts.fps_mode == "fraction"
+    ):
+        info = _probe(input_path)
+        source_dims = _probe_dims(info)
+        source_fps = (info or {}).get("fps")
+
+    enc, hwaccel_args = _hwaccel_args(encoder)
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *hwaccel_args,
+        "-i",
+        str(input_path),
+        *_output_args(
+            t1_ts,
+            t1_output,
+            encoder,
+            enc,
+            source_dims,
+            source_fps,
+            audio="none",
+            use_map=True,
+        ),
+        *_output_args(
+            t2_ts,
+            t2_output,
+            encoder,
+            enc,
+            source_dims,
+            source_fps,
+            audio="none",
+            use_map=True,
+        ),
     ]
