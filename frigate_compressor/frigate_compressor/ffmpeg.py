@@ -326,7 +326,8 @@ _ENCODER_PARAMS: dict[str, dict] = {
         "codec": "h264_qsv",
         "quality_flag": "-global_quality",
         "preset_flag": "-preset",
-        "preset": "slower",
+        # ICQ adapts to -global_quality regardless of preset; preset only affects encode speed.
+        "preset": "veryfast",
     },
     "vaapi": {
         "hwaccel": ("vaapi", "vaapi"),
