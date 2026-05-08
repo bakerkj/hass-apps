@@ -16,6 +16,7 @@ __version__ = os.environ.get("ADDON_VERSION", "dev")
 
 from .compressor import (  # noqa: E402,F401
     _compress_one_inner,
+    compress_direct,
     compress_one,
 )
 from .config import (  # noqa: E402,F401
@@ -60,6 +61,7 @@ from .ffmpeg import (  # noqa: E402,F401
     _probe_dims,
     _TEMP_GLOB,
     _TEMP_PREFIX,
+    build_direct_ffmpeg_cmd,
     build_ffmpeg_cmd,
     check_encoder_works,
     detect_encoder,

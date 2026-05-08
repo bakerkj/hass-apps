@@ -239,3 +239,111 @@ def test_probe_valid_dims_and_fps(tmp_path):
         info = fc._probe(f)
     assert fc._probe_dims(info) == (1920, 1080)
     assert info["fps"] == pytest.approx(30000 / 1001)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# build_direct_ffmpeg_cmd — dual-output (tier-1 + tier-2 from one input)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _direct_cmd(tmp_path, encoder="cpu"):
+    cfg = _make_config(tmp_path)
+    cam = cfg.cameras["cam"]
+    return fc.build_direct_ffmpeg_cmd(
+        Path("/native.mp4"),
+        Path("/t1.mp4"),
+        Path("/t2.mp4"),
+        encoder,
+        cam.tier1.continuous,
+        cam.tier2.continuous,
+    )
+
+
+def test_build_direct_ffmpeg_cmd_has_one_input(tmp_path):
+    """Dual output: only ONE -i (single source read, two encodes)."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    assert cmd.count("-i") == 1
+
+
+def test_build_direct_ffmpeg_cmd_two_outputs(tmp_path):
+    """Both output paths appear in the command."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    assert "/t1.mp4" in cmd
+    assert "/t2.mp4" in cmd
+
+
+def test_build_direct_ffmpeg_cmd_uses_map_for_each_output(tmp_path):
+    """Each output is preceded by ``-map 0:v`` so ffmpeg fans the source out."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    # Should have exactly 2 occurrences of -map 0:v (one per output)
+    map_count = sum(
+        1
+        for i, a in enumerate(cmd)
+        if a == "-map" and i + 1 < len(cmd) and cmd[i + 1] == "0:v"
+    )
+    assert map_count == 2
+
+
+def test_build_direct_ffmpeg_cmd_drops_audio(tmp_path):
+    """Direct mode is video-only; both outputs use ``-an``."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    assert cmd.count("-an") == 2
+    assert "-c:a" not in cmd  # no copy or any audio codec
+
+
+def test_build_direct_ffmpeg_cmd_qsv_uses_dual_encoder(tmp_path):
+    """QSV variant: two h264_qsv encoders in one invocation."""
+    cmd = _direct_cmd(tmp_path, encoder="qsv")
+    assert cmd.count("h264_qsv") == 2
+    assert cmd.count("-global_quality") == 2
+    # hwaccel args appear ONCE (before -i), not per output
+    assert cmd.count("-hwaccel") == 1
+
+
+def test_build_direct_ffmpeg_cmd_separate_quality_per_tier(tmp_path):
+    """Each tier's q-value appears in its own output segment."""
+    cfg = _make_config(tmp_path)
+    cam = cfg.cameras["cam"]
+    # Use distinct quality values to verify they reach the right output
+    t1_ts = cam.tier1.continuous  # q=30 from default test config
+    t2_ts = cam.tier2.continuous  # q=34 from default test config
+    cmd = fc.build_direct_ffmpeg_cmd(
+        Path("/in.mp4"),
+        Path("/t1_out.mp4"),
+        Path("/t2_out.mp4"),
+        "cpu",
+        t1_ts,
+        t2_ts,
+    )
+    # Find the indices of the output paths
+    t1_idx = cmd.index("/t1_out.mp4")
+    t2_idx = cmd.index("/t2_out.mp4")
+    # Tier-1's quality value should appear in the segment before /t1_out.mp4
+    t1_segment = cmd[:t1_idx]
+    t2_segment = cmd[t1_idx:t2_idx]
+    assert str(t1_ts.quality) in t1_segment
+    assert str(t2_ts.quality) in t2_segment
+
+
+def test_build_direct_ffmpeg_cmd_t2_has_scale_filter(tmp_path):
+    """tier-2 default config has scale_mode=fixed → second output gets -vf with scale."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    t2_idx = cmd.index("/t2.mp4")
+    # Second output's segment should contain -vf with scale
+    t1_idx = cmd.index("/t1.mp4")
+    t2_segment = cmd[t1_idx + 1 : t2_idx]
+    assert "-vf" in t2_segment
+    vf_idx = t2_segment.index("-vf")
+    assert "scale" in t2_segment[vf_idx + 1]
+
+
+def test_build_direct_ffmpeg_cmd_t1_has_no_vf_when_no_filters(tmp_path):
+    """tier-1 default config has scale_mode=none, fps_mode=none → no -vf in t1 segment."""
+    cmd = _direct_cmd(tmp_path, encoder="cpu")
+    t1_idx = cmd.index("/t1.mp4")
+    # Find the start of the tier-1 output segment (after -i and its arg)
+    i_idx = cmd.index("-i")
+    t1_segment = cmd[i_idx + 2 : t1_idx + 1]
+    # Tier-1 segment has -map but no -vf
+    assert "-map" in t1_segment
+    assert "-vf" not in t1_segment

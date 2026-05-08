@@ -12,6 +12,7 @@ from pathlib import Path
 from .config import TypeSettings
 from .context import CompressorContext
 from .database import (
+    STATUS_DIRECT,
     STATUS_ERROR,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
@@ -23,8 +24,10 @@ from .ffmpeg import (
     FFMPEG_TIMEOUT_SEC,
     _TEMP_PREFIX,
     _probe,
+    build_direct_ffmpeg_cmd,
     build_ffmpeg_cmd,
 )
+from .paths import sibling_path
 from .util import _display_path, _fmt, log
 
 
@@ -399,4 +402,316 @@ def _compress_one_inner(
         status=seg_status,
         error_msg=seg_error,
     )
+    return True
+
+
+def compress_direct(
+    recording_id: str,
+    path: str,
+    camera: str,
+    recording_type: str,
+    encoder: str,
+    ctx: CompressorContext,
+    probe_data: dict | None = None,
+) -> bool:
+    """Encode tier-1 + tier-2 from native source in one ffmpeg pass.
+
+    Used at the day-8 boundary when ``cam.tier2.source == "direct"`` and
+    both tier-1 and tier-2 are enabled for ``recording_type``.  Tier-1
+    replaces the native file at the primary path (matching ``compress_one``
+    behavior); tier-2 lands at the sibling ``.t2.mp4`` path and stays there
+    until the day-30 swap (PR3) renames it onto the primary path.
+
+    Falls back to ``compress_one(tier=1)`` when tier-2 is not enabled for
+    the recording_type — a single encode is the right thing for that case.
+    """
+    cfg = ctx.cfg
+    compress_db = ctx.compress_db
+    compress_db_lock = ctx.compress_db_lock
+
+    cam_cfg = cfg.cameras.get(camera)
+    if cam_cfg is None:
+        log("WARNING", f"[{camera}] Not in camera config, skipping")
+        return False
+    t1_ts = getattr(cam_cfg.tier1, recording_type, None)
+    t2_ts = getattr(cam_cfg.tier2, recording_type, None)
+    if t1_ts is None or t2_ts is None:
+        log(
+            "WARNING",
+            f"[{camera}] No resolved settings for {recording_type}, skipping",
+        )
+        return False
+    if not t1_ts.enabled:
+        log("DEBUG", f"[{camera}] tier-1 disabled for {recording_type}, skipping")
+        return True
+    if not t2_ts.enabled:
+        # No tier-2 work for this rtype — fall back to a normal tier-1 encode.
+        return compress_one(
+            recording_id, path, camera, 1, recording_type, encoder, ctx, probe_data
+        )
+    dry_run = cam_cfg.dry_run
+
+    def rec(
+        *,
+        tier: int,
+        status: str,
+        size: int | None,
+        duration: float | None,
+        error_msg: str | None = None,
+    ) -> None:
+        with compress_db_lock:
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=tier,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=None,
+                size_after=size,
+                duration_sec=duration,
+                status=status,
+                error_msg=error_msg,
+            )
+
+    filepath = Path(path)
+
+    if not filepath.exists():
+        log("WARNING", f"[{camera}] File missing, skipping: {path}")
+        rec(
+            tier=1,
+            status=STATUS_ERROR,
+            size=None,
+            duration=None,
+            error_msg="file missing",
+        )
+        return False
+
+    size_before = filepath.stat().st_size
+
+    duration: float | None = None
+
+    def fail_both(error_msg: str) -> bool:
+        """Mark both tiers as errored and return False — the native file
+        is left in place (atomic-replace hasn't happened yet), so this is
+        recoverable: the chained eligibility query will pick the row back
+        up at day-30 and try again."""
+        rec(
+            tier=1,
+            status=STATUS_ERROR,
+            size=None,
+            duration=duration,
+            error_msg=error_msg,
+        )
+        rec(
+            tier=2,
+            status=STATUS_ERROR,
+            size=None,
+            duration=duration,
+            error_msg=error_msg,
+        )
+        return False
+
+    # Probe data check (mirrors compress_one).
+    if probe_data is None:
+        with compress_db_lock:
+            row = compress_db.execute(
+                "SELECT width, height, fps FROM files WHERE recording_id = ?",
+                (recording_id,),
+            ).fetchone()
+        probe_data = (
+            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
+            if row is not None
+            else None
+        )
+    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
+        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
+        return False
+
+    src_info = f"{probe_data['width']}x{probe_data['height']}"
+    src_info = f"{src_info:<10}"
+
+    # Distinct temp filenames for the two outputs (compress_one uses a
+    # single .tmp.{rid}.mp4 per job; here we suffix with .t1/.t2).
+    t1_tmp = filepath.parent / f"{_TEMP_PREFIX}{recording_id}.t1.mp4"
+    t2_tmp = filepath.parent / f"{_TEMP_PREFIX}{recording_id}.t2.mp4"
+    cmd = build_direct_ffmpeg_cmd(filepath, t1_tmp, t2_tmp, encoder, t1_ts, t2_ts)
+
+    log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
+
+    if dry_run:
+        log(
+            "INFO",
+            f"[{camera:<{cfg.cam_name_width}}] DRY RUN direct:{recording_type[:3]}  "
+            f"{_display_path(filepath)}  {src_info}{_fmt(size_before, 10)}",
+        )
+        return True
+
+    t_start = time.monotonic()
+    try:
+        try:
+            result: DetachedResult | subprocess.CompletedProcess[str]
+            if cfg.detached_ffmpeg:
+                result = run_detached(
+                    cmd,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                    stderr_max_len=FFMPEG_STDERR_MAX_LEN,
+                )
+            else:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
+                )
+        except subprocess.TimeoutExpired:
+            duration = time.monotonic() - t_start
+            log(
+                "WARNING",
+                f"[{camera}] direct ffmpeg timeout after {duration:.1f}s "
+                f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
+            )
+            return fail_both(f"timeout after {FFMPEG_TIMEOUT_SEC}s")
+        except Exception as e:
+            duration = time.monotonic() - t_start
+            log(
+                "ERROR",
+                f"[{camera}] direct ffmpeg raised unexpected exception "
+                f"after {duration:.1f}s: {e}",
+            )
+            return fail_both(f"ffmpeg exception: {e}")
+
+        duration = time.monotonic() - t_start
+
+        if result.returncode != 0:
+            err = (result.stderr or "")[:FFMPEG_STDERR_MAX_LEN].strip()
+            log(
+                "WARNING",
+                f"[{camera}] direct ffmpeg failed after {duration:.1f}s "
+                f"(rc={result.returncode}): {_display_path(filepath)}",
+            )
+            if err:
+                log("DEBUG", f"[{camera}]   stderr: {err}")
+            return fail_both(err)
+
+        if not t1_tmp.exists() or not t2_tmp.exists():
+            log(
+                "WARNING",
+                f"[{camera}] direct outputs missing after encode "
+                f"({duration:.1f}s): {_display_path(filepath)}",
+            )
+            return fail_both("output missing")
+
+        t1_size = t1_tmp.stat().st_size
+        t2_size = t2_tmp.stat().st_size
+
+        # Same safety checks as compress_one: original still on disk and
+        # unchanged, recording still in Frigate's DB.  If anything has
+        # shifted under us, throw both outputs away rather than create
+        # an inconsistent state.
+        if not filepath.exists():
+            log(
+                "WARNING",
+                f"[{camera}] original deleted during direct encode "
+                f"({duration:.1f}s) — discarding outputs: {_display_path(filepath)}",
+            )
+            return fail_both("original deleted by Frigate during compression")
+
+        current_size = filepath.stat().st_size
+        if current_size != size_before:
+            log(
+                "WARNING",
+                f"[{camera}] original changed during direct encode "
+                f"({duration:.1f}s) — discarding outputs: {_display_path(filepath)}",
+            )
+            return fail_both(
+                f"original changed during compression"
+                f" ({size_before}→{current_size} bytes)"
+            )
+
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+        if db_row is None:
+            log(
+                "WARNING",
+                f"[{camera}] recording removed from Frigate DB during direct encode "
+                f"({duration:.1f}s) — discarding outputs: {_display_path(filepath)}",
+            )
+            return fail_both("recording removed from Frigate DB during compression")
+
+        # Atomic replace: tier-1 → primary path, tier-2 → sibling path.
+        # If the tier-1 rename fails, both temps are kept (cleaned up in
+        # finally).  If the tier-2 rename fails after tier-1 succeeded,
+        # we still get a valid tier-1 file in place but mark t2 as errored
+        # so the chained query picks it up at day-30.
+        sib = sibling_path(filepath)
+        try:
+            t1_tmp.replace(filepath)
+        except Exception as e:
+            log(
+                "ERROR",
+                f"[{camera}] failed to replace original after direct encode "
+                f"({duration:.1f}s): {e}",
+            )
+            return fail_both(f"replace failed: {e}")
+
+        t2_replace_failed: str | None = None
+        try:
+            t2_tmp.replace(sib)
+        except Exception as e:
+            t2_replace_failed = str(e)
+            log(
+                "WARNING",
+                f"[{camera}] tier-2 sibling rename failed after tier-1 "
+                f"replace succeeded: {e}",
+            )
+    finally:
+        # Always clean up temp files (replace() consumes them, so this is
+        # only a no-op on the success path).
+        t1_tmp.unlink(missing_ok=True)
+        t2_tmp.unlink(missing_ok=True)
+
+    pct_t1 = ((size_before - t1_size) / size_before * 100) if size_before else 0.0
+    pct_t2 = ((size_before - t2_size) / size_before * 100) if size_before else 0.0
+    log(
+        "INFO",
+        f"[{camera:<{cfg.cam_name_width}}] direct:{recording_type[:3]}  "
+        f"{_display_path(filepath)}  {src_info}"
+        f"{_fmt(size_before, 10)} → t1 {_fmt(t1_size, 10)} ({pct_t1:>3.0f}%)"
+        f" + t2 {_fmt(t2_size, 10)} ({pct_t2:>3.0f}%)  {duration:>5.1f}s",
+    )
+
+    # DB updates: tier-1 ok, tier-2 'direct' (or 'error' if sibling rename
+    # failed).  Both row updates + the segment_size UPDATE happen on the
+    # same connection under the same lock — observers see consistent state.
+    new_size_mb = t1_size / (1024 * 1024)
+    seg_status = STATUS_OK
+    seg_error: str | None = None
+    try:
+        with compress_db_lock:
+            compress_db.execute(
+                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                (new_size_mb, recording_id),
+            )
+            compress_db.commit()
+    except Exception as e:
+        seg_status = STATUS_SEGMENT_UPDATE_FAILED
+        seg_error = str(e)
+        log(
+            "WARNING",
+            f"[{camera}] failed to update Frigate segment_size "
+            f"— will retry at housekeeping: {e}",
+        )
+
+    rec(tier=1, status=seg_status, size=t1_size, duration=duration, error_msg=seg_error)
+    if t2_replace_failed is None:
+        rec(tier=2, status=STATUS_DIRECT, size=t2_size, duration=duration)
+    else:
+        rec(
+            tier=2,
+            status=STATUS_ERROR,
+            size=t2_size,
+            duration=duration,
+            error_msg=f"sibling rename failed: {t2_replace_failed}",
+        )
     return True

@@ -10,6 +10,7 @@ import time
 from .config import Config
 from .context import CompressorContext
 from .database import (
+    STATUS_DIRECT,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
@@ -64,6 +65,9 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             t1_params.extend([name, t1_cutoff])
         if cam.tier2.enabled:
             t2_cutoff = effective_now - (cam.tier2.min_days * 86400)
+            # STATUS_DIRECT is excluded: those rows have a sibling .t2 file
+            # already encoded and are waiting for the day-30 swap (handled
+            # by a separate path in PR3, not by this re-encode query).
             t2_parts.append(
                 f"""
                 SELECT * FROM (
@@ -74,7 +78,8 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                           ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
-                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                               '{STATUS_DIRECT}'))
                     ORDER BY f.start_time ASC
                     LIMIT {_ELIGIBLE_BATCH_SIZE}
                 )

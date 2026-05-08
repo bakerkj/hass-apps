@@ -1406,3 +1406,406 @@ def test_rate_limiter_set_target_reads_atomically(monkeypatch):
     # interval state from before, but new interval applies to next_allowed advance)
 
     assert sleeps == [pytest.approx(1.0), pytest.approx(2.0)]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# compress_direct (dual-output: native → tier-1 + tier-2 sibling)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _setup_compress_direct(tmp_path, *, recording_type="motion"):
+    """Same setup as compress_one but with tier2.source="direct".
+
+    Returns (ctx, src_path, sibling_path).
+    """
+    src = tmp_path / "recordings" / "cam1" / "clip.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"x" * 10000)
+
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn,
+        "r1",
+        "cam1",
+        str(src),
+        time.time() - 10 * 86400,
+        motion=5 if recording_type != "object" else 0,
+        objects=3 if recording_type == "object" else 0,
+    )
+    frigate_conn.close()
+
+    # Use a per-camera override so we add source="direct" without clobbering
+    # test_defaults' tier2 block (the yaml_defaults override path does a
+    # shallow update that would drop tier2.enabled/quality/etc.).
+    cfg = _make_config(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_cameras={"cam1": {"tier2": {"source": "direct"}}},
+    )
+    compress_conn = _open_compress_db(tmp_path)
+    fc._attach_frigate(compress_conn, cfg, "frigate")
+    ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
+
+    fc._store_probe(
+        ctx.compress_db,
+        "r1",
+        "cam1",
+        str(src),
+        {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "fps": 20.0,
+            "bitrate": 5000000,
+            "duration_sec": 10.0,
+            "file_size": 10000,
+        },
+    )
+    ctx.compress_db.commit()
+
+    return ctx, src, fc.sibling_path(src)
+
+
+def _compress_direct(ctx, src, *, recording_id="r1", recording_type="motion"):
+    return fc.compress_direct(
+        recording_id=recording_id,
+        path=str(src),
+        camera="cam1",
+        recording_type=recording_type,
+        encoder="cpu",
+        ctx=ctx,
+    )
+
+
+def _fake_dual_run(t1_size=5000, t2_size=2000, returncode=0, stderr=""):
+    """Build a subprocess.run-replacement that writes BOTH .mp4 outputs.
+
+    The dual-output ffmpeg cmd has multiple .mp4 paths: -i <input> followed
+    by output args ending in .mp4 paths (one per output).  The mock writes
+    each non-input .mp4 path, with the first matching t1_size and the rest
+    matching t2_size.  Uses the .tmp.{rid}.t{1,2}.mp4 naming convention.
+    """
+
+    def fake_run(cmd, **kwargs):
+        # Find output paths (.mp4 entries that are not the -i argument)
+        outputs = []
+        for i, arg in enumerate(cmd):
+            if arg.endswith(".mp4") and (i == 0 or cmd[i - 1] != "-i"):
+                outputs.append(arg)
+        # First output is tier-1, rest are tier-2 (only one in our case)
+        for j, out in enumerate(outputs):
+            size = t1_size if ".t1.mp4" in out else t2_size
+            Path(out).write_bytes(b"y" * size)
+        m = MagicMock()
+        m.returncode = returncode
+        m.stderr = stderr
+        return m
+
+    return fake_run
+
+
+def test_compress_direct_writes_both_outputs(tmp_path):
+    ctx, src, sib = _setup_compress_direct(tmp_path)
+    with patch("subprocess.run", side_effect=_fake_dual_run()):
+        result = _compress_direct(ctx, src)
+    assert result is True
+    # Primary path now contains tier-1 output (5000 bytes)
+    assert src.exists()
+    assert src.stat().st_size == 5000
+    # Sibling path contains tier-2 output (2000 bytes)
+    assert sib.exists()
+    assert sib.stat().st_size == 2000
+    _close_ctx(ctx)
+
+
+def test_compress_direct_db_marks_t1_ok_and_t2_direct(tmp_path):
+    ctx, src, _ = _setup_compress_direct(tmp_path)
+    with patch("subprocess.run", side_effect=_fake_dual_run()):
+        _compress_direct(ctx, src)
+    row = _db_row(ctx)
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["t2_status"] == fc.STATUS_DIRECT
+    assert row["t1_file_size"] == 5000
+    assert row["t2_file_size"] == 2000
+    _close_ctx(ctx)
+
+
+def test_compress_direct_updates_frigate_segment_size(tmp_path):
+    ctx, src, _ = _setup_compress_direct(tmp_path)
+    with patch("subprocess.run", side_effect=_fake_dual_run(t1_size=4096)):
+        _compress_direct(ctx, src)
+    seg_row = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='r1'"
+    ).fetchone()
+    # segment_size is in MB, set to tier-1 size
+    assert seg_row["segment_size"] == pytest.approx(4096 / (1024 * 1024), rel=1e-4)
+    _close_ctx(ctx)
+
+
+def test_compress_direct_falls_back_to_tier1_when_t2_disabled(tmp_path):
+    """If tier2 is disabled for this rtype, compress_direct delegates to compress_one(tier=1)."""
+    src = tmp_path / "recordings" / "cam1" / "clip.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"x" * 10000)
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    _insert_recording(
+        frigate_conn, "r1", "cam1", str(src), time.time() - 10 * 86400, motion=5
+    )
+    frigate_conn.close()
+    # Disable tier2.motion specifically; still source=direct
+    cfg = _make_config(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_defaults={
+            "tier2": {
+                "source": "direct",
+                "motion": {"enabled": False},
+            }
+        },
+    )
+    compress_conn = _open_compress_db(tmp_path)
+    fc._attach_frigate(compress_conn, cfg, "frigate")
+    ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
+    fc._store_probe(
+        ctx.compress_db,
+        "r1",
+        "cam1",
+        str(src),
+        {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "fps": 20.0,
+            "bitrate": 5000000,
+            "duration_sec": 10.0,
+            "file_size": 10000,
+        },
+    )
+    ctx.compress_db.commit()
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = fc.compress_direct("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is True
+    # Single-output flow: no sibling created
+    assert not fc.sibling_path(src).exists()
+    row = _db_row(ctx)
+    assert row["t1_status"] == fc.STATUS_OK
+    # tier-2 not touched
+    assert row["t2_status"] is None
+    _close_ctx(ctx)
+
+
+def test_compress_direct_ffmpeg_failure_keeps_native(tmp_path):
+    ctx, src, sib = _setup_compress_direct(tmp_path)
+    with patch(
+        "subprocess.run",
+        side_effect=_fake_dual_run(returncode=1, stderr="ffmpeg error"),
+    ):
+        result = _compress_direct(ctx, src)
+    assert result is False
+    # Native untouched
+    assert src.stat().st_size == 10000
+    # No sibling
+    assert not sib.exists()
+    row = _db_row(ctx)
+    assert row["t1_status"] == fc.STATUS_ERROR
+    assert row["t2_status"] == fc.STATUS_ERROR
+    _close_ctx(ctx)
+
+
+def test_compress_direct_output_missing_keeps_native(tmp_path):
+    """If ffmpeg returns 0 but one of the outputs wasn't created."""
+    ctx, src, sib = _setup_compress_direct(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        # Write only the FIRST output (t1) — leave t2 missing
+        for i, arg in enumerate(cmd):
+            if arg.endswith(".t1.mp4") and (i == 0 or cmd[i - 1] != "-i"):
+                Path(arg).write_bytes(b"y" * 5000)
+                break  # don't write t2
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _compress_direct(ctx, src)
+    assert result is False
+    # Native preserved (atomic replace gated on both outputs existing)
+    assert src.stat().st_size == 10000
+    assert not sib.exists()
+    _close_ctx(ctx)
+
+
+def test_compress_direct_dry_run(tmp_path):
+    ctx, src, sib = _setup_compress_direct(tmp_path)
+    # Force dry_run on
+    for cam in ctx.cfg.cameras.values():
+        cam.dry_run = True
+
+    def fail_run(cmd, **kwargs):
+        pytest.fail("ffmpeg should not be invoked in dry_run")
+
+    with patch("subprocess.run", side_effect=fail_run):
+        result = _compress_direct(ctx, src)
+    assert result is True
+    assert src.stat().st_size == 10000  # native untouched
+    assert not sib.exists()
+    _close_ctx(ctx)
+
+
+def test_compress_direct_eligibility_excludes_direct_status(tmp_path):
+    """Tier-2 eligibility query must skip rows already in t2_status='direct'.
+
+    Otherwise the daemon would re-encode a file we've already produced
+    a tier-2 sibling for.
+    """
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
+    compress_conn = _open_compress_db(tmp_path)
+    fc._attach_frigate(compress_conn, cfg, "frigate")
+    ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
+
+    # Row past tier-2 boundary, t1=ok, t2=direct (should NOT be picked up)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rd",
+        "cam",
+        "/x/d.mp4",
+        time.time() - 100 * 86400,
+    )
+    compress_conn.execute(
+        "UPDATE files SET t1_status=?, t2_status=? WHERE recording_id=?",
+        (fc.STATUS_OK, fc.STATUS_DIRECT, "rd"),
+    )
+    # Row past tier-2 boundary, t1=ok, t2=NULL (SHOULD be picked up)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rn",
+        "cam",
+        "/x/n.mp4",
+        time.time() - 100 * 86400,
+    )
+    compress_conn.execute(
+        "UPDATE files SET t1_status=? WHERE recording_id=?",
+        (fc.STATUS_OK, "rn"),
+    )
+    compress_conn.commit()
+
+    eligible = fc.get_eligible_recordings(ctx)
+    eligible_ids = {r["recording_id"] for r in eligible}
+    assert "rn" in eligible_ids
+    assert "rd" not in eligible_ids  # direct is excluded
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _pace_then_compress dispatch — direct vs chained
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _fake_dispatch_ctx(*, source: str, t2_enabled: bool):
+    """Minimal mock ctx with cfg.cameras['cam'].tier2.source + tier2.<rtype>.enabled."""
+    cam = MagicMock()
+    cam.tier2.source = source
+    # The dispatch reads ``getattr(cam_cfg.tier2, rtype)``; here `rtype` is
+    # always "continuous" in the dispatch tests below.
+    cam.tier2.continuous.enabled = t2_enabled
+    fake_ctx = MagicMock()
+    fake_ctx.cfg.cameras = {"cam": cam}
+    fake_ctx.rate_limiter.acquire = lambda _stopping: None
+    return fake_ctx
+
+
+def test_pace_then_compress_dispatches_to_direct_when_source_direct(monkeypatch):
+    """tier=1, source=direct, t2 enabled → compress_direct, not compress_one."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fc.app,
+        "compress_direct",
+        lambda *a, **k: calls.append("direct") or True,
+    )
+    monkeypatch.setattr(
+        fc.app,
+        "compress_one",
+        lambda *a, **k: calls.append("one") or True,
+    )
+    ctx = _fake_dispatch_ctx(source="direct", t2_enabled=True)
+    fc._pace_then_compress(
+        threading.Event(), "r", "/p", "cam", 1, "continuous", "cpu", ctx
+    )
+    assert calls == ["direct"]
+
+
+def test_pace_then_compress_dispatches_to_one_when_source_chained(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fc.app,
+        "compress_direct",
+        lambda *a, **k: calls.append("direct") or True,
+    )
+    monkeypatch.setattr(
+        fc.app,
+        "compress_one",
+        lambda *a, **k: calls.append("one") or True,
+    )
+    ctx = _fake_dispatch_ctx(source="chained", t2_enabled=True)
+    fc._pace_then_compress(
+        threading.Event(), "r", "/p", "cam", 1, "continuous", "cpu", ctx
+    )
+    assert calls == ["one"]
+
+
+def test_pace_then_compress_dispatches_to_one_for_tier2_regardless_of_source(
+    monkeypatch,
+):
+    """tier=2 always uses compress_one (chained re-encode of tier-1 file)."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fc.app,
+        "compress_direct",
+        lambda *a, **k: calls.append("direct") or True,
+    )
+    monkeypatch.setattr(
+        fc.app,
+        "compress_one",
+        lambda *a, **k: calls.append("one") or True,
+    )
+    ctx = _fake_dispatch_ctx(source="direct", t2_enabled=True)
+    fc._pace_then_compress(
+        threading.Event(), "r", "/p", "cam", 2, "continuous", "cpu", ctx
+    )
+    assert calls == ["one"]
+
+
+def test_pace_then_compress_dispatches_to_one_when_t2_type_disabled(monkeypatch):
+    """tier=1, source=direct, but t2 disabled for THIS rtype → compress_one."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fc.app,
+        "compress_direct",
+        lambda *a, **k: calls.append("direct") or True,
+    )
+    monkeypatch.setattr(
+        fc.app,
+        "compress_one",
+        lambda *a, **k: calls.append("one") or True,
+    )
+    ctx = _fake_dispatch_ctx(source="direct", t2_enabled=False)
+    fc._pace_then_compress(
+        threading.Event(), "r", "/p", "cam", 1, "continuous", "cpu", ctx
+    )
+    assert calls == ["one"]
