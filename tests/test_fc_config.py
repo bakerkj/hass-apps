@@ -167,6 +167,54 @@ def test_load_config_tier_equal_min_days_raises(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# load_config — tier source field (chained vs direct)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_tier2_source_default_is_chained(tmp_path):
+    cfg = _make_config(tmp_path)
+    cam = cfg.cameras["cam"]
+    assert cam.tier2.source == "chained"
+
+
+def test_tier1_source_default_is_chained(tmp_path):
+    """Tier-1 always inherits the same default; the field is just unused there."""
+    cfg = _make_config(tmp_path)
+    cam = cfg.cameras["cam"]
+    assert cam.tier1.source == "chained"
+
+
+def test_tier2_source_direct_explicit(tmp_path):
+    cfg = _make_config(tmp_path, yaml_defaults={"tier2": {"source": "direct"}})
+    cam = cfg.cameras["cam"]
+    assert cam.tier2.source == "direct"
+
+
+def test_tier2_source_invalid_raises(tmp_path):
+    with pytest.raises(ValueError, match="source must be one of"):
+        _make_config(tmp_path, yaml_defaults={"tier2": {"source": "bogus"}})
+
+
+def test_tier2_source_per_camera_override(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"tier2": {"source": "chained"}},
+        yaml_cameras={"cam": {"tier2": {"source": "direct"}}},
+    )
+    assert cfg.cameras["cam"].tier2.source == "direct"
+
+
+def test_tier2_source_per_camera_overrides_to_chained(tmp_path):
+    """Per-camera override can also flip back to chained when defaults are direct."""
+    cfg = _make_config(
+        tmp_path,
+        yaml_defaults={"tier2": {"source": "direct"}},
+        yaml_cameras={"cam": {"tier2": {"source": "chained"}}},
+    )
+    assert cfg.cameras["cam"].tier2.source == "chained"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Resolution logic — 4-layer merge
 # ═══════════════════════════════════════════════════════════════════════════════
 

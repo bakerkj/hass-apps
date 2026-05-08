@@ -36,6 +36,9 @@ _TYPE_SETTINGS_FIELDS = (
 _RECORDING_TYPES = ("continuous", "motion", "object")
 
 
+_TIER_SOURCES = ("chained", "direct")
+
+
 @dataclass
 class TierConfig:
     """Compression settings for one age tier (tier 1 or tier 2)."""
@@ -45,6 +48,12 @@ class TierConfig:
     continuous: TypeSettings  # segments with no motion and no objects
     motion: TypeSettings  # segments with motion but no object detection
     object: TypeSettings  # segments with at least one detected object
+    # Tier-2 only. "chained" (default) re-encodes tier-1 → tier-2 at min_days.
+    # "direct" encodes tier-2 from the native source at tier1.min_days
+    # (alongside tier-1), parks it at a sibling path, then swaps at min_days.
+    # Saves one generation of encode loss; costs disk during the overlap.
+    # Tier-1 ignores this field.
+    source: str = "chained"
 
 
 @dataclass
@@ -167,6 +176,7 @@ _BUILTIN_DEFAULTS: dict = {
     "tier2": {
         "enabled": False,
         "min_days": 30,
+        "source": "chained",
         "quality": 0,
         "scale_mode": "none",
         "scale_value": "",
@@ -226,11 +236,19 @@ def _resolve_tier(
     # Tier-level scalars
     enabled = defaults_tier.get("enabled", True)
     min_days = int(defaults_tier.get("min_days", 7))
+    source = str(defaults_tier.get("source", "chained"))
     if camera_tier:
         if "enabled" in camera_tier:
             enabled = bool(camera_tier["enabled"])
         if "min_days" in camera_tier:
             min_days = int(camera_tier["min_days"])
+        if "source" in camera_tier:
+            source = str(camera_tier["source"])
+    if source not in _TIER_SOURCES:
+        raise ValueError(
+            f"{camera_name}/tier{tier_num}: source must be one of "
+            f"{_TIER_SOURCES} (got {source!r})"
+        )
 
     # Base TypeSettings from defaults tier
     base = {k: defaults_tier[k] for k in _TYPE_SETTINGS_FIELDS if k in defaults_tier}
@@ -260,6 +278,7 @@ def _resolve_tier(
         continuous=types["continuous"],
         motion=types["motion"],
         object=types["object"],
+        source=source,
     )
 
 

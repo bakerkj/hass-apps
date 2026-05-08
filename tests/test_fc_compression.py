@@ -814,6 +814,148 @@ def test_housekeeping_segment_retry_file_missing(tmp_path):
     frigate_conn.close()
 
 
+def test_housekeeping_deletes_orphan_t2_siblings(tmp_path):
+    """When Frigate retires a segment, our sibling .t2.mp4 must be cleaned up.
+
+    Frigate's retention deletes the primary .mp4 but doesn't know about our
+    sibling. After the recording is gone from frigate.recordings, housekeeping
+    should delete the sibling before pruning the compress_db row.
+    """
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+
+    # Set up a recording that's already been retired by Frigate (no row in
+    # frigate.recordings) but our compress_db row is in t2_status='direct'
+    # state with a sibling file still on disk.
+    primary = tmp_path / "recordings" / "cam1" / "27.18.mp4"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"primary tier-1 file (about to be cleaned up too)")
+    sibling = fc.sibling_path(primary)
+    sibling.write_bytes(b"sibling tier-2 file (the one we need to delete)")
+    assert sibling.exists()
+
+    # compress_db row in 'direct' state, but no matching frigate.recordings row.
+    compress_conn.execute(
+        "INSERT INTO files"
+        " (recording_id, camera, path, recording_type, file_size, start_time, "
+        "  scanned_at, t1_status, t2_status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "orphan_direct",
+            "cam1",
+            str(primary),
+            "continuous",
+            1000,
+            time.time() - 100 * 86400,
+            "2026-01-01T00:00:00",
+            fc.STATUS_OK,
+            fc.STATUS_DIRECT,
+        ),
+    )
+    compress_conn.commit()
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)
+
+    # Sibling deleted by orphan-cleanup pass
+    assert not sibling.exists()
+    # Compress_db row pruned by the standard prune step
+    remaining = compress_conn.execute(
+        "SELECT recording_id FROM files WHERE recording_id='orphan_direct'"
+    ).fetchone()
+    assert remaining is None
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_housekeeping_keeps_sibling_when_recording_alive(tmp_path):
+    """A sibling file for a still-active recording must NOT be deleted."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+
+    primary = tmp_path / "recordings" / "cam1" / "27.18.mp4"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"primary")
+    sibling = fc.sibling_path(primary)
+    sibling.write_bytes(b"sibling - should survive")
+
+    # Recording IS in Frigate's table (still alive)
+    _insert_recording(
+        frigate_conn, "alive_direct", "cam1", str(primary), time.time() - 100 * 86400
+    )
+    frigate_conn.commit()
+    compress_conn.execute(
+        "INSERT INTO files"
+        " (recording_id, camera, path, recording_type, file_size, start_time, "
+        "  scanned_at, t1_status, t2_status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "alive_direct",
+            "cam1",
+            str(primary),
+            "continuous",
+            1000,
+            time.time() - 100 * 86400,
+            "2026-01-01T00:00:00",
+            fc.STATUS_OK,
+            fc.STATUS_DIRECT,
+        ),
+    )
+    compress_conn.commit()
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)
+
+    assert sibling.exists()  # Sibling preserved
+    remaining = compress_conn.execute(
+        "SELECT recording_id FROM files WHERE recording_id='alive_direct'"
+    ).fetchone()
+    assert remaining is not None  # Row preserved
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_housekeeping_handles_missing_sibling_gracefully(tmp_path):
+    """If row is t2_status='direct' but sibling is already gone, no error."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+
+    primary = tmp_path / "recordings" / "cam1" / "27.18.mp4"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"primary")
+    # No sibling file created — the cleanup path must handle this no-op.
+
+    compress_conn.execute(
+        "INSERT INTO files"
+        " (recording_id, camera, path, recording_type, file_size, start_time, "
+        "  scanned_at, t1_status, t2_status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "orphan_no_sib",
+            "cam1",
+            str(primary),
+            "continuous",
+            1000,
+            time.time() - 100 * 86400,
+            "2026-01-01T00:00:00",
+            fc.STATUS_OK,
+            fc.STATUS_DIRECT,
+        ),
+    )
+    compress_conn.commit()
+
+    ctx = _make_housekeeping_ctx(tmp_path, frigate_db, compress_conn)
+    fc.run_housekeeping(ctx)  # must not raise
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_main_loop scheduling
 # ═══════════════════════════════════════════════════════════════════════════════

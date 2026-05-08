@@ -12,10 +12,12 @@ from pathlib import Path
 from .config import Config
 from .context import CompressorContext
 from .database import (
+    STATUS_DIRECT,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
 from .ffmpeg import _TEMP_GLOB
+from .paths import delete_sibling
 from .util import _display_path, _fmt, log
 
 
@@ -130,6 +132,58 @@ def _hk_retry_segment_updates(
         )
     else:
         log("DEBUG", "No pending segment_size retries")
+
+
+def _hk_cleanup_orphan_t2_siblings(
+    cfg: Config,
+    compress_db: sqlite3.Connection,
+    compress_db_lock: threading.Lock,
+) -> None:
+    """Delete sibling tier-2 files for rows whose recording is gone from Frigate.
+
+    Frigate's retention deletes the primary ``.mp4`` segment but doesn't
+    know about our sibling ``.t2.mp4`` (it's not in its recordings table).
+    We need to clean those up before :func:`_hk_prune_orphaned` removes
+    the compress-db row.
+    """
+    with compress_db_lock:
+        rows = compress_db.execute(
+            """
+            SELECT recording_id, camera, path FROM files
+            WHERE t2_status = ?
+              AND recording_id NOT IN (SELECT id FROM frigate.recordings)
+            """,
+            (STATUS_DIRECT,),
+        ).fetchall()
+    if not rows:
+        log("DEBUG", "No orphan tier-2 sibling files to clean up")
+        return
+    deleted = 0
+    for row in rows:
+        primary = Path(row["path"])
+        if cfg.all_dry_run:
+            log(
+                "INFO",
+                f"[{row['camera']}] DRY RUN: would delete orphan sibling for "
+                f"{_display_path(primary)}",
+            )
+            continue
+        try:
+            if delete_sibling(primary):
+                deleted += 1
+                log(
+                    "DEBUG",
+                    f"[{row['camera']}] deleted orphan sibling for "
+                    f"{_display_path(primary)}",
+                )
+        except OSError as e:
+            log(
+                "WARNING",
+                f"[{row['camera']}] failed to delete orphan sibling for "
+                f"{_display_path(primary)}: {e}",
+            )
+    if deleted:
+        log("INFO", f"Deleted {deleted} orphan tier-2 sibling files")
 
 
 def _hk_prune_orphaned(
@@ -258,6 +312,7 @@ def _run_housekeeping_inner(
     log("INFO", "── Housekeeping starting")
     _hk_remove_temp_files(cfg)
     _hk_retry_segment_updates(cfg, compress_db, compress_db_lock)
+    _hk_cleanup_orphan_t2_siblings(cfg, compress_db, compress_db_lock)
     _hk_prune_orphaned(cfg, compress_db, compress_db_lock)
     _hk_log_savings_summary(compress_db, compress_db_lock)
     _hk_log_recent_errors(compress_db, compress_db_lock)
