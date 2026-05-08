@@ -416,11 +416,12 @@ def compress_direct(
 ) -> bool:
     """Encode tier-1 + tier-2 from native source in one ffmpeg pass.
 
-    Used at the day-8 boundary when ``cam.tier2.source == "direct"`` and
-    both tier-1 and tier-2 are enabled for ``recording_type``.  Tier-1
-    replaces the native file at the primary path (matching ``compress_one``
-    behavior); tier-2 lands at the sibling ``.t2.mp4`` path and stays there
-    until the day-30 swap (PR3) renames it onto the primary path.
+    Used when a segment reaches ``tier1.min_days`` and
+    ``cam.tier2.source == "direct"`` and both tier-1 and tier-2 are
+    enabled for ``recording_type``.  Tier-1 replaces the native file at
+    the primary path (matching ``compress_one`` behavior); tier-2 lands
+    at the sibling ``.t2.mp4`` path and stays there until the tier-2
+    swap renames it onto the primary path.
 
     Falls back to ``compress_one(tier=1)`` when tier-2 is not enabled for
     the recording_type — a single encode is the right thing for that case.
@@ -496,7 +497,7 @@ def compress_direct(
         """Mark both tiers as errored and return False — the native file
         is left in place (atomic-replace hasn't happened yet), so this is
         recoverable: the chained eligibility query will pick the row back
-        up at day-30 and try again."""
+        up at ``tier2.min_days`` and try again."""
         rec(
             tier=1,
             status=STATUS_ERROR,
@@ -643,7 +644,7 @@ def compress_direct(
         # If the tier-1 rename fails, both temps are kept (cleaned up in
         # finally).  If the tier-2 rename fails after tier-1 succeeded,
         # we still get a valid tier-1 file in place but mark t2 as errored
-        # so the chained query picks it up at day-30.
+        # so the chained query picks it up at ``tier2.min_days``.
         sib = sibling_path(filepath)
         try:
             t1_tmp.replace(filepath)
@@ -728,10 +729,10 @@ def swap_t2(
     """Swap a sibling tier-2 file into the primary path.
 
     Used when ``t2_status='direct'`` AND the segment has reached
-    ``tier2.min_days``.  The sibling ``.t2.mp4`` was encoded at the day-8
-    boundary by ``compress_direct``; this function atomically renames it
-    onto the primary path (replacing the tier-1 file) and updates Frigate's
-    ``segment_size`` to match.
+    ``tier2.min_days``.  The sibling ``.t2.mp4`` was encoded at the
+    tier-1 boundary by ``compress_direct``; this function atomically
+    renames it onto the primary path (replacing the tier-1 file) and
+    updates Frigate's ``segment_size`` to match.
 
     Falls back to ``compress_one(tier=2)`` (chained re-encode of the
     existing tier-1 file) if the sibling is missing — disk corruption,

@@ -469,7 +469,7 @@ def build_direct_ffmpeg_cmd(
 
     Used in direct mode: one read of the native source, two GPU encodes,
     yielding tier-1 at ``t1_output`` (replacement for native) and tier-2 at
-    ``t2_output`` (sibling-parked, awaiting day-30 swap).  Saves one
+    ``t2_output`` (sibling-parked, awaiting tier-2 swap).  Saves one
     generation of encode loss vs native→tier-1→tier-2.
 
     Audio is dropped (``-an``) on both outputs.  Cameras that need audio

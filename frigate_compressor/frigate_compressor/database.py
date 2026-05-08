@@ -18,7 +18,7 @@ STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_SEGMENT_UPDATE_FAILED = "segment_update_failed"
 # Tier-2 only: encoded ahead of its activation date (sibling .t2 file on disk),
-# waiting to be swapped in at the day-30 boundary. Set when tier2.source="direct".
+# waiting to be swapped in at tier2.min_days. Set when tier2.source="direct".
 STATUS_DIRECT = "direct"
 
 SCHEMA = """

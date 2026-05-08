@@ -244,8 +244,8 @@ def _pace_then_compress(
     if tier == 2 and t2_status == STATUS_DIRECT:
         return swap_t2(rid, path, camera, rtype, encoder, ctx)
     # Dispatch to direct (dual-output) when the camera opts in via
-    # tier2.source="direct" AND we're at the day-8 boundary AND tier-2 is
-    # actually enabled for this rtype.  Otherwise fall through to the
+    # tier2.source="direct" AND we're at the tier-1 boundary AND tier-2
+    # is actually enabled for this rtype.  Otherwise fall through to the
     # single-output compress_one.
     if tier == 1:
         cam_cfg = ctx.cfg.cameras.get(camera)
