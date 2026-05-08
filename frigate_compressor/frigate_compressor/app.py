@@ -142,7 +142,11 @@ def main() -> int:
         log("INFO", f"  ── {cam_name}{flag_str}")
         for tier_num, tier_cfg in ((1, cam_cfg.tier1), (2, cam_cfg.tier2)):
             tier_flag = "" if tier_cfg.enabled else " [DISABLED]"
-            log("INFO", f"      Tier {tier_num} (>{tier_cfg.min_days}d){tier_flag}:")
+            extra = f" source={tier_cfg.source}" if tier_num == 2 else ""
+            log(
+                "INFO",
+                f"      Tier {tier_num} (>{tier_cfg.min_days}d){extra}{tier_flag}:",
+            )
             for rtype in _RECORDING_TYPES:
                 ts = getattr(tier_cfg, rtype)
                 log("INFO", f"        {rtype:<12}: {_fmt_type(ts)}")

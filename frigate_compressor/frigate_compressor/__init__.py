@@ -32,6 +32,7 @@ from .config import (  # noqa: E402,F401
 from .context import CompressorContext  # noqa: E402,F401
 from .database import (  # noqa: E402,F401
     STATUS_ERROR,
+    STATUS_DIRECT,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
     _attach_frigate,
@@ -64,6 +65,14 @@ from .ffmpeg import (  # noqa: E402,F401
     detect_encoder,
 )
 from .housekeeping import run_housekeeping  # noqa: E402,F401
+from .paths import (  # noqa: E402,F401
+    T2_INFIX,
+    delete_sibling,
+    is_sibling_path,
+    primary_from_sibling,
+    sibling_exists,
+    sibling_path,
+)
 from .mqtt import (  # noqa: E402,F401
     MqttPublisher,
     RateTracker,
