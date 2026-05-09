@@ -33,6 +33,7 @@ from .config import (  # noqa: E402,F401
 )
 from .context import CompressorContext  # noqa: E402,F401
 from .database import (  # noqa: E402,F401
+    SCHEMA,
     STATUS_ERROR,
     STATUS_DIRECT,
     STATUS_OK,

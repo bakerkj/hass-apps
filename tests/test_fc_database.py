@@ -326,9 +326,11 @@ def _stats_rows(conn: sqlite3.Connection) -> dict:
             "tier0_bytes": r[3],
             "tier1_bytes": r[4],
             "tier2_bytes": r[5],
+            "tier2_pre_encoded_bytes": r[6],
         }
         for r in conn.execute(
-            "SELECT camera, rtype, files_count, tier0_bytes, tier1_bytes, tier2_bytes"
+            "SELECT camera, rtype, files_count,"
+            " tier0_bytes, tier1_bytes, tier2_bytes, tier2_pre_encoded_bytes"
             " FROM files_stats"
         )
     }
@@ -353,6 +355,7 @@ def test_files_stats_insert_tier0(tmp_path):
         "tier0_bytes": 1000,
         "tier1_bytes": 0,
         "tier2_bytes": 0,
+        "tier2_pre_encoded_bytes": 0,
     }
     _verify(conn)
 
@@ -389,6 +392,7 @@ def test_files_stats_update_tier0_to_tier1(tmp_path):
         "tier0_bytes": 0,
         "tier1_bytes": 400,
         "tier2_bytes": 0,
+        "tier2_pre_encoded_bytes": 0,
     }
     _verify(conn)
 
@@ -412,6 +416,7 @@ def test_files_stats_update_tier1_to_tier2(tmp_path):
         "tier0_bytes": 0,
         "tier1_bytes": 0,
         "tier2_bytes": 100,
+        "tier2_pre_encoded_bytes": 0,
     }
     _verify(conn)
 
@@ -511,6 +516,7 @@ def test_files_stats_multiple_cameras_and_tiers(tmp_path):
         "tier0_bytes": 100,
         "tier1_bytes": 0,
         "tier2_bytes": 0,
+        "tier2_pre_encoded_bytes": 0,
     }
     # front/motion: 50 @ tier1
     assert s[("front", "motion")]["tier1_bytes"] == 50
@@ -537,6 +543,129 @@ def test_files_stats_backfill_from_existing_files(tmp_path):
     s = _stats_rows(conn)
     assert s[("cam", "motion")]["files_count"] == 1
     assert s[("cam", "motion")]["tier0_bytes"] == 700
+    _verify(conn)
+
+
+def test_files_stats_sibling_on_direct_status(tmp_path):
+    """A row in t2_status='direct' contributes its t2_file_size to the
+    sibling counter on the same camera/rtype bucket.  tier1_bytes still
+    reflects the primary (tier-1) file separately."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size, t2_status, t2_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 400, 'direct', 80)"
+    )
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")] == {
+        "files_count": 1,
+        "tier0_bytes": 0,
+        "tier1_bytes": 400,
+        "tier2_bytes": 0,
+        "tier2_pre_encoded_bytes": 80,
+    }
+    _verify(conn)
+
+
+def test_files_stats_sibling_drops_on_swap_to_ok(tmp_path):
+    """When swap_t2 flips 'direct' → 'ok' the sibling counter drops and
+    bytes move into tier2_bytes.  Mirrors the on-disk swap exactly."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size, t2_status, t2_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'continuous', 1000, 'ok', 400, 'direct', 80)"
+    )
+    conn.commit()
+    conn.execute("UPDATE files SET t2_status = 'ok' WHERE recording_id = 'r1'")
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "continuous")] == {
+        "files_count": 1,
+        "tier0_bytes": 0,
+        "tier1_bytes": 0,
+        "tier2_bytes": 80,
+        "tier2_pre_encoded_bytes": 0,
+    }
+    _verify(conn)
+
+
+def test_files_stats_sibling_drops_on_direct_to_error(tmp_path):
+    """If a direct row's swap fails and t2_status flips to 'error', the
+    sibling counter drops back to 0 (the on-disk file is gone or unusable)."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size, t2_status, t2_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 400, 'direct', 80)"
+    )
+    conn.commit()
+    conn.execute("UPDATE files SET t2_status = 'error' WHERE recording_id = 'r1'")
+    conn.commit()
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")]["tier2_pre_encoded_bytes"] == 0
+    _verify(conn)
+
+
+def test_files_stats_sibling_drops_on_delete(tmp_path):
+    """Deleting a 'direct' row removes its sibling-bytes contribution."""
+    conn = _open_compress_db(tmp_path)
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size, t2_status, t2_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 400, 'direct', 80)"
+    )
+    conn.commit()
+    conn.execute("DELETE FROM files WHERE recording_id = 'r1'")
+    conn.commit()
+    s = _stats_rows(conn)
+    if ("cam", "motion") in s:
+        assert s[("cam", "motion")]["tier2_pre_encoded_bytes"] == 0
+    _verify(conn)
+
+
+def test_files_stats_migrates_existing_db(tmp_path):
+    """Reopening a DB that pre-dates ``tier2_pre_encoded_bytes`` adds the
+    column, drops the stale triggers, and backfills via the audit pass.
+    """
+    db_path = tmp_path / "compress.db"
+    # Hand-build a pre-migration files_stats schema (no sibling column,
+    # old triggers).  The ``files`` schema can be the current one because
+    # the migration only touches files_stats.
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.executescript(fc.SCHEMA)
+    conn.executescript(
+        """
+        CREATE TABLE files_stats (
+            camera       TEXT    NOT NULL,
+            rtype        TEXT    NOT NULL,
+            files_count  INTEGER NOT NULL DEFAULT 0,
+            tier0_bytes  INTEGER NOT NULL DEFAULT 0,
+            tier1_bytes  INTEGER NOT NULL DEFAULT 0,
+            tier2_bytes  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (camera, rtype)
+        );
+        """
+    )
+    # A 'direct' row that should contribute to sibling bytes after migration.
+    conn.execute(
+        "INSERT INTO files (recording_id, camera, path, recording_type, file_size,"
+        " t1_status, t1_file_size, t2_status, t2_file_size)"
+        " VALUES ('r1', 'cam', '/p', 'motion', 1000, 'ok', 400, 'direct', 80)"
+    )
+    conn.commit()
+    conn.close()
+
+    # Migration runs on reopen — adds the column, recreates triggers,
+    # detects drift, backfills.
+    conn = _open_compress_db(tmp_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(files_stats)").fetchall()}
+    assert "tier2_pre_encoded_bytes" in cols
+    s = _stats_rows(conn)
+    assert s[("cam", "motion")]["tier1_bytes"] == 400
+    assert s[("cam", "motion")]["tier2_pre_encoded_bytes"] == 80
     _verify(conn)
 
 
