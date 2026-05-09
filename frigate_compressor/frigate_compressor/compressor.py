@@ -352,11 +352,10 @@ def _compress_one_inner(
             )
 
         # Safety: confirm Frigate still has this recording in its DB.
-        # Closes the race where Frigate removes the DB row (and possibly the
-        # file) between the checks above and the atomic replace below.
-        # Without this, we could create an orphan on disk that Frigate never
-        # cleans up.  Read via the attached ``frigate`` schema on
-        # compress_db so it shares the daemon's single connection.
+        # Narrows the race where Frigate removes the DB row (and possibly
+        # the file) between the checks above and the atomic replace below.
+        # Read via the attached ``frigate`` schema on compress_db so it
+        # shares the daemon's single connection.
         with compress_db_lock:
             db_row = compress_db.execute(
                 "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
@@ -384,6 +383,28 @@ def _compress_one_inner(
                 f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
             )
             return fail(f"replace failed: {e}", size_after=size_after)
+
+        # Re-check Frigate's row AFTER the rename: closes the residual
+        # window where Frigate could DELETE the row + unlink the file
+        # between our pre-replace check and the rename itself.  In that
+        # case ``tmpfile.replace(filepath)`` re-creates the file with
+        # our content but Frigate has no record of it — orphan.  Detect
+        # and clean up here.
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+        if db_row is None:
+            log(
+                "WARNING",
+                f"[{camera}] recording removed by Frigate during atomic replace "
+                f"— unlinking orphan: {_display_path(filepath)}",
+            )
+            try:
+                filepath.unlink(missing_ok=True)
+            except OSError as e:
+                log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+            return fail("recording removed by Frigate during atomic replace")
     finally:
         # Ensure temp file is always cleaned up, even on thread cancellation.
         tmpfile.unlink(missing_ok=True)
@@ -730,6 +751,28 @@ def compress_direct(
                 f"[{camera}] tier-2 sibling rename failed after tier-1 "
                 f"replace succeeded: {e}",
             )
+
+        # Re-check Frigate's row AFTER both renames: closes the residual
+        # window where Frigate could DELETE the row + unlink the primary
+        # between our pre-replace check and the renames.  In that case
+        # both ``replace`` calls re-create files Frigate has no record
+        # of — orphan primary + orphan sibling.  Detect and clean up.
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+        if db_row is None:
+            log(
+                "WARNING",
+                f"[{camera}] recording removed by Frigate during direct replace "
+                f"— unlinking orphan primary + sibling: {_display_path(filepath)}",
+            )
+            for orphan in (filepath, sib):
+                try:
+                    orphan.unlink(missing_ok=True)
+                except OSError as e:
+                    log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+            return fail_both("recording removed by Frigate during atomic replace")
     finally:
         # Always clean up temp files (replace() consumes them, so this is
         # only a no-op on the success path).
@@ -993,6 +1036,32 @@ def swap_t2(
             f"[{camera}] sibling→primary rename failed: {e}",
         )
         rec(status=STATUS_ERROR, size=None, error_msg=f"swap rename failed: {e}")
+        return False
+
+    # Re-check Frigate's row AFTER the rename: if Frigate DELETED the
+    # row (and unlinked the primary) between our pre-replace check and
+    # the rename, ``sib.replace(filepath)`` re-created the file with
+    # tier-2 content but Frigate has no record of it.  Clean up the
+    # orphan primary.
+    with compress_db_lock:
+        db_row = compress_db.execute(
+            "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+        ).fetchone()
+    if db_row is None:
+        log(
+            "WARNING",
+            f"[{camera}] recording removed by Frigate during swap rename "
+            f"— unlinking orphan: {_display_path(filepath)}",
+        )
+        try:
+            filepath.unlink(missing_ok=True)
+        except OSError as e:
+            log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+        rec(
+            status=STATUS_ERROR,
+            size=None,
+            error_msg="recording removed by Frigate during swap rename",
+        )
         return False
 
     # Source dims + target settings for the log line — same shape as the
