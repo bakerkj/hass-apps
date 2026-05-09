@@ -20,6 +20,15 @@ PROBE_SLEEP_SEC = 60.0
 
 _PROBE_BATCH_SIZE = 5000
 
+# Hold ``compress_db_lock`` in chunks of this size when persisting probe
+# results.  Each chunk is one INSERT loop + one commit; releasing the
+# lock between chunks lets encode workers / swap loop / MQTT publisher
+# interleave their own writes during a backlog catch-up (where a single
+# ``_PROBE_BATCH_SIZE``-row transaction would hold the lock for several
+# seconds).  Sized to keep the worst-case single-chunk hold under ~100ms
+# on the production hardware.
+_PROBE_STORE_CHUNK_SIZE = 500
+
 # Incremental-scan knobs (see ``run_probe_loop``):
 #  * ``_PROBE_SAFETY_WINDOW_SEC``: incremental queries scan recordings whose
 #    ``start_time`` is >= (cursor - this), giving out-of-order arrivals or
@@ -247,10 +256,14 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
         limiter.set_target(len(unprobed))
         # ffprobe (a subprocess) runs OUTSIDE the lock so other threads
         # can use compress_db while we wait on file IO.  We collect the
-        # probe results, then take the lock once for the bulk INSERT +
-        # commit.  Batching the commit (rather than per-row) avoids both
-        # WAL frame amplification and the cache-invalidation cycle that
-        # used to force eligibility queries to re-read on every commit.
+        # probe results, then take the lock in CHUNKS for the bulk
+        # INSERT + commit.  Batching the commit (rather than per-row)
+        # avoids both WAL frame amplification and the cache-
+        # invalidation cycle that used to force eligibility queries to
+        # re-read on every commit; chunking the COMMIT (rather than one
+        # giant transaction) keeps any single lock acquisition short
+        # enough that probe-loop catch-up doesn't starve the encode
+        # workers / swap loop / MQTT publisher of the shared lock.
         probe_results: list[tuple[dict, dict]] = []
         for rec in unprobed:
             if stopping.is_set():
@@ -267,26 +280,30 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
             if rec["start_time"] > max_observed:
                 max_observed = rec["start_time"]
 
-        try:
-            with compress_db_lock:
-                try:
-                    for rec, info in probe_results:
-                        _store_probe(
-                            compress_db,
-                            rec["recording_id"],
-                            rec["camera"],
-                            rec["path"],
-                            info,
-                            recording_type=rec.get("recording_type"),
-                            start_time=rec.get("start_time"),
-                        )
-                        probed += 1
-                    compress_db.commit()
-                except Exception:
-                    compress_db.rollback()
-                    raise
-        except Exception as e:
-            log("ERROR", f"Probe loop: store batch failed: {e}")
+        for i in range(0, len(probe_results), _PROBE_STORE_CHUNK_SIZE):
+            chunk = probe_results[i : i + _PROBE_STORE_CHUNK_SIZE]
+            try:
+                with compress_db_lock:
+                    try:
+                        for rec, info in chunk:
+                            _store_probe(
+                                compress_db,
+                                rec["recording_id"],
+                                rec["camera"],
+                                rec["path"],
+                                info,
+                                recording_type=rec.get("recording_type"),
+                                start_time=rec.get("start_time"),
+                            )
+                            probed += 1
+                        compress_db.commit()
+                    except Exception:
+                        compress_db.rollback()
+                        raise
+            except Exception as e:
+                log("ERROR", f"Probe loop: store chunk failed: {e}")
+                # Continue with the next chunk; partially-stored rows
+                # from previous chunks remain committed.
 
         # Cursor advancement:
         #  * If a full scan returned a FULL batch (==LIMIT rows), there's
