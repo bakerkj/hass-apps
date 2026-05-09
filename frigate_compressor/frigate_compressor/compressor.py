@@ -31,6 +31,23 @@ from .paths import sibling_path
 from .util import _display_path, _fmt, log
 
 
+def _format_src_info(probe_data: dict | None) -> str:
+    """``WIDTHxHEIGHT`` left-padded to 10 — same shape across all log paths."""
+    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
+        return f"{'?x?':<10}"
+    return f"{probe_data['width']}x{probe_data['height']:<10}"
+
+
+def _format_tgt_info(ts: TypeSettings) -> str:
+    """``→<scale> q<quality>`` left-padded to 14 — matches the chained log shape."""
+    tgt_res = ""
+    if ts.scale_mode != "none" and ts.scale_value:
+        tgt_res = ts.scale_value.replace(":", "x") + " "
+    elif ts.scale_mode == "halve":
+        tgt_res = "halve "
+    return f"{f'→{tgt_res}q{ts.quality}':<14}"
+
+
 def compress_one(
     recording_id: str,
     path: str,
@@ -171,17 +188,8 @@ def _compress_one_inner(
         log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
-    src_info = f"{probe_data['width']}x{probe_data['height']}"
-    src_info = f"{src_info:<10}"
-
-    # Format target settings for log messages.
-    tgt_res = ""
-    if ts.scale_mode != "none" and ts.scale_value:
-        tgt_res = ts.scale_value.replace(":", "x") + " "
-    elif ts.scale_mode == "halve":
-        tgt_res = "halve "
-    tgt_info = f"→{tgt_res}q{ts.quality}"
-    tgt_info = f"{tgt_info:<14}"
+    src_info = _format_src_info(probe_data)
+    tgt_info = _format_tgt_info(ts)
 
     # Temp file is named .tmp.{recording_id}.mp4 — unique per job, easy to
     # identify as a temp file by housekeeping without affecting other jobs.
@@ -364,7 +372,8 @@ def _compress_one_inner(
         "INFO",
         f"[{camera:<{cfg.cam_name_width}}] t{tier}:{recording_type[:3]}  "
         f"{_display_path(filepath)}  {src_info}{tgt_info}"
-        f"{_fmt(size_before, 10)}→{_fmt(size_after, 10)}  {pct:>3.0f}%  {duration:>5.1f}s",
+        f"{_fmt(size_before, 10)}→{_fmt(size_after, 10)}  {pct:>3.0f}%  "
+        f"{'':>6}  {duration:>5.1f}s",
     )
 
     # Update segment_size in Frigate's DB (MB, float) via the attached
@@ -530,8 +539,9 @@ def compress_direct(
         log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
-    src_info = f"{probe_data['width']}x{probe_data['height']}"
-    src_info = f"{src_info:<10}"
+    src_info = _format_src_info(probe_data)
+    t1_tgt_info = _format_tgt_info(t1_ts)
+    t2_tgt_info = _format_tgt_info(t2_ts)
 
     # Distinct temp filenames for the two outputs (compress_one uses a
     # single .tmp.{rid}.mp4 per job; here we suffix with .t1/.t2).
@@ -542,10 +552,18 @@ def compress_direct(
     log("DEBUG", f"[{camera}]   cmd: {' '.join(cmd)}")
 
     if dry_run:
+        # Two lines mirroring chained DRY RUN — same input file, two outputs.
+        cam_prefix = f"[{camera:<{cfg.cam_name_width}}]"
+        ts = _display_path(filepath)
         log(
             "INFO",
-            f"[{camera:<{cfg.cam_name_width}}] DRY RUN direct:{recording_type[:3]}  "
-            f"{_display_path(filepath)}  {src_info}{_fmt(size_before, 10)}",
+            f"{cam_prefix} DRY RUN t1:{recording_type[:3]}  {ts}  "
+            f"{src_info}{t1_tgt_info}{_fmt(size_before, 10)}",
+        )
+        log(
+            "INFO",
+            f"{cam_prefix} DRY RUN t2:{recording_type[:3]}  {ts}  "
+            f"{src_info}{t2_tgt_info}{_fmt(size_before, 10)}",
         )
         return True
 
@@ -672,14 +690,27 @@ def compress_direct(
         t1_tmp.unlink(missing_ok=True)
         t2_tmp.unlink(missing_ok=True)
 
+    # Two chained-style lines: t1 carries the full encode duration; t2
+    # shows ``direct`` in the duration column to flag that it's a sibling
+    # of a direct encode rather than its own encode pass.  Sizes mirror
+    # the chained semantics: t1 line is original→t1, t2 line is t1→t2.
     pct_t1 = ((size_before - t1_size) / size_before * 100) if size_before else 0.0
-    pct_t2 = ((size_before - t2_size) / size_before * 100) if size_before else 0.0
+    pct_t2 = ((t1_size - t2_size) / t1_size * 100) if t1_size else 0.0
+    cam_prefix = f"[{camera:<{cfg.cam_name_width}}]"
+    ts = _display_path(filepath)
     log(
         "INFO",
-        f"[{camera:<{cfg.cam_name_width}}] direct:{recording_type[:3]}  "
-        f"{_display_path(filepath)}  {src_info}"
-        f"{_fmt(size_before, 10)} → t1 {_fmt(t1_size, 10)} ({pct_t1:>3.0f}%)"
-        f" + t2 {_fmt(t2_size, 10)} ({pct_t2:>3.0f}%)  {duration:>5.1f}s",
+        f"{cam_prefix} t1:{recording_type[:3]}  {ts}  "
+        f"{src_info}{t1_tgt_info}"
+        f"{_fmt(size_before, 10)}→{_fmt(t1_size, 10)}  {pct_t1:>3.0f}%  "
+        f"{'':>6}  {duration:>5.1f}s",
+    )
+    log(
+        "INFO",
+        f"{cam_prefix} t2:{recording_type[:3]}  {ts}  "
+        f"{src_info}{t2_tgt_info}"
+        f"{_fmt(t1_size, 10)}→{_fmt(t2_size, 10)}  {pct_t2:>3.0f}%  "
+        f"{'direct':>6}  {0.0:>5.1f}s",
     )
 
     # DB updates: tier-1 ok, tier-2 'direct' (or 'error' if sibling rename
@@ -819,8 +850,11 @@ def swap_t2(
         return False
 
     # Atomic rename: sibling → primary path.  After this point, the primary
-    # path holds tier-2 content and the sibling no longer exists.
+    # path holds tier-2 content and the sibling no longer exists.  Stat
+    # the primary (= tier-1 file) BEFORE the rename so we can log the
+    # tier-1→tier-2 size delta in the same shape as a chained ``t2:`` line.
     try:
+        t1_size = filepath.stat().st_size
         t2_size = sib.stat().st_size
         sib.replace(filepath)
     except Exception as e:
@@ -831,10 +865,30 @@ def swap_t2(
         rec(status=STATUS_ERROR, size=None, error_msg=f"swap rename failed: {e}")
         return False
 
+    # Source dims + target settings for the log line — same shape as the
+    # chained ``t2:`` line.  ``swap`` in the duration column flags this
+    # as a rename rather than its own encode pass.  Both lookups are
+    # tolerant of NULL/missing data — log formatting falls back to
+    # ``?x?`` / ``→?`` rather than failing the swap.
+    with compress_db_lock:
+        probe_row = compress_db.execute(
+            "SELECT width, height FROM files WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+    src_info = _format_src_info(
+        {"width": probe_row["width"], "height": probe_row["height"]}
+        if probe_row is not None
+        else None
+    )
+    t2_ts = getattr(cam_cfg.tier2, recording_type, None)
+    tgt_info = _format_tgt_info(t2_ts) if t2_ts is not None else f"{'→?':<14}"
+    pct = ((t1_size - t2_size) / t1_size * 100) if t1_size else 0.0
     log(
         "INFO",
-        f"[{camera:<{cfg.cam_name_width}}] swap:{recording_type[:3]}  "
-        f"{_display_path(filepath)}  →  t2 {_fmt(t2_size, 10)}",
+        f"[{camera:<{cfg.cam_name_width}}] t2:{recording_type[:3]}  "
+        f"{_display_path(filepath)}  {src_info}{tgt_info}"
+        f"{_fmt(t1_size, 10)}→{_fmt(t2_size, 10)}  {pct:>3.0f}%  "
+        f"{'swap':>6}  {0.0:>5.1f}s",
     )
 
     # Update Frigate's segment_size to the tier-2 file's size.
