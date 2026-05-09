@@ -14,6 +14,7 @@ filesystem).  The eligibility query and its per-window cap live in
 from __future__ import annotations
 
 import threading
+import traceback
 from collections import Counter
 
 from .compressor import swap_t2
@@ -85,4 +86,11 @@ def run_swap_loop(
                     ctx,
                 )
             except Exception as e:
-                log("ERROR", f"[{r['camera']}] swap failed: {e}")
+                # Include the traceback so post-rename failures (e.g.
+                # primary holds tier-2 content but the t2 status write
+                # never landed) leave a forensic trail — without it,
+                # silent orphan-state bugs are hard to diagnose later.
+                log(
+                    "ERROR",
+                    f"[{r['camera']}] swap failed: {e}\n{traceback.format_exc()}",
+                )
