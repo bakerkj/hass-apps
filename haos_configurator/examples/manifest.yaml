@@ -25,7 +25,12 @@ files:
     on_change: [reload_udev, trigger_block]
 
 actions:
+  # Array form (recommended): each element is one argv slot.  No shell
+  # parsing, so paths and args cannot inject.  No pipes/redirects.
   reload_udev:
-    run: udevadm control --reload-rules
+    run: [udevadm, control, --reload-rules]
   trigger_block:
-    run: udevadm trigger --subsystem-match=block --action=add
+    run: [udevadm, trigger, --subsystem-match=block, --action=add]
+  # String form is also accepted and is exec'd via `sh -c` — use it if
+  # you need a shell (pipes, redirects, env vars, …):
+  #   run: "logger -t haos_configurator 'media rule reloaded' >/dev/null 2>&1"

@@ -69,6 +69,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(dst, str) or not dst.startswith("/"):
             log.error("Manifest dst must be an absolute path: %r", dst)
             sys.exit(1)
+    for name, action in actions.items():
+        if not isinstance(action, dict):
+            continue  # missing-run is warned at run time, not a manifest error
+        cmd = action.get("run")
+        if cmd is None:
+            continue
+        if isinstance(cmd, list):
+            if not all(isinstance(x, str) for x in cmd):
+                log.error("Action '%s' run list contains non-string elements", name)
+                sys.exit(1)
+        elif not isinstance(cmd, str):
+            log.error("Action '%s' run must be a string or list of strings", name)
+            sys.exit(1)
 
 
 def default_mode_for(name: str) -> str:

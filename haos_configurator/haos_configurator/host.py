@@ -52,13 +52,23 @@ def host_sha256(path: str) -> str | None:
     return out.split(maxsplit=1)[0] if out else None
 
 
-def run_user_action(cmd: str) -> int:
-    """Run a user-supplied action *shell string* on the host via ``sh -c``.
+def run_user_action(cmd: str | list[str]) -> int:
+    """Run a user-supplied action on the host.
 
-    This is the ONE call site in the add-on that goes through a shell —
-    by design.  Action commands are user-authored shell strings and need
-    a shell to interpret pipes, redirects, env vars, etc.  ``cmd`` comes
-    straight from the manifest and is never assembled from internal
-    identifiers, so there is no internal escaping concern.
+    Two forms are accepted:
+
+    * **Array form** (recommended): ``cmd`` is a list of argv strings,
+      exec'd directly via ``nsenter``.  No shell, so paths and arguments
+      cannot shell-inject.  No pipes, redirects, or env-var expansion.
+    * **String form**: ``cmd`` is a shell string, exec'd via
+      ``nsenter sh -c``.  Use this if the action genuinely needs a shell
+      (pipes, redirects, env vars, etc.).
+
+    Output is inherited (stdout/stderr go to the add-on log) so the user
+    sees what their command printed.
     """
-    return subprocess.run([*_NSENTER, "sh", "-c", cmd], check=False).returncode
+    if isinstance(cmd, list):
+        argv = [*_NSENTER, *cmd]
+    else:
+        argv = [*_NSENTER, "sh", "-c", cmd]
+    return subprocess.run(argv, check=False).returncode

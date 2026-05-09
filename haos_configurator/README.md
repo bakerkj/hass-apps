@@ -54,8 +54,10 @@ files:
     on_change: [reload_udev, trigger_block]
 
 actions:
-  reload_udev: { run: "udevadm control --reload-rules" }
-  trigger_block: { run: "udevadm trigger --subsystem-match=block --action=add" }
+  reload_udev:
+    run: [udevadm, control, --reload-rules]
+  trigger_block:
+    run: [udevadm, trigger, --subsystem-match=block, --action=add]
 ```
 
 - **`files[]`** — what to install. `src` is relative to the add-on's config
@@ -64,8 +66,13 @@ actions:
   doesn't reinterpret it as a decimal integer.
 - **`on_change`** — a list of named actions to fire if (and only if) this file
   was actually written on this run.
-- **`actions`** — a map of `name → {run: "shell command"}`. Commands run in the
-  host's mount/uts/ipc namespaces via `nsenter -t 1`.
+- **`actions`** — a map of `name → {run: …}`. Commands run in the host's
+  mount/uts/ipc namespaces via `nsenter -t 1`. Two forms of `run` are accepted:
+  - **Array form** (recommended): `run: [argv0, argv1, …]`. Each element is one
+    argv slot. No shell, so paths and arguments cannot shell-inject. No pipes,
+    redirects, or env-var expansion.
+  - **String form**: `run: "shell command"`. Exec'd via `sh -c`. Use this if
+    your action genuinely needs shell features (pipes, redirects, env vars).
 
 ### How `on_change` is resolved
 
@@ -97,9 +104,9 @@ IO from `/config`, which Supervisor bind-mounts from
 operations — hashing existing destinations, streaming source bytes into
 HAOS-persistent paths, and running `on_change` actions — go through `nsenter`.
 Every internal `nsenter` call passes argv as a list, so paths in the manifest
-can contain spaces, quotes, or other shell metacharacters without injecting; the
-only `sh -c` invocation in the add-on is for user-authored `actions[].run`
-strings, which are by definition shell commands.
+can contain spaces, quotes, or other shell metacharacters without injecting. The
+add-on uses `sh -c` only when an `actions[].run` is given as a string;
+array-form actions are exec'd directly without a shell.
 
 ## First run
 

@@ -111,6 +111,34 @@ def test_validate_manifest_empty_is_ok() -> None:
     manifest.validate_manifest({})
 
 
+def test_validate_manifest_run_list_of_strings_ok() -> None:
+    m = {
+        "files": [
+            {"src": "a", "dst": "/x", "on_change": ["reload"]},
+        ],
+        "actions": {"reload": {"run": ["udevadm", "control", "--reload-rules"]}},
+    }
+    manifest.validate_manifest(m)
+
+
+def test_validate_manifest_run_list_with_non_string_rejected() -> None:
+    m = {
+        "files": [],
+        "actions": {"x": {"run": ["udevadm", 42]}},
+    }
+    with pytest.raises(SystemExit):
+        manifest.validate_manifest(m)
+
+
+def test_validate_manifest_run_non_str_non_list_rejected() -> None:
+    m = {
+        "files": [],
+        "actions": {"x": {"run": {"not": "valid"}}},
+    }
+    with pytest.raises(SystemExit):
+        manifest.validate_manifest(m)
+
+
 # ---------------------------------------------------------------------------
 # load_manifest
 # ---------------------------------------------------------------------------
@@ -206,3 +234,44 @@ def test_host_run_check_false_does_not_raise() -> None:
         # Should not raise even though returncode != 0.
         proc = host.host_run(["false"], check=False)
     assert proc.returncode == 17
+
+
+# ---------------------------------------------------------------------------
+# host.run_user_action — array form bypasses sh -c
+# ---------------------------------------------------------------------------
+
+
+def test_run_user_action_array_form_no_shell() -> None:
+    """Array form: argv is exec'd directly via nsenter — no ``sh -c``."""
+    with patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        host.run_user_action(["udevadm", "control", "--reload-rules"])
+
+    args, _ = run.call_args
+    argv = args[0]
+    assert argv == [
+        "nsenter",
+        "-t",
+        "1",
+        "-m",
+        "-u",
+        "-i",
+        "--",
+        "udevadm",
+        "control",
+        "--reload-rules",
+    ]
+    # No "sh" / "-c" anywhere in the invocation.
+    assert "sh" not in argv
+    assert "-c" not in argv
+
+
+def test_run_user_action_string_form_uses_sh_c() -> None:
+    """String form: still goes through ``sh -c`` so pipes/redirects work."""
+    with patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        host.run_user_action("echo hi | logger")
+
+    args, _ = run.call_args
+    argv = args[0]
+    assert argv[-3:] == ["sh", "-c", "echo hi | logger"]
