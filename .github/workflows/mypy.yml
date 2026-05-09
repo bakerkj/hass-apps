@@ -20,4 +20,5 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run:
           uv run mypy container_info_mqtt ffmpeg_snapshotter frigate_compressor
-          intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt
+          haos_configurator intel_gpu_top_mqtt system_resource_tuner
+          turbostat_mqtt

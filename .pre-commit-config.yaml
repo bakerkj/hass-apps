@@ -109,12 +109,13 @@ repos:
         name: mypy
         entry: uv run mypy
         language: system
-        files: ^(container_info_mqtt|ffmpeg_snapshotter|frigate_compressor|intel_gpu_top_mqtt|system_resource_tuner|turbostat_mqtt)/.*\.py$
+        files: ^(container_info_mqtt|ffmpeg_snapshotter|frigate_compressor|haos_configurator|intel_gpu_top_mqtt|system_resource_tuner|turbostat_mqtt)/.*\.py$
         pass_filenames: false
         args:
           - container_info_mqtt
           - ffmpeg_snapshotter
           - frigate_compressor
+          - haos_configurator
           - intel_gpu_top_mqtt
           - system_resource_tuner
           - turbostat_mqtt

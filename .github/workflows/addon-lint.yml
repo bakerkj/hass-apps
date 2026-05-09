@@ -19,6 +19,7 @@ jobs:
           - container_info_mqtt
           - ffmpeg_snapshotter
           - frigate_compressor
+          - haos_configurator
           - intel_gpu_top_mqtt
           - system_resource_tuner
           - turbostat_mqtt

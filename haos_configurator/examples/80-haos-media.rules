@@ -1,0 +1,25 @@
+# cat /etc/udev/rules.d/80-haos-media.rules
+#
+# Example: auto-mount a specific block device by its filesystem UUID at
+# /mnt/data/supervisor/media (which surfaces in HA as the "media" share).
+#
+# Replace REPLACE-WITH-YOUR-FS-UUID with the UUID of your drive, e.g. from
+# `lsblk -o NAME,UUID,FSTYPE` on the host.  Adjust the --type if your
+# filesystem is not ext4.
+ACTION!="add|remove", GOTO="haos_media_end"
+SUBSYSTEM!="block", GOTO="haos_media_end"
+ENV{DEVTYPE}!="partition", GOTO="haos_media_end"
+
+IMPORT{program}="/usr/sbin/blkid -o udev -p %N"
+
+ENV{ID_FS_USAGE}!="filesystem", GOTO="haos_media_end"
+ENV{ID_FS_UUID}!="REPLACE-WITH-YOUR-FS-UUID", GOTO="haos_media_end"
+
+ENV{mount_point}="/mnt/data/supervisor/media"
+
+ACTION=="add", RUN+="/usr/bin/mkdir -p %E{mount_point}"
+ACTION=="add", RUN+="/usr/bin/systemd-mount --no-block --automount=no --collect --type=ext4 /dev/disk/by-uuid/REPLACE-WITH-YOUR-FS-UUID %E{mount_point}"
+
+ACTION=="remove", RUN+="/usr/bin/systemd-umount %E{mount_point}"
+
+LABEL="haos_media_end"

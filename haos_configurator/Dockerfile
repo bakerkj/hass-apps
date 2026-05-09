@@ -1,0 +1,26 @@
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+FROM ${BUILD_FROM}
+
+ARG BUILD_VERSION
+ENV ADDON_VERSION=${BUILD_VERSION}
+
+LABEL \
+    org.opencontainers.image.title="HAOS Configurator" \
+    org.opencontainers.image.description="Manifest-driven installer for persistent HAOS host files (udev rules, init scripts, etc.)." \
+    org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
+    org.opencontainers.image.licenses="MIT"
+
+# Pin every apk to a concrete Alpine 3.23 version so renovate's
+# alpine_3_23 custom manager (see renovate.json) can bump them.
+# nsenter comes from busybox in the HA base image.
+RUN apk add --no-cache \
+      python3=3.12.13-r0 \
+      py3-yaml=6.0.3-r0
+
+COPY run.sh /run.sh
+COPY haos_configurator /opt/haos_configurator
+
+RUN chmod +x /run.sh \
+ && python3 -m compileall -q /opt/haos_configurator
+
+CMD ["/run.sh"]
