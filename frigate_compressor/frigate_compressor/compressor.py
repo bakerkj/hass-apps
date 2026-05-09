@@ -433,37 +433,48 @@ def _compress_one_inner(
     seg_error: str | None = None
     with compress_db_lock:
         try:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                # The segment UPDATE didn't apply (sqlite3 raises before
+                # the change lands in the implicit transaction).  We
+                # mark ``segment_update_failed`` so housekeeping retries
+                # the segment-size write later; the files write below
+                # continues in a clean transaction state.
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
+                )
+            # Both writes go through ``_record``'s commit; if the segment
+            # UPDATE succeeded above, both are durable atomically.
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=tier,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=size_before,
+                size_after=size_after,
+                duration_sec=duration,
+                status=seg_status,
+                error_msg=seg_error,
             )
-        except Exception as e:
-            # ``execute`` raises before the change is applied, so the
-            # files write that follows continues in a clean transaction
-            # state.  We mark ``segment_update_failed`` so housekeeping
-            # can retry the segment-size write later.
-            seg_status = STATUS_SEGMENT_UPDATE_FAILED
-            seg_error = str(e)
-            log(
-                "WARNING",
-                f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
-            )
-        # Both writes go through ``_record``'s commit; if the segment
-        # UPDATE succeeded above, both are durable atomically.
-        _record(
-            compress_db,
-            recording_id=recording_id,
-            camera=camera,
-            path=path,
-            tier=tier,
-            recording_type=recording_type,
-            encoder=encoder,
-            size_before=size_before,
-            size_after=size_after,
-            duration_sec=duration,
-            status=seg_status,
-            error_msg=seg_error,
-        )
+        except Exception:
+            # Something inside the bundle (the files write, most
+            # likely) raised before commit.  Roll back so the implicit
+            # transaction's pending UPDATE on frigate.recordings doesn't
+            # leak across to the next thread that takes this lock —
+            # without this, that thread's commit would silently include
+            # our orphaned segment-size write.
+            compress_db.rollback()
+            raise
     return True
 
 
@@ -813,68 +824,75 @@ def compress_direct(
     seg_error: str | None = None
     with compress_db_lock:
         try:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
-            )
-        except Exception as e:
-            seg_status = STATUS_SEGMENT_UPDATE_FAILED
-            seg_error = str(e)
-            log(
-                "WARNING",
-                f"[{camera}] failed to update Frigate segment_size "
-                f"— will retry at housekeeping: {e}",
-            )
-        # Tier-1 row write — bundled into the same transaction.
-        _record(
-            compress_db,
-            recording_id=recording_id,
-            camera=camera,
-            path=path,
-            tier=1,
-            recording_type=recording_type,
-            encoder=encoder,
-            size_before=size_before,
-            size_after=t1_size,
-            duration_sec=duration,
-            status=seg_status,
-            error_msg=seg_error,
-            commit=False,
-        )
-        # Tier-2 row write — sibling-direct success or sibling-rename
-        # error.  Same transaction.  ``_record_failure`` increments the
-        # retry counter for the error case; we let it commit since it's
-        # the LAST write in the bundle.
-        if t2_replace_failed is None:
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] failed to update Frigate segment_size "
+                    f"— will retry at housekeeping: {e}",
+                )
+            # Tier-1 row write — bundled into the same transaction.
             _record(
                 compress_db,
                 recording_id=recording_id,
                 camera=camera,
                 path=path,
-                tier=2,
+                tier=1,
                 recording_type=recording_type,
                 encoder=encoder,
-                size_before=None,
-                size_after=t2_size,
+                size_before=size_before,
+                size_after=t1_size,
                 duration_sec=duration,
-                status=STATUS_DIRECT,
-                error_msg=None,
-                commit=True,
+                status=seg_status,
+                error_msg=seg_error,
+                commit=False,
             )
-        else:
-            _record_failure(
-                compress_db,
-                recording_id=recording_id,
-                camera=camera,
-                path=path,
-                tier=2,
-                recording_type=recording_type,
-                encoder=encoder,
-                size_after=t2_size,
-                duration_sec=duration,
-                error_msg=f"sibling rename failed: {t2_replace_failed}",
-                commit=True,
-            )
+            # Tier-2 row write — sibling-direct success or sibling-rename
+            # error.  Same transaction.  ``_record_failure`` increments the
+            # retry counter for the error case; we let it commit since it's
+            # the LAST write in the bundle.
+            if t2_replace_failed is None:
+                _record(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=2,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_before=None,
+                    size_after=t2_size,
+                    duration_sec=duration,
+                    status=STATUS_DIRECT,
+                    error_msg=None,
+                    commit=True,
+                )
+            else:
+                _record_failure(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=2,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_after=t2_size,
+                    duration_sec=duration,
+                    error_msg=f"sibling rename failed: {t2_replace_failed}",
+                    commit=True,
+                )
+        except Exception:
+            # Roll back so the implicit transaction's pending writes
+            # (segment_size UPDATE, possibly the tier-1 _record) don't
+            # leak across to the next thread that takes the lock.
+            compress_db.rollback()
+            raise
     return True
 
 
@@ -1097,30 +1115,36 @@ def swap_t2(
     seg_error: str | None = None
     with compress_db_lock:
         try:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] segment_size update after swap failed "
+                    f"— will retry at housekeeping: {e}",
+                )
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=2,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=None,
+                size_after=t2_size,
+                duration_sec=None,
+                status=seg_status,
+                error_msg=seg_error,
             )
-        except Exception as e:
-            seg_status = STATUS_SEGMENT_UPDATE_FAILED
-            seg_error = str(e)
-            log(
-                "WARNING",
-                f"[{camera}] segment_size update after swap failed "
-                f"— will retry at housekeeping: {e}",
-            )
-        _record(
-            compress_db,
-            recording_id=recording_id,
-            camera=camera,
-            path=path,
-            tier=2,
-            recording_type=recording_type,
-            encoder=encoder,
-            size_before=None,
-            size_after=t2_size,
-            duration_sec=None,
-            status=seg_status,
-            error_msg=seg_error,
-        )
+        except Exception:
+            # Roll back so any pending segment_size UPDATE doesn't leak
+            # into the next thread's transaction.
+            compress_db.rollback()
+            raise
     return True
