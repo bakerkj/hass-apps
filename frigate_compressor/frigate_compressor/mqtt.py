@@ -403,13 +403,25 @@ class MqttPublisher:
         client = self.client
         if client is None:
             return
+        # Order matters: publish + brief drain BEFORE ``loop_stop`` /
+        # ``disconnect``.  paho's network loop is the only thread that
+        # drains the outbound queue; if we stop the loop first, the
+        # ``offline`` publish enqueues but never reaches the socket
+        # (the broker then has to fall back to LWT).  ``info.wait_for_publish``
+        # forces a synchronous drain so we know the message left.
         try:
-            client.publish(
+            info = client.publish(
                 f"{self.mqtt_cfg.base_topic}/availability",
                 "offline",
                 qos=1,
                 retain=True,
             )
+            try:
+                info.wait_for_publish(timeout=2.0)
+            except (RuntimeError, ValueError):
+                # paho raises if the loop already isn't running or the
+                # broker has dropped — best-effort, not worth retrying.
+                pass
         except Exception:
             pass
         try:
