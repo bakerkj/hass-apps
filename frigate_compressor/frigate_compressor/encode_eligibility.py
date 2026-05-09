@@ -255,10 +255,16 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
     # Build a per-camera plan: each enabled (camera, tier) pair queries
     # its own ``frigate.recordings`` slice scoped to that camera and
     # cutoff.  One short query per pair; total query count = number of
-    # enabled tier slots, not 2.
+    # enabled tier slots, not 2.  Apply the same dry-run filter as the
+    # eligibility queries — otherwise a per-camera dry-run cam would
+    # drive spurious wakeups here even though its rows never surface
+    # to the worker.
+    suppress_dry_run = not cfg.all_dry_run
     plan: list[tuple[str, int]] = []
     for name, cam in cfg.cameras.items():
         if not cam.enabled:
+            continue
+        if suppress_dry_run and cam.dry_run:
             continue
         if cam.tier1.enabled:
             plan.append((name, cam.tier1.min_days))

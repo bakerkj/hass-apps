@@ -295,11 +295,14 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                                 recording_type=rec.get("recording_type"),
                                 start_time=rec.get("start_time"),
                             )
-                            probed += 1
                         compress_db.commit()
                     except Exception:
                         compress_db.rollback()
                         raise
+                    # Only count as probed AFTER the commit lands —
+                    # otherwise a chunk that rolls back overstates the
+                    # final ``Probed N`` log line.
+                    probed += len(chunk)
             except Exception as e:
                 log("ERROR", f"Probe loop: store chunk failed: {e}")
                 # Continue with the next chunk; partially-stored rows
