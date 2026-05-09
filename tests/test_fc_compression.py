@@ -283,9 +283,10 @@ def test_get_eligible_recordings_object_type(tmp_path):
     frigate_conn.close()
 
 
-def test_get_eligible_recordings_orders_tier1_before_tier2(tmp_path):
-    """Tier 1 work always precedes tier 2 work in the batch, even when the
-    tier-2 candidate is older — drains the bigger storage win first."""
+def test_get_eligible_recordings_orders_by_time_when_caught_up(tmp_path):
+    """When the eligible count fits in one batch (steady state), tier-1 and
+    tier-2 intermix by ``start_time`` — the older tier-2 candidate sorts
+    before the newer tier-1 candidate."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     compress_conn = _open_compress_db(tmp_path)
@@ -325,9 +326,73 @@ def test_get_eligible_recordings_orders_tier1_before_tier2(tmp_path):
     )
 
     results = fc.get_eligible_recordings(ctx)
-    # Tier 1 first despite being newer; tier 2 second despite being older.
-    assert [r["recording_id"] for r in results] == ["new-t1", "old-t2"]
-    assert [r["tier"] for r in results] == [1, 2]
+    # Caught up: pure time order — older tier-2 first, newer tier-1 second.
+    assert [r["recording_id"] for r in results] == ["old-t2", "new-t1"]
+    assert [r["tier"] for r in results] == [2, 1]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_orders_tier1_first_when_catching_up(
+    tmp_path, monkeypatch
+):
+    """When the eligible count exceeds one batch (catch-up), tier-1 sorts
+    ahead of tier-2 regardless of ``start_time`` so the heavier encodes
+    drain first."""
+    # Lower the batch size so the test only needs a handful of rows to
+    # cross the catch-up threshold.  The threshold tracks the LIMIT.
+    monkeypatch.setattr(fc.eligibility, "_ELIGIBLE_BATCH_SIZE", 2)
+
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+
+    now = time.time()
+    # Two tier-2 candidates (older) — t1 already done.
+    for i, age_days in enumerate([60, 50]):
+        rid = f"old-t2-{i}"
+        _insert_probed(
+            frigate_conn,
+            compress_conn,
+            rid,
+            "cam1",
+            f"/m/{rid}.mp4",
+            now - age_days * 86400,
+        )
+    # Two tier-1 candidates (newer) — t1 not yet done.
+    for i, age_days in enumerate([10, 9]):
+        rid = f"new-t1-{i}"
+        _insert_probed(
+            frigate_conn,
+            compress_conn,
+            rid,
+            "cam1",
+            f"/m/{rid}.mp4",
+            now - age_days * 86400,
+        )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    for i in range(2):
+        fc._record(
+            ctx.compress_db,
+            recording_id=f"old-t2-{i}",
+            camera="cam1",
+            path=f"/m/old-t2-{i}.mp4",
+            tier=1,
+            recording_type="continuous",
+            encoder="cpu",
+            size_before=1000,
+            size_after=500,
+            duration_sec=1.0,
+            status=fc.STATUS_OK,
+        )
+
+    results = fc.get_eligible_recordings(ctx)
+    # 4 total eligible > batch size of 2 → catch-up → tier-1 first.
+    # LIMIT 2, so we get the two tier-1 rows in start_time order.
+    assert [r["tier"] for r in results] == [1, 1]
+    assert [r["recording_id"] for r in results] == ["new-t1-0", "new-t1-1"]
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -1663,11 +1728,10 @@ def test_compress_direct_dry_run(tmp_path):
     _close_ctx(ctx)
 
 
-def test_eligibility_includes_direct_rows_for_swap(tmp_path):
-    """Tier-2 eligibility includes rows in t2_status='direct' once they
-    reach min_days, and surfaces t2_status to the worker so the dispatch
-    can route them to swap_t2 instead of compress_one.
-    """
+def test_get_eligible_recordings_excludes_direct_rows(tmp_path):
+    """Sibling-swap rows (``t2_status='direct'``) are handled by the swap
+    loop, not the encode loop, so they must NOT surface to
+    ``get_eligible_recordings`` — only chained-tier-2 candidates do."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     cfg = _make_config(tmp_path, frigate_db=str(frigate_db))
@@ -1675,7 +1739,7 @@ def test_eligibility_includes_direct_rows_for_swap(tmp_path):
     fc._attach_frigate(compress_conn, cfg, "frigate")
     ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
 
-    # Row past tier-2 boundary, t1=ok, t2=direct → picked up (swap)
+    # Direct-swap row: must be excluded.
     _insert_probed(
         frigate_conn,
         compress_conn,
@@ -1688,7 +1752,7 @@ def test_eligibility_includes_direct_rows_for_swap(tmp_path):
         "UPDATE files SET t1_status=?, t2_status=? WHERE recording_id=?",
         (fc.STATUS_OK, fc.STATUS_DIRECT, "rd"),
     )
-    # Row past tier-2 boundary, t1=ok, t2=NULL → picked up (chained encode)
+    # Chained-tier-2 row: must be included.
     _insert_probed(
         frigate_conn,
         compress_conn,
@@ -1705,10 +1769,8 @@ def test_eligibility_includes_direct_rows_for_swap(tmp_path):
 
     eligible = fc.get_eligible_recordings(ctx)
     by_id = {r["recording_id"]: r for r in eligible}
-    assert "rd" in by_id
+    assert "rd" not in by_id
     assert "rn" in by_id
-    assert by_id["rd"]["t2_status"] == fc.STATUS_DIRECT
-    assert by_id["rn"]["t2_status"] is None
     _close_ctx(ctx)
     frigate_conn.close()
 
@@ -1971,41 +2033,34 @@ def test_swap_t2_aborts_when_recording_gone_from_frigate_db(tmp_path):
     _close_ctx(ctx)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# _pace_then_compress dispatch — swap_t2 case
-# ═══════════════════════════════════════════════════════════════════════════════
+def test_swap_t2_skips_rename_when_dry_run(tmp_path):
+    """Camera in dry-run → swap_t2 logs only; no rename, no DB write."""
+    ctx, src, sib = _setup_swap_ready(tmp_path)
+    ctx.cfg.cameras["cam1"].dry_run = True
+
+    result = fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is True
+    # Primary still holds tier-1 content (rename was skipped).
+    assert src.read_bytes() == b"x" * 5000
+    # Sibling untouched.
+    assert sib.exists()
+    assert sib.read_bytes() == b"y" * 2000
+    # DB row still in 'direct' state — no UPDATE happened.
+    row = _db_row(ctx)
+    assert row["t2_status"] == fc.STATUS_DIRECT
+    _close_ctx(ctx)
 
 
-def test_pace_then_compress_dispatches_to_swap_for_direct_tier2(monkeypatch):
-    """tier=2, t2_status='direct' → swap_t2."""
-    calls: list[str] = []
-    monkeypatch.setattr(fc.app, "swap_t2", lambda *a, **k: calls.append("swap") or True)
-    monkeypatch.setattr(
-        fc.app, "compress_direct", lambda *a, **k: calls.append("direct") or True
-    )
-    monkeypatch.setattr(
-        fc.app, "compress_one", lambda *a, **k: calls.append("one") or True
-    )
-    fake_ctx = MagicMock()
-    fake_ctx.rate_limiter.acquire = lambda _stopping: None
-    fc._pace_then_compress(
-        threading.Event(),
-        "r",
-        "/p",
-        "cam",
-        2,
-        "continuous",
-        "cpu",
-        fake_ctx,
-        t2_status=fc.STATUS_DIRECT,
-    )
-    assert calls == ["swap"]
+# ═══════════════════════════════════════════════════════════════════════════════
+# _pace_then_compress dispatch — chained tier-2 (swap rows go through
+# run_swap_loop, not _pace_then_compress)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 def test_pace_then_compress_dispatches_to_one_for_chained_tier2(monkeypatch):
-    """tier=2, t2_status=NULL → compress_one (chained encode)."""
+    """tier=2 → compress_one (chained encode).  Direct-swap rows never
+    reach this path; they're filtered out of get_eligible_recordings."""
     calls: list[str] = []
-    monkeypatch.setattr(fc.app, "swap_t2", lambda *a, **k: calls.append("swap") or True)
     monkeypatch.setattr(
         fc.app, "compress_direct", lambda *a, **k: calls.append("direct") or True
     )
@@ -2024,6 +2079,5 @@ def test_pace_then_compress_dispatches_to_one_for_chained_tier2(monkeypatch):
         "continuous",
         "cpu",
         fake_ctx,
-        t2_status=None,
     )
     assert calls == ["one"]

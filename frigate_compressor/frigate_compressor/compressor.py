@@ -780,6 +780,37 @@ def swap_t2(
         return False
 
     filepath = Path(path)
+
+    # Dry-run: emit a single "DRY RUN t2:" line in the same shape
+    # ``compress_direct`` uses, then return without touching files or DB.
+    # Stat the primary so the size column is populated; missing primary →
+    # log N/A rather than failing the dry-run, since we're not actually
+    # going to do anything.
+    if cfg.all_dry_run or cam_cfg.dry_run:
+        with compress_db_lock:
+            probe_row = compress_db.execute(
+                "SELECT width, height FROM files WHERE recording_id = ?",
+                (recording_id,),
+            ).fetchone()
+        src_info = _format_src_info(
+            {"width": probe_row["width"], "height": probe_row["height"]}
+            if probe_row is not None
+            else None
+        )
+        t2_ts = getattr(cam_cfg.tier2, recording_type, None)
+        tgt_info = _format_tgt_info(t2_ts) if t2_ts is not None else f"{'→?':<14}"
+        try:
+            primary_size: int | None = filepath.stat().st_size
+        except OSError:
+            primary_size = None
+        log(
+            "INFO",
+            f"[{camera:<{cfg.cam_name_width}}] DRY RUN t2:{recording_type[:3]}  "
+            f"{_display_path(filepath)}  {src_info}{tgt_info}"
+            f"{_fmt(primary_size, 10)}",
+        )
+        return True
+
     sib = sibling_path(filepath)
 
     def rec(*, status: str, size: int | None, error_msg: str | None = None) -> None:

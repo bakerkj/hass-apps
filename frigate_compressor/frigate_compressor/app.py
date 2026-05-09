@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import __version__
-from .compressor import compress_direct, compress_one, swap_t2
+from .compressor import compress_direct, compress_one
 from .config import (
     Config,
     TypeSettings,
@@ -23,7 +23,6 @@ from .config import (
 )
 from .context import CompressorContext
 from .database import (
-    STATUS_DIRECT,
     _attach_frigate,
     check_frigate_schema_attached,
     open_compress_db,
@@ -36,6 +35,7 @@ from .ffmpeg import check_encoder_works, detect_encoder
 from .housekeeping import run_housekeeping
 from .mqtt import MqttPublisher
 from .probe_loop import run_probe_loop
+from .swap_loop import run_swap_loop
 from .throttle import MAX_SLEEP_SEC, _THROTTLE_WINDOW_SEC
 from .util import log, set_log_level
 
@@ -173,6 +173,11 @@ def main() -> int:
     )
     probe_thread.start()
 
+    swap_thread = threading.Thread(
+        target=run_swap_loop, args=(ctx, stopping, encoder), daemon=True
+    )
+    swap_thread.start()
+
     publisher: MqttPublisher | None = None
     if cfg.mqtt.enabled:
         try:
@@ -219,7 +224,6 @@ def _pace_then_compress(
     encoder: str,
     ctx: CompressorContext,
     probe_data: dict | None = None,
-    t2_status: str | None = None,
 ) -> bool:
     """Worker wrapper: pace via the shared rate limiter, then run compress_one.
 
@@ -236,13 +240,12 @@ def _pace_then_compress(
     ``probe_data`` is forwarded to ``compress_one`` so the worker can
     skip its per-file ``SELECT width, height, fps`` — the eligibility
     query already fetched those columns.
+
+    Sibling-swap rows (``t2_status='direct'``) never reach this path —
+    they're filtered out of ``get_eligible_recordings`` and handled by
+    ``run_swap_loop`` on its own thread.
     """
     ctx.rate_limiter.acquire(stopping)
-    # Tier-2 + t2_status='direct' rows are sibling-swap work, not encode
-    # work: rename the parked .t2.mp4 onto the primary path.  swap_t2
-    # itself falls back to chained encode if the sibling is missing.
-    if tier == 2 and t2_status == STATUS_DIRECT:
-        return swap_t2(rid, path, camera, rtype, encoder, ctx)
     # Dispatch to direct (dual-output) when the camera opts in via
     # tier2.source="direct" AND we're at the tier-1 boundary AND tier-2
     # is actually enabled for this rtype.  Otherwise fall through to the
@@ -328,7 +331,6 @@ def run_main_loop(
                         "height": r.get("height"),
                         "fps": r.get("fps"),
                     },
-                    r.get("t2_status"),
                 ): r
                 for r in eligible
                 if not stopping.is_set()
