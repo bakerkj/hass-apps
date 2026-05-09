@@ -80,9 +80,6 @@ from .housekeeping import run_housekeeping  # noqa: E402,F401
 from .paths import (  # noqa: E402,F401
     T2_INFIX,
     delete_sibling,
-    is_sibling_path,
-    primary_from_sibling,
-    sibling_exists,
     sibling_path,
 )
 from .mqtt import (  # noqa: E402,F401
