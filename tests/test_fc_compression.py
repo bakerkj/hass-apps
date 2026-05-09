@@ -216,6 +216,65 @@ def test_get_eligible_recordings_retries_errored(tmp_path):
     frigate_conn.close()
 
 
+def test_get_eligible_recordings_excludes_per_camera_dry_run(tmp_path):
+    """A camera with ``dry_run=True`` is filtered out of eligibility when
+    other cameras are running live.  Otherwise every cycle would re-surface
+    the dry-run camera's rows (the worker's dry-run path doesn't write
+    status), producing perpetual log spam."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rdry",
+        "cam1",
+        "/m/rdry.mp4",
+        time.time() - 10 * 86400,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    ctx.cfg.cameras["cam1"].dry_run = True
+
+    assert fc.get_eligible_recordings(ctx) == []
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_includes_dry_run_when_all_dry_run(tmp_path):
+    """When EVERY camera is dry-run (``cfg.all_dry_run``), eligibility
+    keeps surfacing rows so the once-per-minute DRY RUN log lines remain
+    available — that's the documented "see what would happen" observation
+    cadence.  The all-dry-run branch in ``run_main_loop`` forces a
+    full-window sleep so log volume stays bounded."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "ralldry",
+        "cam1",
+        "/m/ralldry.mp4",
+        time.time() - 10 * 86400,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    # ``all_dry_run`` is ``all(cam.dry_run)`` over every enabled camera —
+    # the test ctx has both a yaml-default ``cam`` and the Frigate-
+    # discovered ``cam1``, so we flip both to make the property True.
+    for cam in ctx.cfg.cameras.values():
+        cam.dry_run = True
+    assert ctx.cfg.all_dry_run
+
+    results = fc.get_eligible_recordings(ctx)
+    assert [r["recording_id"] for r in results] == ["ralldry"]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
 def test_get_eligible_recordings_excludes_give_up_rows(tmp_path):
     """Rows in ``STATUS_GIVE_UP`` (terminal failure after retry cap)
     are permanently excluded from eligibility — operator must reset

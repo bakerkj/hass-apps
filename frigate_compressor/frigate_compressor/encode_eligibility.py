@@ -57,8 +57,19 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     t1_params: list = []
     t2_parts: list[str] = []
     t2_params: list = []
+    # Suppress per-camera dry-run cameras when other cameras are running
+    # live: their rows would be returned every cycle (the worker's dry-run
+    # path logs and returns without writing status), producing perpetual
+    # log spam.  When ALL cameras are dry-run (``cfg.all_dry_run``) we
+    # leave them in — the loop's all-dry-run branch caps the cycle to one
+    # ``_THROTTLE_WINDOW_SEC`` per batch so the per-row logging is at most
+    # once per minute, which is the documented "see what would happen"
+    # observation cadence.
+    suppress_dry_run = not cfg.all_dry_run
     for name, cam in cfg.cameras.items():
         if not cam.enabled:
+            continue
+        if suppress_dry_run and cam.dry_run:
             continue
         if cam.tier1.enabled:
             t1_cutoff = effective_now - (cam.tier1.min_days * 86400)

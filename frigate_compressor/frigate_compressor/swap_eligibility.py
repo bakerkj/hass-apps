@@ -45,11 +45,19 @@ def get_eligible_swaps(ctx: CompressorContext) -> list[dict]:
     never touches Frigate's recordings table.
     """
     cfg = ctx.cfg
+    # Suppress per-camera dry-run cameras when others are running live
+    # (their direct rows would be returned every cycle without ever being
+    # marked done, since ``swap_t2``'s dry-run path logs and returns
+    # without writing status).  See ``encode_eligibility`` for the same
+    # reasoning on the encode side.
+    suppress_dry_run = not cfg.all_dry_run
     parts: list[str] = []
     params: list = []
     now = time.time()
     for name, cam in cfg.cameras.items():
         if not cam.enabled or not cam.tier2.enabled:
+            continue
+        if suppress_dry_run and cam.dry_run:
             continue
         cutoff = now - (cam.tier2.min_days * 86400)
         # Same partial index (idx_files_t2_pending_age) the encode-loop
