@@ -15,7 +15,6 @@ import time  # noqa: F401  — exposed as ``frigate_compressor.time`` for tests
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
 from .compressor import (  # noqa: E402,F401
-    _compress_one_inner,
     compress_direct,
     compress_one,
     swap_t2,

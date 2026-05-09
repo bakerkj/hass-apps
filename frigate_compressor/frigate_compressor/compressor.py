@@ -75,28 +75,6 @@ def compress_one(
     matters at production compression rates.  Tests and one-shot callers
     leave ``probe_data=None`` and the worker falls back to fetching it.
     """
-    return _compress_one_inner(
-        recording_id,
-        path,
-        camera,
-        tier,
-        recording_type,
-        encoder,
-        ctx,
-        probe_data,
-    )
-
-
-def _compress_one_inner(
-    recording_id: str,
-    path: str,
-    camera: str,
-    tier: int,
-    recording_type: str,
-    encoder: str,
-    ctx: CompressorContext,
-    probe_data: dict | None = None,
-) -> bool:
     cfg = ctx.cfg
     compress_db = ctx.compress_db
     compress_db_lock = ctx.compress_db_lock
