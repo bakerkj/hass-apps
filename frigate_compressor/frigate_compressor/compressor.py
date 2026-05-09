@@ -910,8 +910,10 @@ def swap_t2(
     # ``compress_direct`` uses, then return without touching files or DB.
     # Stat the primary so the size column is populated; missing primary →
     # log N/A rather than failing the dry-run, since we're not actually
-    # going to do anything.
-    if cfg.all_dry_run or cam_cfg.dry_run:
+    # going to do anything.  ``cfg.all_dry_run`` is implied by
+    # ``cam_cfg.dry_run`` when every camera is dry-run, so we don't
+    # need the ``or all_dry_run`` clause that the other writers omit.
+    if cam_cfg.dry_run:
         with compress_db_lock:
             probe_row = compress_db.execute(
                 "SELECT width, height FROM files WHERE recording_id = ?",
