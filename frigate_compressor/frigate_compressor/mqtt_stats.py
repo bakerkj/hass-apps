@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from .context import CompressorContext
 from .database import (
+    STATUS_GIVE_UP,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
@@ -48,8 +49,22 @@ class CameraStats:
     # past the camera's tier1.min_days) has been waiting more than
     # ``mqtt.backlog_timeout_seconds``; tier2 analogously for tier-1→2.
     # Both are False for tiers that are disabled for the camera.
+    # ``give_up`` rows are excluded — they're terminally failed (operator
+    # action required), not a "the daemon is behind" signal.
     tier1_backlog_error: bool
     tier2_backlog_error: bool
+    # Rows currently in retry-backoff (``STATUS_ERROR`` with attempts
+    # ≥ 1).  Useful as an early-warning signal — climbing retry_count
+    # often precedes give_up rows showing up.  Drops back to 0 as
+    # retries succeed and ``_record`` resets the counter.
+    tier1_retry_count: int
+    tier2_retry_count: int
+    # Rows the retry loop has surrendered on (``STATUS_GIVE_UP``).  These
+    # need operator attention — the daemon won't retry them automatically.
+    # Operator clears via ``UPDATE files SET t1_status=NULL, t1_attempts=0,
+    # t1_next_retry_at=NULL WHERE recording_id=...`` (or the t2 equivalent).
+    tier1_give_up_count: int
+    tier2_give_up_count: int
 
 
 @dataclass
@@ -167,9 +182,18 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
         # not the compressor's.
         backlog_timeout = float(cfg.mqtt.backlog_timeout_seconds)
         backlog_errors: dict[str, tuple[bool, bool]] = {}
+        # Per-camera count of rows in STATUS_ERROR (currently retrying)
+        # and STATUS_GIVE_UP (terminally failed after the retry cap).
+        # Reported alongside backlog_error so the operator can
+        # distinguish "transient retries cycling" from "daemon needs
+        # manual intervention on N specific rows."
+        retry_counts: dict[str, tuple[int, int]] = {}
+        give_up_counts: dict[str, tuple[int, int]] = {}
         for cam_name, cam_cfg in cfg.cameras.items():
             if not cam_cfg.enabled:
                 backlog_errors[cam_name] = (False, False)
+                retry_counts[cam_name] = (0, 0)
+                give_up_counts[cam_name] = (0, 0)
                 continue
             t1_err = False
             t2_err = False
@@ -183,7 +207,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
                       AND f.start_time < ?
                       AND (f.t1_status IS NULL
                            OR f.t1_status NOT IN
-                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                               '{STATUS_GIVE_UP}'))
                     LIMIT 1
                     """,
                     (cam_name, threshold),
@@ -201,13 +226,43 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
                           ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
-                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                               '{STATUS_GIVE_UP}'))
                     LIMIT 1
                     """,
                     (cam_name, threshold),
                 ).fetchone()
                 t2_err = row is not None
             backlog_errors[cam_name] = (t1_err, t2_err)
+
+            # Cheap COUNTs against ``files`` — error rows hit the
+            # idx_files_t{1,2}_error partial index; give_up rows fall
+            # through to a small full-table scan but are rare in steady
+            # state.  Acceptable at the 60s publish cadence.
+            t1_re = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE camera = ? AND t1_status = 'error'",
+                (cam_name,),
+            ).fetchone()[0]
+            t2_re = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE camera = ? AND t2_status = 'error'",
+                (cam_name,),
+            ).fetchone()[0]
+            retry_counts[cam_name] = (int(t1_re), int(t2_re))
+            t1_gu = conn.execute(
+                f"""
+                SELECT COUNT(*) FROM files
+                WHERE camera = ? AND t1_status = '{STATUS_GIVE_UP}'
+                """,
+                (cam_name,),
+            ).fetchone()[0]
+            t2_gu = conn.execute(
+                f"""
+                SELECT COUNT(*) FROM files
+                WHERE camera = ? AND t2_status = '{STATUS_GIVE_UP}'
+                """,
+                (cam_name,),
+            ).fetchone()[0]
+            give_up_counts[cam_name] = (int(t1_gu), int(t2_gu))
 
     recording_rate: dict[str, float] = {
         r["camera"]: float(r["bytes"] or 0) / rate_window for r in recent_rows
@@ -287,6 +342,8 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
     cam_stats: dict[str, CameraStats] = {}
     for cam, c in cameras.items():
         t1_err, t2_err = backlog_errors.get(cam, (False, False))
+        t1_re, t2_re = retry_counts.get(cam, (0, 0))
+        t1_gu, t2_gu = give_up_counts.get(cam, (0, 0))
         cam_stats[cam] = CameraStats(
             total_bytes=c["total_bytes"],
             total_files=c["total_files"],
@@ -301,6 +358,10 @@ def collect_frigate_stats(ctx: CompressorContext) -> FrigateStats:
             recording_bytes_rate=recording_rate.get(cam, 0.0),
             tier1_backlog_error=t1_err,
             tier2_backlog_error=t2_err,
+            tier1_retry_count=t1_re,
+            tier2_retry_count=t2_re,
+            tier1_give_up_count=t1_gu,
+            tier2_give_up_count=t2_gu,
         )
 
     return FrigateStats(

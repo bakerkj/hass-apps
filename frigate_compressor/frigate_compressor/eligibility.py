@@ -11,6 +11,7 @@ from .config import Config
 from .context import CompressorContext
 from .database import (
     STATUS_DIRECT,
+    STATUS_GIVE_UP,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
@@ -39,6 +40,10 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     placeholders, the implication check fails and the plan falls back
     to a full files SCAN + temp-btree sort.
     """
+    # ISO timestamp used to gate retry-backoff: rows whose
+    # ``next_retry_at`` is in the future are excluded from this batch.
+    # Computed once per query so every branch sees the same "now".
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(effective_now))
     t1_parts: list[str] = []
     t1_params: list = []
     t2_parts: list[str] = []
@@ -56,13 +61,16 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                     WHERE f.camera = ? AND f.start_time < ?
                       AND (f.t1_status IS NULL
                            OR f.t1_status NOT IN
-                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                               '{STATUS_GIVE_UP}'))
+                      AND (f.t1_next_retry_at IS NULL
+                           OR f.t1_next_retry_at <= ?)
                     ORDER BY f.start_time ASC
                     LIMIT {_ELIGIBLE_BATCH_SIZE}
                 )
                 """
             )
-            t1_params.extend([name, t1_cutoff])
+            t1_params.extend([name, t1_cutoff, now_iso])
         if cam.tier2.enabled:
             t2_cutoff = effective_now - (cam.tier2.min_days * 86400)
             # STATUS_DIRECT rows are excluded here — they're sibling-swap
@@ -82,13 +90,15 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
                               ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
-                               '{STATUS_DIRECT}'))
+                               '{STATUS_DIRECT}', '{STATUS_GIVE_UP}'))
+                      AND (f.t2_next_retry_at IS NULL
+                           OR f.t2_next_retry_at <= ?)
                     ORDER BY f.start_time ASC
                     LIMIT {_ELIGIBLE_BATCH_SIZE}
                 )
                 """
             )
-            t2_params.extend([name, t2_cutoff])
+            t2_params.extend([name, t2_cutoff, now_iso])
 
     parts = t1_parts + t2_parts
     if not parts:

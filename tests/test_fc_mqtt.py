@@ -783,9 +783,9 @@ def test_publisher_publishes_discovery_once_per_device(tmp_path, monkeypatch):
             for t, p, _ in client.publishes
             if t.startswith("homeassistant/sensor/")
         ]
-        # 12 top-level + 19 per-camera-sensor × 2 cameras = 50 (plain) sensors.
+        # 12 top-level + 23 per-camera-sensor × 2 cameras = 58 (plain) sensors.
         # Binary sensors (tier1/tier2 backlog) are routed to binary_sensor/.
-        assert len(first_discovery) == 12 + 19 * 2
+        assert len(first_discovery) == 12 + 23 * 2
         binary_discovery = [
             (t, p)
             for t, p, _ in client.publishes

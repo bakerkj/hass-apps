@@ -20,6 +20,21 @@ STATUS_SEGMENT_UPDATE_FAILED = "segment_update_failed"
 # Tier-2 only: encoded ahead of its activation date (sibling .t2 file on disk),
 # waiting to be swapped in at tier2.min_days. Set when tier2.source="direct".
 STATUS_DIRECT = "direct"
+# Terminal failure: encode failed ``_MAX_ATTEMPTS`` times in a row.
+# Excluded from eligibility forever — operator must reset to NULL via
+# SQL to retry.  Distinguished from STATUS_ERROR so an in-flight
+# transient failure doesn't get confused with a permanent one.
+STATUS_GIVE_UP = "give_up"
+
+# Retry policy.  ``_MAX_ATTEMPTS`` consecutive failures flips the row
+# to STATUS_GIVE_UP.  Between failures, the row is excluded from
+# eligibility until ``now >= t{tier}_next_retry_at``.  Backoff is
+# exponential: delay = ``_BACKOFF_BASE_SEC * 2^(attempts-1)`` capped
+# at ``_BACKOFF_MAX_SEC``.  Schedule for attempts 1..10:
+#   1m, 2m, 4m, 8m, 16m, 32m, 1h04, 2h08, 4h16, 8h32 — total ≈ 17h.
+_MAX_ATTEMPTS = 10
+_BACKOFF_BASE_SEC = 60.0
+_BACKOFF_MAX_SEC = 8.5 * 3600  # 8h30m
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -53,6 +68,11 @@ CREATE TABLE IF NOT EXISTS files (
     t1_status       TEXT,
     t1_error_msg    TEXT,
     t1_compressed_at TEXT,
+    -- Retry bookkeeping (consecutive failures + earliest next attempt).
+    -- Reset to (0, NULL) on success.  See ``_record`` and the eligibility
+    -- query for how these gate retry timing and the give_up cap.
+    t1_attempts      INTEGER NOT NULL DEFAULT 0,
+    t1_next_retry_at TEXT,
 
     -- Tier 2 compression
     t2_encoder      TEXT,
@@ -64,21 +84,24 @@ CREATE TABLE IF NOT EXISTS files (
     t2_encode_sec   REAL,
     t2_status       TEXT,
     t2_error_msg    TEXT,
-    t2_compressed_at TEXT
+    t2_compressed_at TEXT,
+    t2_attempts      INTEGER NOT NULL DEFAULT 0,
+    t2_next_retry_at TEXT
 );
 
 -- Eligibility partials: keyed on (camera, start_time) so the planner can
 -- range-scan "camera X, start_time < cutoff" within the pending-only
 -- subset.  ~4000× faster than the recordings-driven LEFT JOIN it
--- replaced.
+-- replaced.  ``give_up`` excluded so terminally-failed rows don't
+-- consume index space.
 CREATE INDEX IF NOT EXISTS idx_files_t1_pending_age ON files(camera, start_time)
   WHERE t1_status IS NULL
-     OR t1_status NOT IN ('ok', 'segment_update_failed');
+     OR t1_status NOT IN ('ok', 'segment_update_failed', 'give_up');
 
 CREATE INDEX IF NOT EXISTS idx_files_t2_pending_age ON files(camera, start_time)
   WHERE t1_status IN ('ok', 'segment_update_failed')
     AND (t2_status IS NULL
-         OR t2_status NOT IN ('ok', 'segment_update_failed'));
+         OR t2_status NOT IN ('ok', 'segment_update_failed', 'give_up'));
 
 -- Partial indexes for the weekly housekeeping pass.  Each scans rows in a
 -- rare status; without these, housekeeping has to SCAN the full files
@@ -354,6 +377,48 @@ _FILES_STATS_TRIGGERS = (
 )
 
 
+def _migrate_files(conn: sqlite3.Connection) -> None:
+    """Bring an existing ``files`` schema up to the current version.
+
+    Adds retry-bookkeeping columns (``t{1,2}_attempts`` and
+    ``t{1,2}_next_retry_at``) if they're missing — SQLite's ``CREATE
+    TABLE IF NOT EXISTS`` is a no-op when the table exists, so new
+    columns require an explicit ``ALTER TABLE``.
+
+    Drops the eligibility partial indexes unconditionally so the
+    subsequent ``CREATE INDEX IF NOT EXISTS`` (in ``SCHEMA``) installs
+    fresh indexes whose WHERE clauses exclude ``give_up`` rows.  ``IF
+    NOT EXISTS`` would otherwise leave the old WHERE clause in place.
+
+    Idempotent — safe to run on a fresh DB (table doesn't exist yet,
+    nothing to migrate).
+    """
+    has_table = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'"
+        ).fetchone()
+        is not None
+    )
+    if not has_table:
+        return
+
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+    for col_name, col_type in (
+        ("t1_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("t1_next_retry_at", "TEXT"),
+        ("t2_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("t2_next_retry_at", "TEXT"),
+    ):
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE files ADD COLUMN {col_name} {col_type}")
+
+    # WHERE clause changed: drop so SCHEMA's CREATE INDEX IF NOT EXISTS
+    # builds the new one.
+    conn.execute("DROP INDEX IF EXISTS idx_files_t1_pending_age")
+    conn.execute("DROP INDEX IF EXISTS idx_files_t2_pending_age")
+    conn.commit()
+
+
 def _migrate_files_stats(conn: sqlite3.Connection) -> None:
     """Bring an existing ``files_stats`` schema up to the current version.
 
@@ -419,6 +484,14 @@ def open_compress_db(path: Path) -> sqlite3.Connection:
     # sample; total cost is ~10k × index_count rows once per
     # housekeeping pass, still trivial.
     conn.execute("PRAGMA analysis_limit=10000")
+    # Migrate ``files`` schema BEFORE running ``SCHEMA``: an existing
+    # ``files`` table won't pick up the new retry-bookkeeping columns
+    # via ``CREATE TABLE IF NOT EXISTS`` (it's a no-op when the table
+    # exists).  Drop the eligibility partial indexes too — their WHERE
+    # clauses changed to exclude ``give_up``, and ``CREATE INDEX IF NOT
+    # EXISTS`` won't replace an existing index with a different
+    # definition.  Both will be re-created by ``SCHEMA``.
+    _migrate_files(conn)
     conn.executescript(SCHEMA)
     conn.executescript(VIEWS)
     # Migrate ``files_stats`` schema before re-installing triggers — on
@@ -513,8 +586,21 @@ def _record(
     status: str,
     error_msg: str | None = None,
 ) -> None:
+    """Record a tier compression result.
+
+    Success paths (``status == STATUS_OK``) reset the retry counter and
+    clear ``next_retry_at`` so a subsequent failure starts the backoff
+    schedule from attempt 1.  Non-success paths leave both fields alone
+    here — failure bookkeeping (increment + backoff) goes through
+    ``_record_failure`` instead, which writes them in the same UPDATE
+    that flips status to error / give_up.
+    """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     t = f"t{tier}"
+    # ``segment_update_failed`` and ``direct`` both mean "encode worked"
+    # — only ``error`` and ``give_up`` are real failures, and those
+    # don't go through this path (they route via ``_record_failure``).
+    is_success = status in (STATUS_OK, STATUS_DIRECT, STATUS_SEGMENT_UPDATE_FAILED)
     conn.execute(
         f"""
         INSERT INTO files
@@ -531,6 +617,7 @@ def _record(
             {t}_compressed_at  = excluded.{t}_compressed_at,
             {t}_status         = excluded.{t}_status,
             {t}_error_msg      = excluded.{t}_error_msg
+            {", " + t + "_attempts = 0, " + t + "_next_retry_at = NULL" if is_success else ""}
         """,
         (
             recording_id,
@@ -547,6 +634,99 @@ def _record(
         ),
     )
     conn.commit()
+
+
+def _record_failure(
+    conn: sqlite3.Connection,
+    *,
+    recording_id: str,
+    camera: str,
+    path: str,
+    tier: int,
+    recording_type: str,
+    encoder: str,
+    size_after: int | None = None,
+    duration_sec: float | None = None,
+    error_msg: str | None = None,
+) -> tuple[int, str]:
+    """Atomically increment ``t{tier}_attempts`` and pick a status.
+
+    Returns ``(new_attempts, status)`` where ``status`` is
+    ``STATUS_GIVE_UP`` if the cap has been hit and ``STATUS_ERROR``
+    otherwise.  Computes ``next_retry_at`` from the new attempt count
+    (``_BACKOFF_BASE_SEC * 2^(attempts-1)`` capped at
+    ``_BACKOFF_MAX_SEC``); ``next_retry_at`` is left NULL when the
+    status is ``give_up`` since the row is no longer eligible for
+    retry.
+
+    ``size_after`` and ``duration_sec`` are stored when the caller has
+    them (e.g. timeout failures know how long ffmpeg ran) — useful for
+    post-mortem.  All bookkeeping happens in one UPDATE so concurrent
+    encode failures on the same row (which shouldn't happen — workers
+    don't share rows — but is defensive) can't lose increments.
+    """
+    now_epoch = time.time()
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now_epoch))
+    t = f"t{tier}"
+
+    # Read current attempt count.  Row may not exist (first failure on
+    # a never-recorded recording_id), in which case current_attempts=0.
+    row = conn.execute(
+        f"SELECT COALESCE({t}_attempts, 0) AS n FROM files WHERE recording_id = ?",
+        (recording_id,),
+    ).fetchone()
+    current_attempts = row["n"] if row is not None else 0
+    new_attempts = current_attempts + 1
+
+    if new_attempts >= _MAX_ATTEMPTS:
+        status = STATUS_GIVE_UP
+        next_retry_iso: str | None = None
+    else:
+        status = STATUS_ERROR
+        delay_sec = min(
+            _BACKOFF_BASE_SEC * (2 ** (new_attempts - 1)),
+            _BACKOFF_MAX_SEC,
+        )
+        next_retry_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(now_epoch + delay_sec)
+        )
+
+    conn.execute(
+        f"""
+        INSERT INTO files
+            (recording_id, camera, path, recording_type,
+             {t}_encoder, {t}_file_size, {t}_encode_sec,
+             {t}_compressed_at, {t}_status, {t}_error_msg,
+             {t}_attempts, {t}_next_retry_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(recording_id) DO UPDATE SET
+            recording_type     = excluded.recording_type,
+            {t}_encoder        = excluded.{t}_encoder,
+            {t}_file_size      = excluded.{t}_file_size,
+            {t}_encode_sec     = excluded.{t}_encode_sec,
+            {t}_compressed_at  = excluded.{t}_compressed_at,
+            {t}_status         = excluded.{t}_status,
+            {t}_error_msg      = excluded.{t}_error_msg,
+            {t}_attempts       = excluded.{t}_attempts,
+            {t}_next_retry_at  = excluded.{t}_next_retry_at
+        """,
+        (
+            recording_id,
+            camera,
+            path,
+            recording_type,
+            encoder,
+            size_after,
+            duration_sec,
+            now_iso,
+            status,
+            error_msg,
+            new_attempts,
+            next_retry_iso,
+        ),
+    )
+    conn.commit()
+    return new_attempts, status
 
 
 def _attach_frigate(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
