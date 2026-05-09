@@ -10,6 +10,7 @@ import time
 from .config import Config
 from .context import CompressorContext
 from .database import (
+    STATUS_DIRECT,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
@@ -64,10 +65,12 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             t1_params.extend([name, t1_cutoff])
         if cam.tier2.enabled:
             t2_cutoff = effective_now - (cam.tier2.min_days * 86400)
-            # STATUS_DIRECT rows ARE included once they reach tier2.min_days —
-            # they need swapping (sibling rename), not re-encoding.  The
-            # worker dispatches based on t2_status (carried out in the outer
-            # SELECT below).
+            # STATUS_DIRECT rows are excluded here — they're sibling-swap
+            # work (rename + unlink, no GPU) and surface through
+            # ``swap_loop.get_eligible_swaps`` instead.  This branch only
+            # surfaces tier-2 rows that need a CHAINED re-encode of an
+            # existing tier-1 file (t2_status NULL or error-retry), which
+            # is GPU work and belongs alongside tier-1 in the main loop.
             t2_parts.append(
                 f"""
                 SELECT * FROM (
@@ -78,7 +81,8 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                           ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
-                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}'))
+                              ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                               '{STATUS_DIRECT}'))
                     ORDER BY f.start_time ASC
                     LIMIT {_ELIGIBLE_BATCH_SIZE}
                 )
@@ -101,31 +105,50 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     Driven entirely from the partial eligibility indexes on ``files``.
     Path and recording_type are denormalised onto ``files`` at probe time,
     so this query never touches Frigate's recordings table.
+
+    Ordering is auto-tuned per call.  When the eligible-row count exceeds
+    one batch, results are sorted ``tier ASC, start_time ASC`` so the
+    heavier tier-1 encodes drain ahead of tier-2 — the catch-up case.
+    When the count fits in one batch, results are sorted ``start_time
+    ASC`` only, so tier-1 and tier-2 intermix by time and the steady-state
+    workload stays balanced across the encoder.
     """
     cfg = ctx.cfg
     union_sql, params = _build_eligible_where(cfg, time.time())
     if not union_sql:
         return []
-    params.append(_ELIGIBLE_BATCH_SIZE)
+    # Catch-up signal lives entirely in SQL: COUNT(*) OVER () counts the
+    # union once.  When the count exceeds one batch, we have more work
+    # than we can carry — sort tier ASC first so the heavier tier-0→1
+    # encodes drain ahead of tier-1→2 chained re-encodes.  When caught
+    # up, the CASE returns NULL for every row, the primary key collapses
+    # to a tie, and ordering falls through to start_time ASC, interleaving
+    # tier-1 and chained-tier-2 by time so steady-state load is balanced.
+    # (Sibling-swap work is handled by ``swap_loop`` on its own thread.)
+    params.extend([_ELIGIBLE_BATCH_SIZE, _ELIGIBLE_BATCH_SIZE, _ELIGIBLE_BATCH_SIZE])
 
-    # Two-stage query: inner branches stay index-only and emit (rid,
-    # start_time, tier); the outer JOIN fetches path/recording_type +
-    # probe metadata (width/height/fps) for only the rows that survive
-    # the LIMIT.
     with ctx.compress_db_lock:
         rows = ctx.compress_db.execute(
             f"""
             SELECT f.recording_id, f.camera, f.path, f.recording_type,
-                   f.width, f.height, f.fps, f.t2_status,
+                   f.width, f.height, f.fps,
                    sub.start_time, sub.tier
             FROM (
-                SELECT rid, start_time, tier
-                FROM ({union_sql})
-                ORDER BY tier ASC, start_time ASC
+                SELECT rid, start_time, tier, n
+                FROM (
+                    SELECT rid, start_time, tier,
+                           COUNT(*) OVER () AS n
+                    FROM ({union_sql})
+                )
+                ORDER BY
+                    CASE WHEN n > ? THEN tier END ASC,
+                    start_time ASC
                 LIMIT ?
             ) sub
             JOIN files f ON f.rowid = sub.rid
-            ORDER BY sub.tier ASC, sub.start_time ASC
+            ORDER BY
+                CASE WHEN sub.n > ? THEN sub.tier END ASC,
+                sub.start_time ASC
             """,
             params,
         ).fetchall()
@@ -149,9 +172,6 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
                 "width": row["width"],
                 "height": row["height"],
                 "fps": row["fps"],
-                # ``t2_status`` lets the worker dispatch tier-2 rows between
-                # swap_t2 (when 'direct') and compress_one (chained encode).
-                "t2_status": row["t2_status"],
             }
         )
     return results

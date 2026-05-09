@@ -94,6 +94,12 @@ from .probe_loop import (  # noqa: E402,F401
     _store_probe,
     run_probe_loop,
 )
+from .swap_loop import (  # noqa: E402,F401
+    _MAX_SWAPS_PER_WINDOW,
+    _SWAP_WINDOW_SEC,
+    get_eligible_swaps,
+    run_swap_loop,
+)
 from .throttle import (  # noqa: E402,F401
     MAX_SLEEP_SEC,
     RateLimiter,
