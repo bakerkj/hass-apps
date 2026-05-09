@@ -27,7 +27,17 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import select
 import subprocess
+import time
+
+# Grace seconds beyond the caller's ``timeout`` before the parent gives
+# up waiting for the manager's status frame.  ffmpeg's ``subprocess.run``
+# in the manager already enforces ``timeout``, but if the manager itself
+# wedges (OOM-killed mid-subprocess setup, kernel buffer drama on the
+# status pipe, etc.) the parent shouldn't block forever — raise after
+# ``timeout + this`` so the caller can record an error and move on.
+_PARENT_READ_GRACE_SEC = 30.0
 
 
 @dataclasses.dataclass
@@ -73,9 +83,25 @@ def run_detached(
         # near-zero accumulated IO.
         os.waitpid(pid_outer, 0)
         # Block on the pipe until manager writes its JSON status — i.e.
-        # until ``cmd`` has exited (or timed out, or errored).
+        # until ``cmd`` has exited (or timed out, or errored).  Bounded
+        # by ``timeout + _PARENT_READ_GRACE_SEC`` so a wedged manager
+        # can't block this thread forever.  ``subprocess.run`` in the
+        # manager defaults to ``close_fds=True`` so ``cmd`` doesn't
+        # inherit ``status_w`` — EOF here fires once the manager exits.
+        deadline = time.monotonic() + (timeout or 0) + _PARENT_READ_GRACE_SEC
         chunks: list[bytes] = []
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"manager status read exceeded "
+                    f"{(timeout or 0) + _PARENT_READ_GRACE_SEC:.1f}s"
+                )
+            rlist, _, _ = select.select([status_r], [], [], remaining)
+            if not rlist:
+                # ``select`` timed out — same outcome as the deadline
+                # check above; surface as a manager wedge.
+                raise RuntimeError("manager status read timed out")
             chunk = os.read(status_r, 4096)
             if not chunk:
                 break
