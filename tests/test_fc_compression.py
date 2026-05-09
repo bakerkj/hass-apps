@@ -1109,6 +1109,72 @@ def _eligible_row(rid: str = "r1", camera: str = "cam1") -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# adapt_pace_scale (drift-control proportional controller)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_adapt_pace_scale_shrinks_on_overshoot():
+    """Iteration ran longer than the window → scale shrinks proportionally."""
+    # Overshoot of 1.4s on 60s window: delta = -1.4/60 * 0.5 ≈ -0.01167.
+    new_scale = fc.adapt_pace_scale(1.0, 61.4)
+    assert new_scale == pytest.approx(1.0 - 1.4 / 60.0 * fc._PACE_GAIN)
+    assert new_scale < 1.0
+
+
+def test_adapt_pace_scale_grows_on_undershoot():
+    """Iteration ran short of the window → scale grows toward the ceiling."""
+    new_scale = fc.adapt_pace_scale(0.95, 58.0)
+    # Undershoot of 2s: delta = +2/60 * 0.5 ≈ +0.0167.
+    expected = min(fc._PACE_SCALE_MAX, 0.95 + 2.0 / 60.0 * fc._PACE_GAIN)
+    assert new_scale == pytest.approx(expected)
+    assert new_scale > 0.95
+
+
+def test_adapt_pace_scale_clamps_per_cycle_change():
+    """A huge overshoot still moves the scale by at most _PACE_PER_CYCLE_CLAMP."""
+    # Overshoot of 30s would imply delta = -0.25, clamped to -0.05.
+    new_scale = fc.adapt_pace_scale(1.0, 90.0)
+    assert new_scale == pytest.approx(1.0 - fc._PACE_PER_CYCLE_CLAMP)
+
+
+def test_adapt_pace_scale_floor():
+    """Repeated overshoots can't drive the scale below _PACE_SCALE_MIN."""
+    scale = 0.91
+    # One iter with huge overshoot — clamp would take it to 0.86, but floor
+    # holds at 0.90.
+    new_scale = fc.adapt_pace_scale(scale, 120.0)
+    assert new_scale == fc._PACE_SCALE_MIN
+
+
+def test_adapt_pace_scale_ceiling():
+    """Repeated undershoots can't drive the scale above _PACE_SCALE_MAX."""
+    scale = 1.00
+    new_scale = fc.adapt_pace_scale(scale, 10.0)
+    assert new_scale == fc._PACE_SCALE_MAX
+
+
+def test_adapt_pace_scale_converges_under_steady_overshoot():
+    """A controller fed a constant +1.4s overshoot every cycle settles within
+    a handful of cycles to a scale that would (in production) eliminate the
+    overshoot.  This is a behaviour smoke test, not a numerical fit."""
+    scale = 1.0
+    history = [scale]
+    for _ in range(20):
+        # Simulate "elapsed = 60 + leftover overshoot proportional to scale".
+        # Higher scale → more overshoot; lower scale → less.  Approximation:
+        # at scale 0.97 the per-iter overshoot is ~0.
+        overshoot = (scale - 0.97) * 60.0  # 0 at scale=0.97, +1.8 at scale=1.0
+        elapsed = fc._THROTTLE_WINDOW_SEC + overshoot
+        scale = fc.adapt_pace_scale(scale, elapsed)
+        history.append(scale)
+
+    # Final scale should be near the equilibrium (~0.97) and stable.
+    assert 0.96 < history[-1] < 0.98
+    # Last few values vary by less than 1% — controller has settled.
+    assert max(history[-3:]) - min(history[-3:]) < 0.005
+
+
 def test_run_main_loop_sleeps_remainder_after_partial_batch(monkeypatch, tmp_path):
     """A partial batch that processes fast (mocked instant compress) means
     elapsed << window — the loop should sleep approximately the full window
@@ -1348,7 +1414,9 @@ def test_run_main_loop_sets_target_to_batch_size(monkeypatch, tmp_path):
     with ThreadPoolExecutor(max_workers=1) as _pool:
         fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
-    assert ctx.rate_limiter.target_per_min == 7
+    # target = N / pace_scale; pace_scale starts at 0.98 → target ≈ 7.143
+    # for a 7-row batch on iter 1 (the only iter the test runs).
+    assert ctx.rate_limiter.target_per_min == pytest.approx(7 / 0.98)
 
     _close_ctx(ctx)
     frigate_conn.close()
@@ -1435,9 +1503,11 @@ def test_pace_then_compress_propagates_compress_exception(monkeypatch):
 
 
 def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
-    """End-to-end: don't mock the limiter.  6 files at target=6/min → 5
-    pacing sleeps of 10s each, then the elapsed-remainder fills out the
-    iteration to one window, then the no-work sleep ends the test."""
+    """End-to-end: don't mock the limiter.  6 files at target=6/0.98/min
+    (pace_scale starts at 0.98) → interval 9.8s → 5 pacing sleeps of
+    9.8s each, then the elapsed-remainder fills out the iteration to
+    one window (60 - 5*9.8 = 11s), then the no-work sleep ends the
+    test."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     ctx = _make_eligible_ctx(tmp_path, frigate_db)
@@ -1478,11 +1548,12 @@ def test_run_main_loop_paces_via_real_rate_limiter(monkeypatch, tmp_path):
     with ThreadPoolExecutor(max_workers=1) as _pool:
         fc.run_main_loop(ctx, "cpu", stopping, 999_999, _pool)
 
-    # Iter 1: 6 files at interval=10s.  First file fires immediately;
-    #   workers sleep 10s × 5 between starts (50s total wall-clock).
-    #   Then elapsed=50s, post-batch sleep=10s fills out the window.
+    # Iter 1: 6 files at interval=9.8s.  First file fires immediately;
+    #   workers sleep 9.8s × 5 between starts (49s total wall-clock).
+    #   Then elapsed=49s, post-batch sleep=11s fills out the window.
     # Iter 2: empty → MAX-capped no-work sleep ends the test.
-    assert sleeps[:6] == [pytest.approx(10.0, abs=0.05)] * 6
+    assert sleeps[:5] == [pytest.approx(9.8, abs=0.05)] * 5
+    assert sleeps[5] == pytest.approx(11.0, abs=0.05)
     assert sleeps[-1] == fc.MAX_SLEEP_SEC
     assert len(sleeps) == 7
 

@@ -36,7 +36,7 @@ from .housekeeping import run_housekeeping
 from .mqtt import MqttPublisher
 from .probe_loop import run_probe_loop
 from .swap_loop import run_swap_loop
-from .throttle import MAX_SLEEP_SEC, _THROTTLE_WINDOW_SEC
+from .throttle import MAX_SLEEP_SEC, _THROTTLE_WINDOW_SEC, adapt_pace_scale
 from .util import log, set_log_level
 
 
@@ -278,9 +278,15 @@ def run_main_loop(
     cfg = ctx.cfg
     last_housekeeping = time.time()
 
+    # Pre-positioned near production equilibrium (~0.977) so the controller
+    # doesn't waste ~5 cycles converging down from 1.0.
+    pace_scale = 0.98
+    # Set to ``now`` so the first iter's ``+= _THROTTLE_WINDOW_SEC``
+    # produces a deadline one window into the future, matching the
+    # pre-controller behaviour of the very first iteration.
+    next_window = time.time()
+
     while not stopping.is_set():
-        # Each iteration aims to take exactly ``_THROTTLE_WINDOW_SEC``
-        # wall-clock — sleep at the end is whatever's left over.
         iter_start = time.time()
 
         # ── Housekeeping ──────────────────────────────────────────────────
@@ -300,10 +306,13 @@ def run_main_loop(
             continue
 
         if eligible:
-            # Throttle target = exactly the work in this batch over the
-            # next minute.  No separate workload measurement, no lookahead
-            # — pace just the files we actually have.
-            ctx.rate_limiter.set_target(len(eligible))
+            # Pace N jobs into ``pace_scale * _THROTTLE_WINDOW_SEC`` seconds
+            # instead of the full window.  The shorter sub-window leaves
+            # headroom for the last job's encode time + per-iter overhead
+            # (eligibility query, futures collection, log emit).  Translates
+            # to ``set_target(N / pace_scale)`` which raises the per-second
+            # rate enough to finish on time.
+            ctx.rate_limiter.set_target(len(eligible) / pace_scale)
 
             suffix = " (DRY RUN — skipping ffmpeg)" if cfg.all_dry_run else ""
             camera_counts = Counter(r["camera"] for r in eligible)
@@ -348,23 +357,38 @@ def run_main_loop(
                 except Exception as e:
                     log("ERROR", f"[{r['camera']}] unhandled error: {e}")
 
+        # ── Adapt pacing for the next iteration ───────────────────────────
+        # Only feed real cycles into the controller — dry-run iterations
+        # short-circuit before the rate limiter does any meaningful pacing,
+        # so their elapsed time is meaningless as a control signal.
+        if eligible and not cfg.all_dry_run:
+            pace_scale = adapt_pace_scale(pace_scale, time.time() - iter_start)
+
         # ── Sleep until the next iteration ───────────────────────────────
         # Three cases:
-        #   1. Work was processed: sleep the remainder of the window so
-        #      total iteration = one window.  If processing overran the
-        #      window (catchup: batch outran capacity), don't sleep.
+        #   1. Work was processed: sleep until ``next_window`` (the rolling
+        #      wall-clock deadline) so single-iter jitter doesn't propagate
+        #      forward as drift.  If we overran beyond one window, realign
+        #      ``next_window`` to ``now`` — losing the original phase but
+        #      preventing a permanent backlog of "missed" deadlines.
         #   2. No work: sleep until the next recording becomes eligible
         #      PLUS one full window — so when we wake there's ~one
         #      window of accumulated work to process as a proper batch,
         #      not a lone first-eligible file.  Capped at MAX_SLEEP_SEC
         #      so pathological states still re-check every 10 minutes.
+        #      Resync ``next_window`` afterwards since we've left the
+        #      cycle-driven cadence.
         #   3. Dry-run with work: recordings are never marked done, so
         #      we force a full window sleep to avoid looping instantly
-        #      on the same un-marked files.
+        #      on the same un-marked files.  Also resync ``next_window``.
         if eligible and cfg.all_dry_run:
             sleep_sec = _THROTTLE_WINDOW_SEC
+            next_window = time.time() + _THROTTLE_WINDOW_SEC
         elif eligible:
-            sleep_sec = max(0.0, _THROTTLE_WINDOW_SEC - (time.time() - iter_start))
+            next_window += _THROTTLE_WINDOW_SEC
+            if next_window < time.time():
+                next_window = time.time()
+            sleep_sec = max(0.0, next_window - time.time())
         else:
             try:
                 sleep_sec = min(
@@ -374,5 +398,6 @@ def run_main_loop(
             except Exception as e:
                 log("WARNING", f"time_until_next_eligible failed: {e}")
                 sleep_sec = MAX_SLEEP_SEC
+            next_window = time.time() + sleep_sec
         if sleep_sec > 0:
             stopping.wait(timeout=sleep_sec)
