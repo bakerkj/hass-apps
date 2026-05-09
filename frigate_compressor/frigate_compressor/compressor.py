@@ -43,6 +43,39 @@ def _format_src_info(probe_data: dict | None) -> str:
     return f"{f'{probe_data["width"]}x{probe_data["height"]}':<10}"
 
 
+def _resolve_probe_data(
+    ctx: CompressorContext,
+    recording_id: str,
+    camera: str,
+    filepath: Path,
+    probe_data: dict | None,
+) -> dict | None:
+    """Return probe data for ``recording_id`` or ``None`` if unprobed.
+
+    Production callers pass ``probe_data`` from the eligibility query's
+    fast path (``get_eligible_recordings`` already fetches width / height
+    / fps).  Tests and ad-hoc callers leave it ``None`` and we fall back
+    to a per-file SELECT under the lock.  Returns ``None`` after logging
+    a DEBUG ``Not yet probed`` line if width/height aren't populated —
+    callers should treat that as "skip this row."
+    """
+    if probe_data is None:
+        with ctx.compress_db_lock:
+            row = ctx.compress_db.execute(
+                "SELECT width, height, fps FROM files WHERE recording_id = ?",
+                (recording_id,),
+            ).fetchone()
+        probe_data = (
+            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
+            if row is not None
+            else None
+        )
+    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
+        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
+        return None
+    return probe_data
+
+
 def _format_tgt_info(ts: TypeSettings) -> str:
     """``→<scale> q<quality>`` left-padded to 14 — matches the chained log shape."""
     tgt_res = ""
@@ -168,23 +201,8 @@ def compress_one(
         )
         return False
 
-    # Require probe data before compressing.  If the caller passed it in
-    # (production fast path — eligibility query already fetched these
-    # columns), skip the SELECT.  Tests and ad-hoc callers fall back to
-    # a per-file SELECT.
+    probe_data = _resolve_probe_data(ctx, recording_id, camera, filepath, probe_data)
     if probe_data is None:
-        with compress_db_lock:
-            row = compress_db.execute(
-                "SELECT width, height, fps FROM files WHERE recording_id = ?",
-                (recording_id,),
-            ).fetchone()
-        probe_data = (
-            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
-            if row is not None
-            else None
-        )
-    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
-        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
     src_info = _format_src_info(probe_data)
@@ -579,20 +597,8 @@ def compress_direct(
         )
         return False
 
-    # Probe data check (mirrors compress_one).
+    probe_data = _resolve_probe_data(ctx, recording_id, camera, filepath, probe_data)
     if probe_data is None:
-        with compress_db_lock:
-            row = compress_db.execute(
-                "SELECT width, height, fps FROM files WHERE recording_id = ?",
-                (recording_id,),
-            ).fetchone()
-        probe_data = (
-            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
-            if row is not None
-            else None
-        )
-    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
-        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
     src_info = _format_src_info(probe_data)
