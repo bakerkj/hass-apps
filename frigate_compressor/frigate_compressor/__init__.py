@@ -103,7 +103,12 @@ from .swap_loop import (  # noqa: E402,F401
 from .throttle import (  # noqa: E402,F401
     MAX_SLEEP_SEC,
     RateLimiter,
+    _PACE_GAIN,
+    _PACE_PER_CYCLE_CLAMP,
+    _PACE_SCALE_MAX,
+    _PACE_SCALE_MIN,
     _THROTTLE_WINDOW_SEC,
+    adapt_pace_scale,
 )
 from .util import _display_path, _fmt, log, set_log_level  # noqa: E402,F401
 
