@@ -216,6 +216,74 @@ def test_get_eligible_recordings_retries_errored(tmp_path):
     frigate_conn.close()
 
 
+def test_get_eligible_recordings_excludes_give_up_rows(tmp_path):
+    """Rows in ``STATUS_GIVE_UP`` (terminal failure after retry cap)
+    are permanently excluded from eligibility — operator must reset
+    via SQL to retry."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rgu",
+        "cam1",
+        "/m/rgu.mp4",
+        time.time() - 10 * 86400,
+    )
+    compress_conn.execute(
+        "UPDATE files SET t1_status=? WHERE recording_id='rgu'",
+        (fc.STATUS_GIVE_UP,),
+    )
+    compress_conn.commit()
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    assert fc.get_eligible_recordings(ctx) == []
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_skips_rows_in_backoff_window(tmp_path):
+    """A row whose ``t1_next_retry_at`` is in the future is excluded
+    from eligibility until that time arrives — the backoff schedule
+    keeps a recently-failed row out of the next batch."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rba",
+        "cam1",
+        "/m/rba.mp4",
+        time.time() - 10 * 86400,
+    )
+    # Mark error with a next_retry_at 1 hour in the future.
+    future = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() + 3600))
+    compress_conn.execute(
+        "UPDATE files SET t1_status=?, t1_next_retry_at=? WHERE recording_id='rba'",
+        (fc.STATUS_ERROR, future),
+    )
+    compress_conn.commit()
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    assert fc.get_eligible_recordings(ctx) == []
+
+    # And a row whose next_retry_at is in the past IS eligible.
+    past = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 60))
+    compress_conn.execute(
+        "UPDATE files SET t1_next_retry_at=? WHERE recording_id='rba'",
+        (past,),
+    )
+    compress_conn.commit()
+    results = fc.get_eligible_recordings(ctx)
+    assert [r["recording_id"] for r in results] == ["rba"]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
 def test_get_eligible_recordings_tier2_assignment(tmp_path):
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)

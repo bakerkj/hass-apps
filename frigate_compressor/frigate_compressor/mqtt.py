@@ -260,6 +260,46 @@ _CAMERA_SENSORS: list[_SensorSpec] = [
         "mdi:alert-circle",
         False,
     ),
+    # Rows currently retrying (``STATUS_ERROR`` with attempts ≥ 1).
+    # Climbs as transient failures occur, drops as retries succeed.
+    # An early-warning signal — sustained growth here often precedes
+    # give_up rows showing up.
+    (
+        "tier1_retry_count",
+        "Tier 1 retry count",
+        None,
+        None,
+        "mdi:reload-alert",
+        False,
+    ),
+    (
+        "tier2_retry_count",
+        "Tier 2 retry count",
+        None,
+        None,
+        "mdi:reload-alert",
+        False,
+    ),
+    # Counters of rows the retry cap has surrendered on.  Non-zero means
+    # operator action is needed (reset attempts/status to retry, or just
+    # accept the loss).  Reported as plain numeric sensors so dashboards
+    # can plot them; HA can fire automations on > 0.
+    (
+        "tier1_give_up_count",
+        "Tier 1 give-up count",
+        None,
+        None,
+        "mdi:close-octagon",
+        False,
+    ),
+    (
+        "tier2_give_up_count",
+        "Tier 2 give-up count",
+        None,
+        None,
+        "mdi:close-octagon",
+        False,
+    ),
 ]
 
 # Bytes counters that get a corresponding _rate sensor at the top level.
@@ -636,6 +676,10 @@ class MqttPublisher:
         values["recording_bytes_rate"] = cs.recording_bytes_rate
         values["tier1_backlog_error"] = cs.tier1_backlog_error
         values["tier2_backlog_error"] = cs.tier2_backlog_error
+        values["tier1_retry_count"] = cs.tier1_retry_count
+        values["tier2_retry_count"] = cs.tier2_retry_count
+        values["tier1_give_up_count"] = cs.tier1_give_up_count
+        values["tier2_give_up_count"] = cs.tier2_give_up_count
         self._publish_values(prefix, values)
 
     def _publish_values(

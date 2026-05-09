@@ -262,6 +262,135 @@ def test_record_upserts_same_tier_on_retry(tmp_path):
     conn.close()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# _record_failure (retry counter + backoff + give_up cap)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_record_failure_first_attempt_sets_error_and_attempts_one(tmp_path):
+    conn = _open_compress_db(tmp_path)
+    new_n, status = fc._record_failure(
+        conn,
+        recording_id="r1",
+        camera="cam",
+        path="/m/r1.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="qsv",
+        error_msg="boom",
+    )
+    assert (new_n, status) == (1, fc.STATUS_ERROR)
+    row = conn.execute("SELECT * FROM files WHERE recording_id='r1'").fetchone()
+    assert row["t1_status"] == fc.STATUS_ERROR
+    assert row["t1_attempts"] == 1
+    assert row["t1_next_retry_at"] is not None
+    conn.close()
+
+
+def test_record_failure_increments_attempts_on_repeat(tmp_path):
+    conn = _open_compress_db(tmp_path)
+    for _ in range(3):
+        fc._record_failure(
+            conn,
+            recording_id="r1",
+            camera="cam",
+            path="/m/r1.mp4",
+            tier=1,
+            recording_type="continuous",
+            encoder="qsv",
+        )
+    row = conn.execute(
+        "SELECT t1_attempts FROM files WHERE recording_id='r1'"
+    ).fetchone()
+    assert row["t1_attempts"] == 3
+    conn.close()
+
+
+def test_record_failure_flips_to_give_up_at_cap(tmp_path):
+    conn = _open_compress_db(tmp_path)
+    last = None
+    for _ in range(fc._MAX_ATTEMPTS):
+        last = fc._record_failure(
+            conn,
+            recording_id="r1",
+            camera="cam",
+            path="/m/r1.mp4",
+            tier=1,
+            recording_type="continuous",
+            encoder="qsv",
+        )
+    assert last == (fc._MAX_ATTEMPTS, fc.STATUS_GIVE_UP)
+    row = conn.execute("SELECT * FROM files WHERE recording_id='r1'").fetchone()
+    assert row["t1_status"] == fc.STATUS_GIVE_UP
+    # give_up rows have no next_retry_at — they're terminally excluded.
+    assert row["t1_next_retry_at"] is None
+    conn.close()
+
+
+def test_record_failure_backoff_doubles_per_attempt(tmp_path):
+    """Backoff = base * 2^(attempts-1) capped at max.  Verify by parsing the
+    next_retry_at delta against the row's t1_compressed_at."""
+    import datetime as _dt
+
+    conn = _open_compress_db(tmp_path)
+    for expected_attempts in range(1, 7):  # delays 60, 120, 240, 480, 960, 1920
+        fc._record_failure(
+            conn,
+            recording_id="r1",
+            camera="cam",
+            path="/m/r1.mp4",
+            tier=1,
+            recording_type="continuous",
+            encoder="qsv",
+        )
+        row = conn.execute(
+            "SELECT t1_compressed_at, t1_next_retry_at, t1_attempts"
+            " FROM files WHERE recording_id='r1'"
+        ).fetchone()
+        compressed = _dt.datetime.fromisoformat(row["t1_compressed_at"])
+        next_retry = _dt.datetime.fromisoformat(row["t1_next_retry_at"])
+        delta = (next_retry - compressed).total_seconds()
+        expected_delay = fc._BACKOFF_BASE_SEC * (2 ** (expected_attempts - 1))
+        # ±1s tolerance for the seconds-resolution timestamp rounding.
+        assert abs(delta - expected_delay) <= 1.0, (
+            f"attempt {expected_attempts}: expected ~{expected_delay}s, got {delta}s"
+        )
+    conn.close()
+
+
+def test_record_success_after_failure_resets_attempts(tmp_path):
+    conn = _open_compress_db(tmp_path)
+    fc._record_failure(
+        conn,
+        recording_id="r1",
+        camera="cam",
+        path="/m/r1.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="qsv",
+    )
+    fc._record(
+        conn,
+        recording_id="r1",
+        camera="cam",
+        path="/m/r1.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="qsv",
+        size_before=1000,
+        size_after=500,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+    row = conn.execute(
+        "SELECT t1_status, t1_attempts, t1_next_retry_at FROM files WHERE recording_id='r1'"
+    ).fetchone()
+    assert row["t1_status"] == fc.STATUS_OK
+    assert row["t1_attempts"] == 0
+    assert row["t1_next_retry_at"] is None
+    conn.close()
+
+
 def test_record_error_with_message(tmp_path):
     conn = _open_compress_db(tmp_path)
     fc._record(

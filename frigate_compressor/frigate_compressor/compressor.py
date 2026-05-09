@@ -16,6 +16,7 @@ from .database import (
     STATUS_ERROR,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
+    _record_failure,
     _record,
 )
 from .detached_subprocess import DetachedResult, run_detached
@@ -126,6 +127,22 @@ def _compress_one_inner(
         error_msg: str | None = None,
     ) -> None:
         with compress_db_lock:
+            if status == STATUS_ERROR:
+                # Failure path: increment retry counter, set next_retry_at
+                # for backoff, flip to give_up if cap is hit.
+                _record_failure(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=tier,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_after=size_after,
+                    duration_sec=duration_sec,
+                    error_msg=error_msg,
+                )
+                return
             _record(
                 compress_db,
                 recording_id=recording_id,
@@ -470,6 +487,20 @@ def compress_direct(
         error_msg: str | None = None,
     ) -> None:
         with compress_db_lock:
+            if status == STATUS_ERROR:
+                _record_failure(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=tier,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_after=size,
+                    duration_sec=duration,
+                    error_msg=error_msg,
+                )
+                return
             _record(
                 compress_db,
                 recording_id=recording_id,
@@ -815,6 +846,19 @@ def swap_t2(
 
     def rec(*, status: str, size: int | None, error_msg: str | None = None) -> None:
         with compress_db_lock:
+            if status == STATUS_ERROR:
+                _record_failure(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=2,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_after=size,
+                    error_msg=error_msg,
+                )
+                return
             _record(
                 compress_db,
                 recording_id=recording_id,
