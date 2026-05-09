@@ -283,15 +283,16 @@ def test_get_eligible_recordings_object_type(tmp_path):
     frigate_conn.close()
 
 
-def test_get_eligible_recordings_orders_by_time_when_caught_up(tmp_path):
-    """When the eligible count fits in one batch (steady state), tier-1 and
-    tier-2 intermix by ``start_time`` — the older tier-2 candidate sorts
-    before the newer tier-1 candidate."""
+def test_get_eligible_recordings_interleaves_tiers_when_caught_up(tmp_path):
+    """When the eligible count fits in one batch (steady state), tier-1
+    and tier-2 chained alternate by per-tier rank — within each rank
+    tier-1 sorts first.  Pure ``start_time`` order doesn't interleave
+    because tier-2 chained rows are always older than tier-1 rows."""
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
     compress_conn = _open_compress_db(tmp_path)
 
-    # Older recording: t1 already done → eligible for tier 2.
+    # Older recording: t1 already done → eligible for tier 2 (chained).
     _insert_probed(
         frigate_conn,
         compress_conn,
@@ -326,9 +327,75 @@ def test_get_eligible_recordings_orders_by_time_when_caught_up(tmp_path):
     )
 
     results = fc.get_eligible_recordings(ctx)
-    # Caught up: pure time order — older tier-2 first, newer tier-1 second.
-    assert [r["recording_id"] for r in results] == ["old-t2", "new-t1"]
-    assert [r["tier"] for r in results] == [2, 1]
+    # Caught up: rank 1 of tier-1 before rank 1 of tier-2.
+    assert [r["recording_id"] for r in results] == ["new-t1", "old-t2"]
+    assert [r["tier"] for r in results] == [1, 2]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_interleaves_multiple_pairs_when_caught_up(tmp_path):
+    """With three tier-1 and three tier-2 chained candidates, steady-state
+    output alternates: ``t1[0], t2[0], t1[1], t2[1], t1[2], t2[2]``."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+
+    now = time.time()
+    # Three tier-2 chained candidates (older — past tier2.min_days, t1 ok).
+    for i, age_days in enumerate([90, 80, 70]):
+        rid = f"t2-{i}"
+        _insert_probed(
+            frigate_conn,
+            compress_conn,
+            rid,
+            "cam1",
+            f"/m/{rid}.mp4",
+            now - age_days * 86400,
+        )
+    # Three tier-1 candidates (newer — past tier1.min_days, t1 NULL).
+    for i, age_days in enumerate([15, 12, 10]):
+        rid = f"t1-{i}"
+        _insert_probed(
+            frigate_conn,
+            compress_conn,
+            rid,
+            "cam1",
+            f"/m/{rid}.mp4",
+            now - age_days * 86400,
+        )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    # Mark the three tier-2 candidates' tier-1 as already done.
+    for i in range(3):
+        fc._record(
+            ctx.compress_db,
+            recording_id=f"t2-{i}",
+            camera="cam1",
+            path=f"/m/t2-{i}.mp4",
+            tier=1,
+            recording_type="continuous",
+            encoder="cpu",
+            size_before=1000,
+            size_after=500,
+            duration_sec=1.0,
+            status=fc.STATUS_OK,
+        )
+
+    results = fc.get_eligible_recordings(ctx)
+    # rk=1: t1-0 (oldest tier-1), t2-0 (oldest tier-2)
+    # rk=2: t1-1, t2-1
+    # rk=3: t1-2, t2-2
+    assert [r["recording_id"] for r in results] == [
+        "t1-0",
+        "t2-0",
+        "t1-1",
+        "t2-1",
+        "t1-2",
+        "t2-2",
+    ]
+    assert [r["tier"] for r in results] == [1, 2, 1, 2, 1, 2]
 
     _close_ctx(ctx)
     frigate_conn.close()
