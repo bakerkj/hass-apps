@@ -57,8 +57,19 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
     t1_params: list = []
     t2_parts: list[str] = []
     t2_params: list = []
+    # Suppress per-camera dry-run cameras when other cameras are running
+    # live: their rows would be returned every cycle (the worker's dry-run
+    # path logs and returns without writing status), producing perpetual
+    # log spam.  When ALL cameras are dry-run (``cfg.all_dry_run``) we
+    # leave them in — the loop's all-dry-run branch caps the cycle to one
+    # ``_THROTTLE_WINDOW_SEC`` per batch so the per-row logging is at most
+    # once per minute, which is the documented "see what would happen"
+    # observation cadence.
+    suppress_dry_run = not cfg.all_dry_run
     for name, cam in cfg.cameras.items():
         if not cam.enabled:
+            continue
+        if suppress_dry_run and cam.dry_run:
             continue
         if cam.tier1.enabled:
             t1_cutoff = effective_now - (cam.tier1.min_days * 86400)
@@ -220,16 +231,6 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     return results
 
 
-def _min_tier1_min_days(cfg: Config) -> int:
-    """Smallest ``tier1.min_days`` across enabled cameras (default 7)."""
-    days = [
-        cam.tier1.min_days
-        for cam in cfg.cameras.values()
-        if cam.enabled and cam.tier1.enabled
-    ]
-    return min(days) if days else 7
-
-
 def time_until_next_eligible(ctx: CompressorContext) -> float:
     """Seconds until the next recording becomes eligible for tier 1 or
     tier 2 compression.  Returns ``MAX_SLEEP_SEC`` if nothing is pending
@@ -237,39 +238,51 @@ def time_until_next_eligible(ctx: CompressorContext) -> float:
 
     Used only by the no-work sleep path — when there is eligible work,
     the loop sleeps the remainder of ``_THROTTLE_WINDOW_SEC`` instead.
+
+    Each camera's ``tierN.min_days`` is queried independently — using
+    ``min(min_days)`` across cameras and a single global query is
+    incorrect: it picks the soonest recording on ANY camera past the
+    SMALLEST cutoff, so a camera with a longer ``min_days`` triggers
+    spurious wake-ups every time one of its files crosses the smallest
+    cutoff (the loop wakes, finds nothing eligible, recomputes the same
+    soonest, sleeps zero — tight loop until that camera's actual
+    boundary).
     """
     cfg = ctx.cfg
     now = time.time()
     soonest = MAX_SLEEP_SEC
 
-    min_t1_days = _min_tier1_min_days(cfg)
-    t1_cutoff = now - (min_t1_days * 86400)
-    with ctx.compress_db_lock:
-        row = ctx.compress_db.execute(
-            "SELECT start_time FROM frigate.recordings"
-            " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
-            (t1_cutoff,),
-        ).fetchone()
-    if row is not None:
-        soonest = min(soonest, row["start_time"] + min_t1_days * 86400 - now)
+    # Build a per-camera plan: each enabled (camera, tier) pair queries
+    # its own ``frigate.recordings`` slice scoped to that camera and
+    # cutoff.  One short query per pair; total query count = number of
+    # enabled tier slots, not 2.  Apply the same dry-run filter as the
+    # eligibility queries — otherwise a per-camera dry-run cam would
+    # drive spurious wakeups here even though its rows never surface
+    # to the worker.
+    suppress_dry_run = not cfg.all_dry_run
+    plan: list[tuple[str, int]] = []
+    for name, cam in cfg.cameras.items():
+        if not cam.enabled:
+            continue
+        if suppress_dry_run and cam.dry_run:
+            continue
+        if cam.tier1.enabled:
+            plan.append((name, cam.tier1.min_days))
+        if cam.tier2.enabled:
+            plan.append((name, cam.tier2.min_days))
+    if not plan:
+        return MAX_SLEEP_SEC
 
-    min_t2_days = min(
-        (
-            cam.tier2.min_days
-            for cam in cfg.cameras.values()
-            if cam.enabled and cam.tier2.enabled
-        ),
-        default=None,
-    )
-    if min_t2_days is not None:
-        t2_cutoff = now - (min_t2_days * 86400)
-        with ctx.compress_db_lock:
+    with ctx.compress_db_lock:
+        for camera, min_days in plan:
+            cutoff = now - (min_days * 86400)
             row = ctx.compress_db.execute(
                 "SELECT start_time FROM frigate.recordings"
-                " WHERE start_time > ? ORDER BY start_time ASC LIMIT 1",
-                (t2_cutoff,),
+                " WHERE camera = ? AND start_time > ?"
+                " ORDER BY start_time ASC LIMIT 1",
+                (camera, cutoff),
             ).fetchone()
-        if row is not None:
-            soonest = min(soonest, row["start_time"] + min_t2_days * 86400 - now)
+            if row is not None:
+                soonest = min(soonest, row["start_time"] + min_days * 86400 - now)
 
     return min(MAX_SLEEP_SEC, max(0.0, soonest))

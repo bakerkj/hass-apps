@@ -15,7 +15,6 @@ import time  # noqa: F401  — exposed as ``frigate_compressor.time`` for tests
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
 from .compressor import (  # noqa: E402,F401
-    _compress_one_inner,
     compress_direct,
     compress_one,
     swap_t2,
@@ -81,9 +80,6 @@ from .housekeeping import run_housekeeping  # noqa: E402,F401
 from .paths import (  # noqa: E402,F401
     T2_INFIX,
     delete_sibling,
-    is_sibling_path,
-    primary_from_sibling,
-    sibling_exists,
     sibling_path,
 )
 from .mqtt import (  # noqa: E402,F401

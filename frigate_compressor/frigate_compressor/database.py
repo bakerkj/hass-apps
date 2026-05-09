@@ -262,9 +262,22 @@ END;
 -- zero and bytes adjust by the delta between OLD and NEW contributions.
 -- When they differ (tier transition or rtype change) the row correctly
 -- moves.
+-- WHEN clause skips the trigger when the UPDATE doesn't change any
+-- column that affects ``files_stats`` — probe-loop UPDATEs touch
+-- ``codec``/``bitrate``/``scanned_at``/``next_retry_at`` etc. which
+-- don't move the row's tier-bucket, so firing the subtract/add shuffle
+-- on every probe write was wasted I/O.  Bucket movement is driven
+-- entirely by ``recording_type`` + the t1/t2 status pair + the
+-- t1/t2 file_size pair (see ``_tier_case`` / ``_pre_encoded_case``).
 CREATE TRIGGER IF NOT EXISTS files_stats_after_update
 AFTER UPDATE ON files
 FOR EACH ROW
+WHEN OLD.recording_type IS NOT NEW.recording_type
+  OR OLD.t1_status      IS NOT NEW.t1_status
+  OR OLD.t2_status      IS NOT NEW.t2_status
+  OR OLD.t1_file_size   IS NOT NEW.t1_file_size
+  OR OLD.t2_file_size   IS NOT NEW.t2_file_size
+  OR OLD.file_size      IS NOT NEW.file_size
 BEGIN
 {_SUBTRACT_OLD}
 {_INSERT_OR_BUMP_FROM_NEW}
@@ -585,6 +598,7 @@ def _record(
     duration_sec: float | None,
     status: str,
     error_msg: str | None = None,
+    commit: bool = True,
 ) -> None:
     """Record a tier compression result.
 
@@ -594,6 +608,10 @@ def _record(
     here — failure bookkeeping (increment + backoff) goes through
     ``_record_failure`` instead, which writes them in the same UPDATE
     that flips status to error / give_up.
+
+    ``commit=False`` lets the caller bundle this write with other
+    statements on the same connection so they all commit (or none
+    do).  Caller is responsible for ``conn.commit()`` after the bundle.
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     t = f"t{tier}"
@@ -633,7 +651,8 @@ def _record(
             error_msg,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _record_failure(
@@ -648,6 +667,7 @@ def _record_failure(
     size_after: int | None = None,
     duration_sec: float | None = None,
     error_msg: str | None = None,
+    commit: bool = True,
 ) -> tuple[int, str]:
     """Atomically increment ``t{tier}_attempts`` and pick a status.
 
@@ -725,13 +745,24 @@ def _record_failure(
             next_retry_iso,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return new_attempts, status
 
 
 def _attach_frigate(conn: sqlite3.Connection, cfg: Config, alias: str) -> None:
-    """ATTACH the Frigate DB to ``conn`` read-write under the given alias."""
-    db_path = str(cfg.frigate_db).replace('"', "")
-    conn.execute(f'ATTACH DATABASE "file:{db_path}" AS {alias}')
+    """ATTACH the Frigate DB to ``conn`` read-write under the given alias.
+
+    The database expression is bound as a SQL parameter so a path
+    containing ``?`` (which would otherwise inject SQLite URI options
+    like ``mode=ro`` and quietly change open semantics) is passed as a
+    plain string — no URI parsing on this path.  ``alias`` is a
+    constant ("frigate") chosen by the caller, never operator input,
+    so it's safely interpolated.
+    """
+    conn.execute(
+        f"ATTACH DATABASE ? AS {alias}",
+        (str(cfg.frigate_db),),
+    )
     conn.execute(f"PRAGMA {alias}.cache_size=-131072")  # up to 128 MB
     conn.execute(f"PRAGMA {alias}.busy_timeout=10000")

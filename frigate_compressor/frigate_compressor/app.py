@@ -200,7 +200,15 @@ def main() -> int:
     try:
         run_main_loop(ctx, encoder, stopping, housekeeping_interval_sec, pool)
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        # Cancel pending futures, then WAIT for in-flight ones to finish
+        # before closing the shared DB connection.  Without ``wait=True``
+        # workers mid-encode would have ``compress_db`` yanked from under
+        # them and raise ``sqlite3.ProgrammingError`` on their next DB
+        # write.  Worst-case shutdown latency is one ffmpeg timeout per
+        # worker (workers check ``stopping`` between encodes, so any
+        # NEW work is skipped immediately — only the currently-running
+        # encode can stall the join).
+        pool.shutdown(wait=True, cancel_futures=True)
         if publisher is not None:
             try:
                 publisher.stop()

@@ -36,7 +36,44 @@ def _format_src_info(probe_data: dict | None) -> str:
     """``WIDTHxHEIGHT`` left-padded to 10 — same shape across all log paths."""
     if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
         return f"{'?x?':<10}"
-    return f"{probe_data['width']}x{probe_data['height']:<10}"
+    # Pad the whole ``WxH`` token to width 10, not just the height — the
+    # bug ``f"{w}x{h:<10}"`` left-padded only height, producing
+    # ``1920x1080      `` (15 chars) instead of ``1920x1080 `` (10), and
+    # misaligning the column against the ``?x?       `` fallback.
+    return f"{f'{probe_data["width"]}x{probe_data["height"]}':<10}"
+
+
+def _resolve_probe_data(
+    ctx: CompressorContext,
+    recording_id: str,
+    camera: str,
+    filepath: Path,
+    probe_data: dict | None,
+) -> dict | None:
+    """Return probe data for ``recording_id`` or ``None`` if unprobed.
+
+    Production callers pass ``probe_data`` from the eligibility query's
+    fast path (``get_eligible_recordings`` already fetches width / height
+    / fps).  Tests and ad-hoc callers leave it ``None`` and we fall back
+    to a per-file SELECT under the lock.  Returns ``None`` after logging
+    a DEBUG ``Not yet probed`` line if width/height aren't populated —
+    callers should treat that as "skip this row."
+    """
+    if probe_data is None:
+        with ctx.compress_db_lock:
+            row = ctx.compress_db.execute(
+                "SELECT width, height, fps FROM files WHERE recording_id = ?",
+                (recording_id,),
+            ).fetchone()
+        probe_data = (
+            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
+            if row is not None
+            else None
+        )
+    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
+        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
+        return None
+    return probe_data
 
 
 def _format_tgt_info(ts: TypeSettings) -> str:
@@ -71,28 +108,6 @@ def compress_one(
     matters at production compression rates.  Tests and one-shot callers
     leave ``probe_data=None`` and the worker falls back to fetching it.
     """
-    return _compress_one_inner(
-        recording_id,
-        path,
-        camera,
-        tier,
-        recording_type,
-        encoder,
-        ctx,
-        probe_data,
-    )
-
-
-def _compress_one_inner(
-    recording_id: str,
-    path: str,
-    camera: str,
-    tier: int,
-    recording_type: str,
-    encoder: str,
-    ctx: CompressorContext,
-    probe_data: dict | None = None,
-) -> bool:
     cfg = ctx.cfg
     compress_db = ctx.compress_db
     compress_db_lock = ctx.compress_db_lock
@@ -186,23 +201,8 @@ def _compress_one_inner(
         )
         return False
 
-    # Require probe data before compressing.  If the caller passed it in
-    # (production fast path — eligibility query already fetched these
-    # columns), skip the SELECT.  Tests and ad-hoc callers fall back to
-    # a per-file SELECT.
+    probe_data = _resolve_probe_data(ctx, recording_id, camera, filepath, probe_data)
     if probe_data is None:
-        with compress_db_lock:
-            row = compress_db.execute(
-                "SELECT width, height, fps FROM files WHERE recording_id = ?",
-                (recording_id,),
-            ).fetchone()
-        probe_data = (
-            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
-            if row is not None
-            else None
-        )
-    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
-        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
     src_info = _format_src_info(probe_data)
@@ -348,11 +348,10 @@ def _compress_one_inner(
             )
 
         # Safety: confirm Frigate still has this recording in its DB.
-        # Closes the race where Frigate removes the DB row (and possibly the
-        # file) between the checks above and the atomic replace below.
-        # Without this, we could create an orphan on disk that Frigate never
-        # cleans up.  Read via the attached ``frigate`` schema on
-        # compress_db so it shares the daemon's single connection.
+        # Narrows the race where Frigate removes the DB row (and possibly
+        # the file) between the checks above and the atomic replace below.
+        # Read via the attached ``frigate`` schema on compress_db so it
+        # shares the daemon's single connection.
         with compress_db_lock:
             db_row = compress_db.execute(
                 "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
@@ -380,6 +379,28 @@ def _compress_one_inner(
                 f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
             )
             return fail(f"replace failed: {e}", size_after=size_after)
+
+        # Re-check Frigate's row AFTER the rename: closes the residual
+        # window where Frigate could DELETE the row + unlink the file
+        # between our pre-replace check and the rename itself.  In that
+        # case ``tmpfile.replace(filepath)`` re-creates the file with
+        # our content but Frigate has no record of it — orphan.  Detect
+        # and clean up here.
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+        if db_row is None:
+            log(
+                "WARNING",
+                f"[{camera}] recording removed by Frigate during atomic replace "
+                f"— unlinking orphan: {_display_path(filepath)}",
+            )
+            try:
+                filepath.unlink(missing_ok=True)
+            except OSError as e:
+                log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+            return fail("recording removed by Frigate during atomic replace")
     finally:
         # Ensure temp file is always cleaned up, even on thread cancellation.
         tmpfile.unlink(missing_ok=True)
@@ -393,12 +414,12 @@ def _compress_one_inner(
         f"{'':>6}  {duration:>5.1f}s",
     )
 
-    # Update segment_size in Frigate's DB (MB, float) via the attached
-    # ``frigate`` schema on compress_db.  Goes through the same connection
-    # + lock as the compress.db UPDATE below, so frigate's segment_size
-    # and our t1/t2_status flip commit atomically.  If this fails we
-    # record ``segment_update_failed`` so housekeeping can retry; the
-    # file itself is already safely replaced.
+    # Update segment_size in Frigate's DB AND flip the files row's
+    # status to ``ok`` in a single transaction on the shared connection
+    # — both UPDATEs commit together or neither does.  Previously these
+    # were separate commits: a daemon crash between them left frigate
+    # with the new segment_size but compress.db still showing the row
+    # pending, so the next iter re-encoded an already-encoded file.
     new_size_mb = size_after / (1024 * 1024)
     log(
         "DEBUG",
@@ -406,28 +427,50 @@ def _compress_one_inner(
     )
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
+    with compress_db_lock:
+        try:
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                # The segment UPDATE didn't apply (sqlite3 raises before
+                # the change lands in the implicit transaction).  We
+                # mark ``segment_update_failed`` so housekeeping retries
+                # the segment-size write later; the files write below
+                # continues in a clean transaction state.
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
+                )
+            # Both writes go through ``_record``'s commit; if the segment
+            # UPDATE succeeded above, both are durable atomically.
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=tier,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=size_before,
+                size_after=size_after,
+                duration_sec=duration,
+                status=seg_status,
+                error_msg=seg_error,
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
-        )
-
-    rec(
-        size_before=size_before,
-        size_after=size_after,
-        duration_sec=duration,
-        status=seg_status,
-        error_msg=seg_error,
-    )
+        except Exception:
+            # Something inside the bundle (the files write, most
+            # likely) raised before commit.  Roll back so the implicit
+            # transaction's pending UPDATE on frigate.recordings doesn't
+            # leak across to the next thread that takes this lock —
+            # without this, that thread's commit would silently include
+            # our orphaned segment-size write.
+            compress_db.rollback()
+            raise
     return True
 
 
@@ -554,20 +597,8 @@ def compress_direct(
         )
         return False
 
-    # Probe data check (mirrors compress_one).
+    probe_data = _resolve_probe_data(ctx, recording_id, camera, filepath, probe_data)
     if probe_data is None:
-        with compress_db_lock:
-            row = compress_db.execute(
-                "SELECT width, height, fps FROM files WHERE recording_id = ?",
-                (recording_id,),
-            ).fetchone()
-        probe_data = (
-            {"width": row["width"], "height": row["height"], "fps": row["fps"]}
-            if row is not None
-            else None
-        )
-    if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
-        log("DEBUG", f"[{camera}] Not yet probed, skipping: {_display_path(filepath)}")
         return False
 
     src_info = _format_src_info(probe_data)
@@ -715,6 +746,28 @@ def compress_direct(
                 f"[{camera}] tier-2 sibling rename failed after tier-1 "
                 f"replace succeeded: {e}",
             )
+
+        # Re-check Frigate's row AFTER both renames: closes the residual
+        # window where Frigate could DELETE the row + unlink the primary
+        # between our pre-replace check and the renames.  In that case
+        # both ``replace`` calls re-create files Frigate has no record
+        # of — orphan primary + orphan sibling.  Detect and clean up.
+        with compress_db_lock:
+            db_row = compress_db.execute(
+                "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+        if db_row is None:
+            log(
+                "WARNING",
+                f"[{camera}] recording removed by Frigate during direct replace "
+                f"— unlinking orphan primary + sibling: {_display_path(filepath)}",
+            )
+            for orphan in (filepath, sib):
+                try:
+                    orphan.unlink(missing_ok=True)
+                except OSError as e:
+                    log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+            return fail_both("recording removed by Frigate during atomic replace")
     finally:
         # Always clean up temp files (replace() consumes them, so this is
         # only a no-op on the success path).
@@ -744,39 +797,86 @@ def compress_direct(
         f"{'direct':>6}  {0.0:>5.1f}s",
     )
 
-    # DB updates: tier-1 ok, tier-2 'direct' (or 'error' if sibling rename
-    # failed).  Both row updates + the segment_size UPDATE happen on the
-    # same connection under the same lock — observers see consistent state.
+    # DB updates: segment_size on Frigate's recordings + tier-1 status
+    # + tier-2 status.  All three execute on the shared connection
+    # under one lock with deferred commit — they land atomically or
+    # not at all.  Previously these were three separate commits, so a
+    # daemon crash mid-write could leave the segment_size updated but
+    # no DB record of the parked sibling, orphaning the .t2.mp4 on disk.
     new_size_mb = t1_size / (1024 * 1024)
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
+    with compress_db_lock:
+        try:
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] failed to update Frigate segment_size "
+                    f"— will retry at housekeeping: {e}",
+                )
+            # Tier-1 row write — bundled into the same transaction.
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=1,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=size_before,
+                size_after=t1_size,
+                duration_sec=duration,
+                status=seg_status,
+                error_msg=seg_error,
+                commit=False,
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] failed to update Frigate segment_size "
-            f"— will retry at housekeeping: {e}",
-        )
-
-    rec(tier=1, status=seg_status, size=t1_size, duration=duration, error_msg=seg_error)
-    if t2_replace_failed is None:
-        rec(tier=2, status=STATUS_DIRECT, size=t2_size, duration=duration)
-    else:
-        rec(
-            tier=2,
-            status=STATUS_ERROR,
-            size=t2_size,
-            duration=duration,
-            error_msg=f"sibling rename failed: {t2_replace_failed}",
-        )
+            # Tier-2 row write — sibling-direct success or sibling-rename
+            # error.  Same transaction.  ``_record_failure`` increments the
+            # retry counter for the error case; we let it commit since it's
+            # the LAST write in the bundle.
+            if t2_replace_failed is None:
+                _record(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=2,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_before=None,
+                    size_after=t2_size,
+                    duration_sec=duration,
+                    status=STATUS_DIRECT,
+                    error_msg=None,
+                    commit=True,
+                )
+            else:
+                _record_failure(
+                    compress_db,
+                    recording_id=recording_id,
+                    camera=camera,
+                    path=path,
+                    tier=2,
+                    recording_type=recording_type,
+                    encoder=encoder,
+                    size_after=t2_size,
+                    duration_sec=duration,
+                    error_msg=f"sibling rename failed: {t2_replace_failed}",
+                    commit=True,
+                )
+        except Exception:
+            # Roll back so the implicit transaction's pending writes
+            # (segment_size UPDATE, possibly the tier-1 _record) don't
+            # leak across to the next thread that takes the lock.
+            compress_db.rollback()
+            raise
     return True
 
 
@@ -816,8 +916,10 @@ def swap_t2(
     # ``compress_direct`` uses, then return without touching files or DB.
     # Stat the primary so the size column is populated; missing primary →
     # log N/A rather than failing the dry-run, since we're not actually
-    # going to do anything.
-    if cfg.all_dry_run or cam_cfg.dry_run:
+    # going to do anything.  ``cfg.all_dry_run`` is implied by
+    # ``cam_cfg.dry_run`` when every camera is dry-run, so we don't
+    # need the ``or all_dry_run`` clause that the other writers omit.
+    if cam_cfg.dry_run:
         with compress_db_lock:
             probe_row = compress_db.execute(
                 "SELECT width, height FROM files WHERE recording_id = ?",
@@ -940,6 +1042,32 @@ def swap_t2(
         rec(status=STATUS_ERROR, size=None, error_msg=f"swap rename failed: {e}")
         return False
 
+    # Re-check Frigate's row AFTER the rename: if Frigate DELETED the
+    # row (and unlinked the primary) between our pre-replace check and
+    # the rename, ``sib.replace(filepath)`` re-created the file with
+    # tier-2 content but Frigate has no record of it.  Clean up the
+    # orphan primary.
+    with compress_db_lock:
+        db_row = compress_db.execute(
+            "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+        ).fetchone()
+    if db_row is None:
+        log(
+            "WARNING",
+            f"[{camera}] recording removed by Frigate during swap rename "
+            f"— unlinking orphan: {_display_path(filepath)}",
+        )
+        try:
+            filepath.unlink(missing_ok=True)
+        except OSError as e:
+            log("WARNING", f"[{camera}] orphan unlink failed: {e}")
+        rec(
+            status=STATUS_ERROR,
+            size=None,
+            error_msg="recording removed by Frigate during swap rename",
+        )
+        return False
+
     # Source dims + target settings for the log line — same shape as the
     # chained ``t2:`` line.  ``swap`` in the duration column flags this
     # as a rename rather than its own encode pass.  Both lookups are
@@ -966,25 +1094,43 @@ def swap_t2(
         f"{'swap':>6}  {0.0:>5.1f}s",
     )
 
-    # Update Frigate's segment_size to the tier-2 file's size.
+    # segment_size + status flip in one transaction (see compress_one
+    # / compress_direct for the same pattern + rationale).
     new_size_mb = t2_size / (1024 * 1024)
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
-            compress_db.execute(
-                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
-                (new_size_mb, recording_id),
+    with compress_db_lock:
+        try:
+            try:
+                compress_db.execute(
+                    "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                    (new_size_mb, recording_id),
+                )
+            except Exception as e:
+                seg_status = STATUS_SEGMENT_UPDATE_FAILED
+                seg_error = str(e)
+                log(
+                    "WARNING",
+                    f"[{camera}] segment_size update after swap failed "
+                    f"— will retry at housekeeping: {e}",
+                )
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=2,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=None,
+                size_after=t2_size,
+                duration_sec=None,
+                status=seg_status,
+                error_msg=seg_error,
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] segment_size update after swap failed "
-            f"— will retry at housekeeping: {e}",
-        )
-
-    rec(status=seg_status, size=t2_size, error_msg=seg_error)
+        except Exception:
+            # Roll back so any pending segment_size UPDATE doesn't leak
+            # into the next thread's transaction.
+            compress_db.rollback()
+            raise
     return True

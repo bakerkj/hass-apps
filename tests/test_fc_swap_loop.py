@@ -158,6 +158,42 @@ def test_get_eligible_swaps_caps_at_max_per_window(tmp_path, monkeypatch):
     frigate_conn.close()
 
 
+def test_get_eligible_swaps_excludes_per_camera_dry_run(tmp_path):
+    """A camera with ``dry_run=True`` is filtered when other cameras run
+    live — the swap_t2 dry-run path returns without writing status, so
+    surfacing direct rows every cycle would cause log spam."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_swap_row(
+        frigate_conn,
+        compress_conn,
+        "rdry",
+        "cam1",
+        "/m/rdry.mp4",
+        time.time() - 100 * 86400,
+        fc.STATUS_DIRECT,
+    )
+
+    ctx = _make_swap_ctx(tmp_path, frigate_db, compress_conn)
+    # all_dry_run is computed from ``all(cam.dry_run)``.  Add an enabled
+    # second camera with dry_run=False to make all_dry_run False.
+    ctx.cfg.cameras["cam1"].dry_run = True
+
+    # Patch to a multi-camera shape so all_dry_run is False.
+    from copy import deepcopy
+
+    second = deepcopy(ctx.cfg.cameras["cam1"])
+    second.dry_run = False
+    ctx.cfg.cameras["cam2"] = second
+    assert not ctx.cfg.all_dry_run
+
+    assert fc.get_eligible_swaps(ctx) == []
+
+    compress_conn.close()
+    frigate_conn.close()
+
+
 def test_get_eligible_swaps_skips_disabled_cameras(tmp_path):
     """Cameras with ``enabled=False`` or ``tier2.enabled=False`` are skipped."""
     frigate_db = tmp_path / "frigate.db"

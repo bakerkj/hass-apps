@@ -216,6 +216,65 @@ def test_get_eligible_recordings_retries_errored(tmp_path):
     frigate_conn.close()
 
 
+def test_get_eligible_recordings_excludes_per_camera_dry_run(tmp_path):
+    """A camera with ``dry_run=True`` is filtered out of eligibility when
+    other cameras are running live.  Otherwise every cycle would re-surface
+    the dry-run camera's rows (the worker's dry-run path doesn't write
+    status), producing perpetual log spam."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "rdry",
+        "cam1",
+        "/m/rdry.mp4",
+        time.time() - 10 * 86400,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    ctx.cfg.cameras["cam1"].dry_run = True
+
+    assert fc.get_eligible_recordings(ctx) == []
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
+def test_get_eligible_recordings_includes_dry_run_when_all_dry_run(tmp_path):
+    """When EVERY camera is dry-run (``cfg.all_dry_run``), eligibility
+    keeps surfacing rows so the once-per-minute DRY RUN log lines remain
+    available — that's the documented "see what would happen" observation
+    cadence.  The all-dry-run branch in ``run_main_loop`` forces a
+    full-window sleep so log volume stays bounded."""
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    compress_conn = _open_compress_db(tmp_path)
+    _insert_probed(
+        frigate_conn,
+        compress_conn,
+        "ralldry",
+        "cam1",
+        "/m/ralldry.mp4",
+        time.time() - 10 * 86400,
+    )
+
+    ctx = _make_eligible_ctx(tmp_path, frigate_db, compress_conn)
+    # ``all_dry_run`` is ``all(cam.dry_run)`` over every enabled camera —
+    # the test ctx has both a yaml-default ``cam`` and the Frigate-
+    # discovered ``cam1``, so we flip both to make the property True.
+    for cam in ctx.cfg.cameras.values():
+        cam.dry_run = True
+    assert ctx.cfg.all_dry_run
+
+    results = fc.get_eligible_recordings(ctx)
+    assert [r["recording_id"] for r in results] == ["ralldry"]
+
+    _close_ctx(ctx)
+    frigate_conn.close()
+
+
 def test_get_eligible_recordings_excludes_give_up_rows(tmp_path):
     """Rows in ``STATUS_GIVE_UP`` (terminal failure after retry cap)
     are permanently excluded from eligibility — operator must reset
@@ -778,6 +837,111 @@ def test_compress_one_recording_removed_from_frigate_db(tmp_path):
     assert src.exists()  # original not replaced
     assert "Frigate DB" in _db_row(ctx)["t1_error_msg"]
     frigate_rw2.close()
+    _close_ctx(ctx)
+
+
+def test_compress_one_recording_removed_during_atomic_replace(tmp_path):
+    """Frigate deletes the recording row between the pre-replace check
+    AND the rename completing — the post-replace recheck should detect
+    this, unlink the orphan primary, and record an error."""
+    ctx, src = _setup_compress_one(tmp_path)
+    frigate_rw2 = sqlite3.connect(str(tmp_path / "frigate.db"))
+
+    real_replace = Path.replace
+
+    def fake_replace(self, target):
+        result = real_replace(self, target)
+        # Simulate Frigate winning the race AFTER our atomic rename
+        # completed but BEFORE our post-replace recheck queries.
+        frigate_rw2.execute("DELETE FROM recordings WHERE id='r1'")
+        frigate_rw2.commit()
+        return result
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    with (
+        patch("subprocess.run", side_effect=fake_run),
+        patch.object(Path, "replace", new=fake_replace),
+    ):
+        result = _compress_one(ctx, src)
+
+    assert result is False
+    # Post-replace recheck should have unlinked the orphan.
+    assert not src.exists()
+    assert "atomic replace" in _db_row(ctx)["t1_error_msg"]
+    frigate_rw2.close()
+    _close_ctx(ctx)
+
+
+def test_compress_one_atomic_bundle_rolls_back_on_record_failure(monkeypatch, tmp_path):
+    """If ``_record`` raises after the segment_size UPDATE has executed
+    (but before commit), the rollback path should leave Frigate's
+    ``segment_size`` unchanged.  Without rollback, the orphan UPDATE
+    leaks across to the next thread that takes the lock and lands in
+    that thread's transaction."""
+    ctx, src = _setup_compress_one(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"y" * 5000)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    # Read the original segment_size to confirm it doesn't change.
+    orig_seg_size = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='r1'"
+    ).fetchone()["segment_size"]
+
+    real_record = fc._record
+
+    def boom_record(*args, **kwargs):
+        # Raise after the segment_size UPDATE has executed but before
+        # the files write commits.  Using compressor's _record import
+        # so the patch lands at the call site.
+        raise RuntimeError("simulated record failure")
+
+    monkeypatch.setattr(fc.compressor, "_record", boom_record)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="simulated"):
+            _compress_one(ctx, src)
+
+    # Rollback should have undone the segment_size UPDATE that ran
+    # earlier in the bundle.  Without rollback, this assertion would
+    # fail because the orphan UPDATE would have committed via some
+    # other thread's commit — or, in this single-threaded test,
+    # leaked into the next operation's transaction.
+    new_seg_size = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='r1'"
+    ).fetchone()["segment_size"]
+    assert new_seg_size == orig_seg_size
+
+    # Sanity: restore the real _record and verify the connection is in
+    # a clean state (a subsequent write commits cleanly).
+    monkeypatch.setattr(fc.compressor, "_record", real_record)
+    fc._record(
+        ctx.compress_db,
+        recording_id="rsentinel",
+        camera="cam1",
+        path="/tmp/sentinel.mp4",
+        tier=1,
+        recording_type="continuous",
+        encoder="cpu",
+        size_before=100,
+        size_after=50,
+        duration_sec=0.1,
+        status=fc.STATUS_OK,
+    )
+    sentinel = ctx.compress_db.execute(
+        "SELECT t1_status FROM files WHERE recording_id='rsentinel'"
+    ).fetchone()
+    assert sentinel["t1_status"] == fc.STATUS_OK
     _close_ctx(ctx)
 
 
