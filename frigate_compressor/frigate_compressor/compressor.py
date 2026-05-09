@@ -397,12 +397,12 @@ def _compress_one_inner(
         f"{'':>6}  {duration:>5.1f}s",
     )
 
-    # Update segment_size in Frigate's DB (MB, float) via the attached
-    # ``frigate`` schema on compress_db.  Goes through the same connection
-    # + lock as the compress.db UPDATE below, so frigate's segment_size
-    # and our t1/t2_status flip commit atomically.  If this fails we
-    # record ``segment_update_failed`` so housekeeping can retry; the
-    # file itself is already safely replaced.
+    # Update segment_size in Frigate's DB AND flip the files row's
+    # status to ``ok`` in a single transaction on the shared connection
+    # — both UPDATEs commit together or neither does.  Previously these
+    # were separate commits: a daemon crash between them left frigate
+    # with the new segment_size but compress.db still showing the row
+    # pending, so the next iter re-encoded an already-encoded file.
     new_size_mb = size_after / (1024 * 1024)
     log(
         "DEBUG",
@@ -410,28 +410,39 @@ def _compress_one_inner(
     )
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
+    with compress_db_lock:
+        try:
             compress_db.execute(
                 "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                 (new_size_mb, recording_id),
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
+        except Exception as e:
+            # ``execute`` raises before the change is applied, so the
+            # files write that follows continues in a clean transaction
+            # state.  We mark ``segment_update_failed`` so housekeeping
+            # can retry the segment-size write later.
+            seg_status = STATUS_SEGMENT_UPDATE_FAILED
+            seg_error = str(e)
+            log(
+                "WARNING",
+                f"[{camera}] failed to update Frigate segment_size — will retry at housekeeping: {e}",
+            )
+        # Both writes go through ``_record``'s commit; if the segment
+        # UPDATE succeeded above, both are durable atomically.
+        _record(
+            compress_db,
+            recording_id=recording_id,
+            camera=camera,
+            path=path,
+            tier=tier,
+            recording_type=recording_type,
+            encoder=encoder,
+            size_before=size_before,
+            size_after=size_after,
+            duration_sec=duration,
+            status=seg_status,
+            error_msg=seg_error,
         )
-
-    rec(
-        size_before=size_before,
-        size_after=size_after,
-        duration_sec=duration,
-        status=seg_status,
-        error_msg=seg_error,
-    )
     return True
 
 
@@ -748,39 +759,79 @@ def compress_direct(
         f"{'direct':>6}  {0.0:>5.1f}s",
     )
 
-    # DB updates: tier-1 ok, tier-2 'direct' (or 'error' if sibling rename
-    # failed).  Both row updates + the segment_size UPDATE happen on the
-    # same connection under the same lock — observers see consistent state.
+    # DB updates: segment_size on Frigate's recordings + tier-1 status
+    # + tier-2 status.  All three execute on the shared connection
+    # under one lock with deferred commit — they land atomically or
+    # not at all.  Previously these were three separate commits, so a
+    # daemon crash mid-write could leave the segment_size updated but
+    # no DB record of the parked sibling, orphaning the .t2.mp4 on disk.
     new_size_mb = t1_size / (1024 * 1024)
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
+    with compress_db_lock:
+        try:
             compress_db.execute(
                 "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                 (new_size_mb, recording_id),
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] failed to update Frigate segment_size "
-            f"— will retry at housekeeping: {e}",
+        except Exception as e:
+            seg_status = STATUS_SEGMENT_UPDATE_FAILED
+            seg_error = str(e)
+            log(
+                "WARNING",
+                f"[{camera}] failed to update Frigate segment_size "
+                f"— will retry at housekeeping: {e}",
+            )
+        # Tier-1 row write — bundled into the same transaction.
+        _record(
+            compress_db,
+            recording_id=recording_id,
+            camera=camera,
+            path=path,
+            tier=1,
+            recording_type=recording_type,
+            encoder=encoder,
+            size_before=size_before,
+            size_after=t1_size,
+            duration_sec=duration,
+            status=seg_status,
+            error_msg=seg_error,
+            commit=False,
         )
-
-    rec(tier=1, status=seg_status, size=t1_size, duration=duration, error_msg=seg_error)
-    if t2_replace_failed is None:
-        rec(tier=2, status=STATUS_DIRECT, size=t2_size, duration=duration)
-    else:
-        rec(
-            tier=2,
-            status=STATUS_ERROR,
-            size=t2_size,
-            duration=duration,
-            error_msg=f"sibling rename failed: {t2_replace_failed}",
-        )
+        # Tier-2 row write — sibling-direct success or sibling-rename
+        # error.  Same transaction.  ``_record_failure`` increments the
+        # retry counter for the error case; we let it commit since it's
+        # the LAST write in the bundle.
+        if t2_replace_failed is None:
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=2,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=None,
+                size_after=t2_size,
+                duration_sec=duration,
+                status=STATUS_DIRECT,
+                error_msg=None,
+                commit=True,
+            )
+        else:
+            _record_failure(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=2,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_after=t2_size,
+                duration_sec=duration,
+                error_msg=f"sibling rename failed: {t2_replace_failed}",
+                commit=True,
+            )
     return True
 
 
@@ -970,25 +1021,37 @@ def swap_t2(
         f"{'swap':>6}  {0.0:>5.1f}s",
     )
 
-    # Update Frigate's segment_size to the tier-2 file's size.
+    # segment_size + status flip in one transaction (see compress_one
+    # / compress_direct for the same pattern + rationale).
     new_size_mb = t2_size / (1024 * 1024)
     seg_status = STATUS_OK
     seg_error: str | None = None
-    try:
-        with compress_db_lock:
+    with compress_db_lock:
+        try:
             compress_db.execute(
                 "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                 (new_size_mb, recording_id),
             )
-            compress_db.commit()
-    except Exception as e:
-        seg_status = STATUS_SEGMENT_UPDATE_FAILED
-        seg_error = str(e)
-        log(
-            "WARNING",
-            f"[{camera}] segment_size update after swap failed "
-            f"— will retry at housekeeping: {e}",
+        except Exception as e:
+            seg_status = STATUS_SEGMENT_UPDATE_FAILED
+            seg_error = str(e)
+            log(
+                "WARNING",
+                f"[{camera}] segment_size update after swap failed "
+                f"— will retry at housekeeping: {e}",
+            )
+        _record(
+            compress_db,
+            recording_id=recording_id,
+            camera=camera,
+            path=path,
+            tier=2,
+            recording_type=recording_type,
+            encoder=encoder,
+            size_before=None,
+            size_after=t2_size,
+            duration_sec=None,
+            status=seg_status,
+            error_msg=seg_error,
         )
-
-    rec(status=seg_status, size=t2_size, error_msg=seg_error)
     return True

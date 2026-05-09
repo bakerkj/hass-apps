@@ -585,6 +585,7 @@ def _record(
     duration_sec: float | None,
     status: str,
     error_msg: str | None = None,
+    commit: bool = True,
 ) -> None:
     """Record a tier compression result.
 
@@ -594,6 +595,10 @@ def _record(
     here — failure bookkeeping (increment + backoff) goes through
     ``_record_failure`` instead, which writes them in the same UPDATE
     that flips status to error / give_up.
+
+    ``commit=False`` lets the caller bundle this write with other
+    statements on the same connection so they all commit (or none
+    do).  Caller is responsible for ``conn.commit()`` after the bundle.
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     t = f"t{tier}"
@@ -633,7 +638,8 @@ def _record(
             error_msg,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _record_failure(
@@ -648,6 +654,7 @@ def _record_failure(
     size_after: int | None = None,
     duration_sec: float | None = None,
     error_msg: str | None = None,
+    commit: bool = True,
 ) -> tuple[int, str]:
     """Atomically increment ``t{tier}_attempts`` and pick a status.
 
@@ -725,7 +732,8 @@ def _record_failure(
             next_retry_iso,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return new_attempts, status
 
 
