@@ -477,7 +477,7 @@ def test_get_eligible_recordings_orders_tier1_first_when_catching_up(
     drain first."""
     # Lower the batch size so the test only needs a handful of rows to
     # cross the catch-up threshold.  The threshold tracks the LIMIT.
-    monkeypatch.setattr(fc.eligibility, "_ELIGIBLE_BATCH_SIZE", 2)
+    monkeypatch.setattr(fc.encode_eligibility, "_ELIGIBLE_BATCH_SIZE", 2)
 
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)

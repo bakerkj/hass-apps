@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Tests for ``swap_loop.get_eligible_swaps`` and ``run_swap_loop``."""
+"""Tests for ``swap_eligibility.get_eligible_swaps`` and ``swap_loop.run_swap_loop``."""
 
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def test_get_eligible_swaps_orders_oldest_first(tmp_path):
 
 def test_get_eligible_swaps_caps_at_max_per_window(tmp_path, monkeypatch):
     """The per-call SELECT honours ``_MAX_SWAPS_PER_WINDOW``."""
-    monkeypatch.setattr(fc.swap_loop, "_MAX_SWAPS_PER_WINDOW", 3)
+    monkeypatch.setattr(fc.swap_eligibility, "_MAX_SWAPS_PER_WINDOW", 3)
 
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)

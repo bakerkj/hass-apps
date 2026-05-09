@@ -1,7 +1,16 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Eligible-recordings query + ``time_until_next_eligible``."""
+"""Eligible-recordings query for ``run_main_loop``.
+
+GPU-bound encode work surfaces here — both tier-0→1 encodes and
+chained tier-1→2 re-encodes.  Sibling-swap work (``t2_status='direct'``
+rows past ``tier2.min_days``) lives in ``swap_eligibility`` instead so
+it can drain on its own thread at filesystem pace without competing
+for encode worker slots.
+
+Also exposes ``time_until_next_eligible`` for the no-work sleep path.
+"""
 
 from __future__ import annotations
 
