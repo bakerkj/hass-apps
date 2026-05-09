@@ -36,7 +36,11 @@ def _format_src_info(probe_data: dict | None) -> str:
     """``WIDTHxHEIGHT`` left-padded to 10 — same shape across all log paths."""
     if not probe_data or not probe_data.get("width") or not probe_data.get("height"):
         return f"{'?x?':<10}"
-    return f"{probe_data['width']}x{probe_data['height']:<10}"
+    # Pad the whole ``WxH`` token to width 10, not just the height — the
+    # bug ``f"{w}x{h:<10}"`` left-padded only height, producing
+    # ``1920x1080      `` (15 chars) instead of ``1920x1080 `` (10), and
+    # misaligning the column against the ``?x?       `` fallback.
+    return f"{f'{probe_data["width"]}x{probe_data["height"]}':<10}"
 
 
 def _format_tgt_info(ts: TypeSettings) -> str:
