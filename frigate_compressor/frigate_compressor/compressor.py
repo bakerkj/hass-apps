@@ -416,11 +416,12 @@ def compress_direct(
 ) -> bool:
     """Encode tier-1 + tier-2 from native source in one ffmpeg pass.
 
-    Used at the day-8 boundary when ``cam.tier2.source == "direct"`` and
-    both tier-1 and tier-2 are enabled for ``recording_type``.  Tier-1
-    replaces the native file at the primary path (matching ``compress_one``
-    behavior); tier-2 lands at the sibling ``.t2.mp4`` path and stays there
-    until the day-30 swap (PR3) renames it onto the primary path.
+    Used when a segment reaches ``tier1.min_days`` and
+    ``cam.tier2.source == "direct"`` and both tier-1 and tier-2 are
+    enabled for ``recording_type``.  Tier-1 replaces the native file at
+    the primary path (matching ``compress_one`` behavior); tier-2 lands
+    at the sibling ``.t2.mp4`` path and stays there until the tier-2
+    swap renames it onto the primary path.
 
     Falls back to ``compress_one(tier=1)`` when tier-2 is not enabled for
     the recording_type — a single encode is the right thing for that case.
@@ -496,7 +497,7 @@ def compress_direct(
         """Mark both tiers as errored and return False — the native file
         is left in place (atomic-replace hasn't happened yet), so this is
         recoverable: the chained eligibility query will pick the row back
-        up at day-30 and try again."""
+        up at ``tier2.min_days`` and try again."""
         rec(
             tier=1,
             status=STATUS_ERROR,
@@ -643,7 +644,7 @@ def compress_direct(
         # If the tier-1 rename fails, both temps are kept (cleaned up in
         # finally).  If the tier-2 rename fails after tier-1 succeeded,
         # we still get a valid tier-1 file in place but mark t2 as errored
-        # so the chained query picks it up at day-30.
+        # so the chained query picks it up at ``tier2.min_days``.
         sib = sibling_path(filepath)
         try:
             t1_tmp.replace(filepath)
@@ -714,4 +715,147 @@ def compress_direct(
             duration=duration,
             error_msg=f"sibling rename failed: {t2_replace_failed}",
         )
+    return True
+
+
+def swap_t2(
+    recording_id: str,
+    path: str,
+    camera: str,
+    recording_type: str,
+    encoder: str,
+    ctx: CompressorContext,
+) -> bool:
+    """Swap a sibling tier-2 file into the primary path.
+
+    Used when ``t2_status='direct'`` AND the segment has reached
+    ``tier2.min_days``.  The sibling ``.t2.mp4`` was encoded at the
+    tier-1 boundary by ``compress_direct``; this function atomically
+    renames it onto the primary path (replacing the tier-1 file) and
+    updates Frigate's ``segment_size`` to match.
+
+    Falls back to ``compress_one(tier=2)`` (chained re-encode of the
+    existing tier-1 file) if the sibling is missing — disk corruption,
+    admin deletion, or a partial direct-encode that didn't actually
+    produce the sibling will all hit this path.
+    """
+    cfg = ctx.cfg
+    compress_db = ctx.compress_db
+    compress_db_lock = ctx.compress_db_lock
+
+    cam_cfg = cfg.cameras.get(camera)
+    if cam_cfg is None:
+        log("WARNING", f"[{camera}] Not in camera config, skipping swap")
+        return False
+
+    filepath = Path(path)
+    sib = sibling_path(filepath)
+
+    def rec(*, status: str, size: int | None, error_msg: str | None = None) -> None:
+        with compress_db_lock:
+            _record(
+                compress_db,
+                recording_id=recording_id,
+                camera=camera,
+                path=path,
+                tier=2,
+                recording_type=recording_type,
+                encoder=encoder,
+                size_before=None,
+                size_after=size,
+                duration_sec=None,
+                status=status,
+                error_msg=error_msg,
+            )
+
+    # Sibling missing → fall back to chained encode of the current primary
+    # (tier-1 file).  This produces an "ok" tier-2 row at slightly worse
+    # quality than direct, but keeps the archive complete.
+    if not sib.is_file():
+        log(
+            "WARNING",
+            f"[{camera}] sibling missing for swap, falling back to chained: "
+            f"{_display_path(filepath)}",
+        )
+        return compress_one(recording_id, path, camera, 2, recording_type, encoder, ctx)
+
+    # Primary missing → Frigate retired the segment between direct-encode
+    # and our swap.  Clean up the orphan sibling and mark error so the
+    # housekeeping prune step can drop the row cleanly.
+    if not filepath.exists():
+        log(
+            "WARNING",
+            f"[{camera}] primary missing for swap, deleting orphan sibling: "
+            f"{_display_path(sib)}",
+        )
+        try:
+            sib.unlink(missing_ok=True)
+        except OSError as e:
+            log("WARNING", f"[{camera}] sibling unlink failed: {e}")
+        rec(status=STATUS_ERROR, size=None, error_msg="primary missing at swap time")
+        return False
+
+    # Verify the recording is still in Frigate's DB before we replace the
+    # file (same race the encode workers guard against).
+    with compress_db_lock:
+        db_row = compress_db.execute(
+            "SELECT id FROM frigate.recordings WHERE id = ?", (recording_id,)
+        ).fetchone()
+    if db_row is None:
+        log(
+            "WARNING",
+            f"[{camera}] recording removed from Frigate DB before swap, "
+            f"deleting orphan sibling: {_display_path(sib)}",
+        )
+        try:
+            sib.unlink(missing_ok=True)
+        except OSError:
+            pass
+        rec(
+            status=STATUS_ERROR,
+            size=None,
+            error_msg="recording removed from Frigate DB before swap",
+        )
+        return False
+
+    # Atomic rename: sibling → primary path.  After this point, the primary
+    # path holds tier-2 content and the sibling no longer exists.
+    try:
+        t2_size = sib.stat().st_size
+        sib.replace(filepath)
+    except Exception as e:
+        log(
+            "ERROR",
+            f"[{camera}] sibling→primary rename failed: {e}",
+        )
+        rec(status=STATUS_ERROR, size=None, error_msg=f"swap rename failed: {e}")
+        return False
+
+    log(
+        "INFO",
+        f"[{camera:<{cfg.cam_name_width}}] swap:{recording_type[:3]}  "
+        f"{_display_path(filepath)}  →  t2 {_fmt(t2_size, 10)}",
+    )
+
+    # Update Frigate's segment_size to the tier-2 file's size.
+    new_size_mb = t2_size / (1024 * 1024)
+    seg_status = STATUS_OK
+    seg_error: str | None = None
+    try:
+        with compress_db_lock:
+            compress_db.execute(
+                "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
+                (new_size_mb, recording_id),
+            )
+            compress_db.commit()
+    except Exception as e:
+        seg_status = STATUS_SEGMENT_UPDATE_FAILED
+        seg_error = str(e)
+        log(
+            "WARNING",
+            f"[{camera}] segment_size update after swap failed "
+            f"— will retry at housekeeping: {e}",
+        )
+
+    rec(status=seg_status, size=t2_size, error_msg=seg_error)
     return True

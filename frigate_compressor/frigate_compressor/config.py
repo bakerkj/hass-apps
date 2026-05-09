@@ -48,12 +48,12 @@ class TierConfig:
     continuous: TypeSettings  # segments with no motion and no objects
     motion: TypeSettings  # segments with motion but no object detection
     object: TypeSettings  # segments with at least one detected object
-    # Tier-2 only. "chained" (default) re-encodes tier-1 → tier-2 at min_days.
-    # "direct" encodes tier-2 from the native source at tier1.min_days
-    # (alongside tier-1), parks it at a sibling path, then swaps at min_days.
-    # Saves one generation of encode loss; costs disk during the overlap.
-    # Tier-1 ignores this field.
-    source: str = "chained"
+    # Tier-2 only. "direct" (default) encodes tier-2 from the native source
+    # at tier1.min_days (alongside tier-1), parks it at a sibling path, then
+    # swaps onto the primary path at min_days.  "chained" re-encodes tier-1
+    # → tier-2 at min_days (legacy path; one extra generation of encode
+    # loss).  Tier-1 ignores this field.
+    source: str = "direct"
 
 
 @dataclass
@@ -176,7 +176,7 @@ _BUILTIN_DEFAULTS: dict = {
     "tier2": {
         "enabled": False,
         "min_days": 30,
-        "source": "chained",
+        "source": "direct",
         "quality": 0,
         "scale_mode": "none",
         "scale_value": "",
@@ -236,7 +236,7 @@ def _resolve_tier(
     # Tier-level scalars
     enabled = defaults_tier.get("enabled", True)
     min_days = int(defaults_tier.get("min_days", 7))
-    source = str(defaults_tier.get("source", "chained"))
+    source = str(defaults_tier.get("source", "direct"))
     if camera_tier:
         if "enabled" in camera_tier:
             enabled = bool(camera_tier["enabled"])

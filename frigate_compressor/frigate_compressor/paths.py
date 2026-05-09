@@ -5,9 +5,9 @@
 
 When tier-2 is encoded ahead of its activation date (camera's
 ``tier2.source == "direct"``), the encoded file is parked alongside the
-tier-1 file using a ``.t2`` infix before the original extension. At the
-day-30 swap boundary, the sibling replaces the tier-1 file at the
-primary path.
+tier-1 file using a ``.t2`` infix before the original extension. Once
+a segment reaches ``tier2.min_days``, the sibling replaces the tier-1
+file at the primary path.
 
 This module exposes pure-path helpers (no I/O for ``sibling_path`` /
 ``primary_from_sibling`` / ``is_sibling_path``) and small wrappers

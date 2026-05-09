@@ -1663,11 +1663,10 @@ def test_compress_direct_dry_run(tmp_path):
     _close_ctx(ctx)
 
 
-def test_compress_direct_eligibility_excludes_direct_status(tmp_path):
-    """Tier-2 eligibility query must skip rows already in t2_status='direct'.
-
-    Otherwise the daemon would re-encode a file we've already produced
-    a tier-2 sibling for.
+def test_eligibility_includes_direct_rows_for_swap(tmp_path):
+    """Tier-2 eligibility includes rows in t2_status='direct' once they
+    reach min_days, and surfaces t2_status to the worker so the dispatch
+    can route them to swap_t2 instead of compress_one.
     """
     frigate_db = tmp_path / "frigate.db"
     frigate_conn = _make_frigate_db(frigate_db)
@@ -1676,7 +1675,7 @@ def test_compress_direct_eligibility_excludes_direct_status(tmp_path):
     fc._attach_frigate(compress_conn, cfg, "frigate")
     ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
 
-    # Row past tier-2 boundary, t1=ok, t2=direct (should NOT be picked up)
+    # Row past tier-2 boundary, t1=ok, t2=direct → picked up (swap)
     _insert_probed(
         frigate_conn,
         compress_conn,
@@ -1689,7 +1688,7 @@ def test_compress_direct_eligibility_excludes_direct_status(tmp_path):
         "UPDATE files SET t1_status=?, t2_status=? WHERE recording_id=?",
         (fc.STATUS_OK, fc.STATUS_DIRECT, "rd"),
     )
-    # Row past tier-2 boundary, t1=ok, t2=NULL (SHOULD be picked up)
+    # Row past tier-2 boundary, t1=ok, t2=NULL → picked up (chained encode)
     _insert_probed(
         frigate_conn,
         compress_conn,
@@ -1705,9 +1704,11 @@ def test_compress_direct_eligibility_excludes_direct_status(tmp_path):
     compress_conn.commit()
 
     eligible = fc.get_eligible_recordings(ctx)
-    eligible_ids = {r["recording_id"] for r in eligible}
-    assert "rn" in eligible_ids
-    assert "rd" not in eligible_ids  # direct is excluded
+    by_id = {r["recording_id"]: r for r in eligible}
+    assert "rd" in by_id
+    assert "rn" in by_id
+    assert by_id["rd"]["t2_status"] == fc.STATUS_DIRECT
+    assert by_id["rn"]["t2_status"] is None
     _close_ctx(ctx)
     frigate_conn.close()
 
@@ -1807,5 +1808,222 @@ def test_pace_then_compress_dispatches_to_one_when_t2_type_disabled(monkeypatch)
     ctx = _fake_dispatch_ctx(source="direct", t2_enabled=False)
     fc._pace_then_compress(
         threading.Event(), "r", "/p", "cam", 1, "continuous", "cpu", ctx
+    )
+    assert calls == ["one"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# swap_t2 (rename sibling .t2 onto primary path at tier-2 min_days)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _setup_swap_ready(
+    tmp_path, *, with_sibling=True, with_primary=True, with_frigate_row=True
+):
+    """Set up a row in t2_status='direct' state, ready for swap.
+
+    Optionally omit the sibling, primary, or frigate.recordings row to
+    exercise the swap_t2 fallback / error paths.
+    """
+    src = tmp_path / "recordings" / "cam1" / "clip.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    if with_primary:
+        src.write_bytes(b"x" * 5000)  # tier-1 file
+    sib = fc.sibling_path(src)
+    if with_sibling:
+        sib.write_bytes(b"y" * 2000)  # parked tier-2 file
+
+    frigate_db = tmp_path / "frigate.db"
+    frigate_conn = _make_frigate_db(frigate_db)
+    if with_frigate_row:
+        _insert_recording(
+            frigate_conn, "r1", "cam1", str(src), time.time() - 100 * 86400, motion=5
+        )
+    frigate_conn.close()
+
+    # Declare cam1 in YAML so the config has it even when the frigate.db
+    # has no recording row for cam1 (the with_frigate_row=False case).
+    cfg = _make_config(
+        tmp_path,
+        frigate_db=str(frigate_db),
+        yaml_cameras={"cam1": {}},
+    )
+    compress_conn = _open_compress_db(tmp_path)
+    fc._attach_frigate(compress_conn, cfg, "frigate")
+    ctx = fc.CompressorContext(cfg=cfg, compress_db=compress_conn)
+    fc._record(
+        ctx.compress_db,
+        recording_id="r1",
+        camera="cam1",
+        path=str(src),
+        tier=1,
+        recording_type="motion",
+        encoder="cpu",
+        size_before=10000,
+        size_after=5000,
+        duration_sec=1.0,
+        status=fc.STATUS_OK,
+    )
+    fc._record(
+        ctx.compress_db,
+        recording_id="r1",
+        camera="cam1",
+        path=str(src),
+        tier=2,
+        recording_type="motion",
+        encoder="cpu",
+        size_before=None,
+        size_after=2000,
+        duration_sec=1.0,
+        status=fc.STATUS_DIRECT,
+    )
+    return ctx, src, sib
+
+
+def test_swap_t2_renames_sibling_onto_primary(tmp_path):
+    ctx, src, sib = _setup_swap_ready(tmp_path)
+    result = fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is True
+    # Primary now has tier-2 content
+    assert src.read_bytes() == b"y" * 2000
+    # Sibling consumed
+    assert not sib.exists()
+    row = _db_row(ctx)
+    assert row["t2_status"] == fc.STATUS_OK
+    _close_ctx(ctx)
+
+
+def test_swap_t2_updates_frigate_segment_size(tmp_path):
+    ctx, src, _ = _setup_swap_ready(tmp_path)
+    fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    seg_row = ctx.compress_db.execute(
+        "SELECT segment_size FROM frigate.recordings WHERE id='r1'"
+    ).fetchone()
+    assert seg_row["segment_size"] == pytest.approx(2000 / (1024 * 1024), rel=1e-4)
+    _close_ctx(ctx)
+
+
+def test_swap_t2_falls_back_to_chained_when_sibling_missing(tmp_path):
+    """If the sibling is gone (corruption, admin delete), swap_t2 falls
+    back to compress_one(tier=2) which re-encodes from the primary."""
+    ctx, src, _ = _setup_swap_ready(tmp_path, with_sibling=False)
+
+    def fake_run(cmd, **kwargs):
+        # Single-output (chained tier-2) writes one file
+        Path(cmd[-1]).write_bytes(b"z" * 1500)
+        m = MagicMock()
+        m.returncode = 0
+        m.stderr = ""
+        return m
+
+    # store_probe is needed because compress_one path requires probe data
+    fc._store_probe(
+        ctx.compress_db,
+        "r1",
+        "cam1",
+        str(src),
+        {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "fps": 20.0,
+            "bitrate": 5000000,
+            "duration_sec": 10.0,
+            "file_size": 5000,
+        },
+    )
+    ctx.compress_db.commit()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is True
+    # Primary now holds the chained-encoded tier-2 content
+    assert src.read_bytes() == b"z" * 1500
+    row = _db_row(ctx)
+    assert row["t2_status"] == fc.STATUS_OK
+    _close_ctx(ctx)
+
+
+def test_swap_t2_cleans_up_sibling_when_primary_missing(tmp_path):
+    """Frigate retired the segment between direct-encode and swap; primary
+    is gone but sibling remains.  Clean up the orphan and mark error."""
+    ctx, src, sib = _setup_swap_ready(tmp_path, with_primary=False)
+    result = fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is False
+    assert not sib.exists()  # orphan deleted
+    row = _db_row(ctx)
+    assert row["t2_status"] == fc.STATUS_ERROR
+    _close_ctx(ctx)
+
+
+def test_swap_t2_aborts_when_recording_gone_from_frigate_db(tmp_path):
+    """Frigate dropped the recordings row mid-flight: don't replace primary,
+    delete orphan sibling, mark error."""
+    ctx, src, sib = _setup_swap_ready(tmp_path, with_frigate_row=False)
+    result = fc.swap_t2("r1", str(src), "cam1", "motion", "cpu", ctx)
+    assert result is False
+    # Primary untouched (still tier-1 content)
+    assert src.read_bytes() == b"x" * 5000
+    # Sibling cleaned up
+    assert not sib.exists()
+    row = _db_row(ctx)
+    assert row["t2_status"] == fc.STATUS_ERROR
+    _close_ctx(ctx)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _pace_then_compress dispatch — swap_t2 case
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_pace_then_compress_dispatches_to_swap_for_direct_tier2(monkeypatch):
+    """tier=2, t2_status='direct' → swap_t2."""
+    calls: list[str] = []
+    monkeypatch.setattr(fc.app, "swap_t2", lambda *a, **k: calls.append("swap") or True)
+    monkeypatch.setattr(
+        fc.app, "compress_direct", lambda *a, **k: calls.append("direct") or True
+    )
+    monkeypatch.setattr(
+        fc.app, "compress_one", lambda *a, **k: calls.append("one") or True
+    )
+    fake_ctx = MagicMock()
+    fake_ctx.rate_limiter.acquire = lambda _stopping: None
+    fc._pace_then_compress(
+        threading.Event(),
+        "r",
+        "/p",
+        "cam",
+        2,
+        "continuous",
+        "cpu",
+        fake_ctx,
+        t2_status=fc.STATUS_DIRECT,
+    )
+    assert calls == ["swap"]
+
+
+def test_pace_then_compress_dispatches_to_one_for_chained_tier2(monkeypatch):
+    """tier=2, t2_status=NULL → compress_one (chained encode)."""
+    calls: list[str] = []
+    monkeypatch.setattr(fc.app, "swap_t2", lambda *a, **k: calls.append("swap") or True)
+    monkeypatch.setattr(
+        fc.app, "compress_direct", lambda *a, **k: calls.append("direct") or True
+    )
+    monkeypatch.setattr(
+        fc.app, "compress_one", lambda *a, **k: calls.append("one") or True
+    )
+    fake_ctx = MagicMock()
+    fake_ctx.rate_limiter.acquire = lambda _stopping: None
+    fake_ctx.cfg.cameras = {"cam": MagicMock()}
+    fc._pace_then_compress(
+        threading.Event(),
+        "r",
+        "/p",
+        "cam",
+        2,
+        "continuous",
+        "cpu",
+        fake_ctx,
+        t2_status=None,
     )
     assert calls == ["one"]
