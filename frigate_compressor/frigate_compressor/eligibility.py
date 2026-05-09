@@ -106,24 +106,41 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
     Path and recording_type are denormalised onto ``files`` at probe time,
     so this query never touches Frigate's recordings table.
 
-    Ordering is auto-tuned per call.  When the eligible-row count exceeds
-    one batch, results are sorted ``tier ASC, start_time ASC`` so the
-    heavier tier-1 encodes drain ahead of tier-2 — the catch-up case.
-    When the count fits in one batch, results are sorted ``start_time
-    ASC`` only, so tier-1 and tier-2 intermix by time and the steady-state
-    workload stays balanced across the encoder.
+    Ordering is auto-tuned per call.  When the eligible-row count
+    exceeds one batch (catch-up), results are sorted ``tier ASC,
+    start_time ASC`` so the heavier tier-1 encodes drain ahead of
+    tier-2 chained re-encodes.  When the count fits in one batch
+    (steady state), results are interleaved by per-tier rank so the
+    encoder sees ``t1[0], t2[0], t1[1], t2[1], …`` — pure ``start_time``
+    order doesn't work because the two tiers' eligible rows never overlap
+    in time (tier-1 is ~min_days old; tier-2 chained is ~tier2.min_days
+    old).
     """
     cfg = ctx.cfg
     union_sql, params = _build_eligible_where(cfg, time.time())
     if not union_sql:
         return []
-    # Catch-up signal lives entirely in SQL: COUNT(*) OVER () counts the
-    # union once.  When the count exceeds one batch, we have more work
-    # than we can carry — sort tier ASC first so the heavier tier-0→1
-    # encodes drain ahead of tier-1→2 chained re-encodes.  When caught
-    # up, the CASE returns NULL for every row, the primary key collapses
-    # to a tie, and ordering falls through to start_time ASC, interleaving
-    # tier-1 and chained-tier-2 by time so steady-state load is balanced.
+    # Two window columns drive the ordering:
+    #
+    #  * ``n = COUNT(*) OVER ()`` — total eligible rows in this batch.
+    #    When ``n > _ELIGIBLE_BATCH_SIZE`` we have more work than one
+    #    batch can carry (catch-up), and the heavy tier-0→1 encodes
+    #    should drain ahead of tier-1→2 chained re-encodes.
+    #  * ``rk = ROW_NUMBER() OVER (PARTITION BY tier ORDER BY start_time)``
+    #    — within-tier rank by age.  Used to interleave tiers in steady
+    #    state.  Pure ``start_time ASC`` doesn't interleave because the
+    #    two tiers' eligible rows never overlap in time (tier-1 rows are
+    #    ~tier1.min_days old; tier-2 chained rows are ~tier2.min_days old).
+    #
+    # The CASE on n switches between the two regimes:
+    #  * Catch-up (n > batch): CASE → tier, primary sort tier ASC.  rk is
+    #    secondary and within tier ordered by start_time, so the result
+    #    is "all tier-1 oldest-first, then all tier-2 oldest-first".
+    #  * Steady state (n ≤ batch): CASE → NULL for every row, primary key
+    #    ties, falls through to rk ASC.  Result is rk=1 tier-1, rk=1
+    #    tier-2, rk=2 tier-1, rk=2 tier-2, … — true alternation, with
+    #    one tier draining alone once the other runs out.
+    #
     # (Sibling-swap work is handled by ``swap_loop`` on its own thread.)
     params.extend([_ELIGIBLE_BATCH_SIZE, _ELIGIBLE_BATCH_SIZE, _ELIGIBLE_BATCH_SIZE])
 
@@ -134,20 +151,27 @@ def get_eligible_recordings(ctx: CompressorContext) -> list[dict]:
                    f.width, f.height, f.fps,
                    sub.start_time, sub.tier
             FROM (
-                SELECT rid, start_time, tier, n
+                SELECT rid, start_time, tier, n, rk
                 FROM (
                     SELECT rid, start_time, tier,
-                           COUNT(*) OVER () AS n
+                           COUNT(*) OVER () AS n,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY tier ORDER BY start_time ASC
+                           ) AS rk
                     FROM ({union_sql})
                 )
                 ORDER BY
                     CASE WHEN n > ? THEN tier END ASC,
+                    rk ASC,
+                    tier ASC,
                     start_time ASC
                 LIMIT ?
             ) sub
             JOIN files f ON f.rowid = sub.rid
             ORDER BY
                 CASE WHEN sub.n > ? THEN sub.tier END ASC,
+                sub.rk ASC,
+                sub.tier ASC,
                 sub.start_time ASC
             """,
             params,
