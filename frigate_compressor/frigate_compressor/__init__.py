@@ -52,11 +52,15 @@ from .database import (  # noqa: E402,F401
     open_compress_db,
     verify_files_stats,
 )
-from .eligibility import (  # noqa: E402,F401
+from .encode_eligibility import (  # noqa: E402,F401
     _build_eligible_where,
     _ELIGIBLE_BATCH_SIZE,
     get_eligible_recordings,
     time_until_next_eligible,
+)
+from .swap_eligibility import (  # noqa: E402,F401
+    _MAX_SWAPS_PER_WINDOW,
+    get_eligible_swaps,
 )
 from .ffmpeg import (  # noqa: E402,F401
     FFMPEG_STDERR_MAX_LEN,
@@ -100,9 +104,7 @@ from .probe_loop import (  # noqa: E402,F401
     run_probe_loop,
 )
 from .swap_loop import (  # noqa: E402,F401
-    _MAX_SWAPS_PER_WINDOW,
     _SWAP_WINDOW_SEC,
-    get_eligible_swaps,
     run_swap_loop,
 )
 from .throttle import (  # noqa: E402,F401

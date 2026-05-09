@@ -27,7 +27,7 @@ from .database import (
     check_frigate_schema_attached,
     open_compress_db,
 )
-from .eligibility import (
+from .encode_eligibility import (
     get_eligible_recordings,
     time_until_next_eligible,
 )
