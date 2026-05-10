@@ -23,4 +23,11 @@ COPY haos_configurator /opt/haos_configurator
 RUN chmod +x /run.sh \
  && python3 -m compileall -q /opt/haos_configurator
 
+# Override the HA base image's s6-overlay ``/init`` entrypoint.  This add-on
+# is a one-shot Python script that does its work and exits — we don't need
+# s6's service supervision, and s6-overlay-suexec's "must be pid 1" check
+# fires before our code runs under Protection mode (because of how Supervisor
+# starts the container in that mode), so the friendly "Protection mode must
+# be OFF" message in app.main() never gets reached.  Bypass s6 entirely.
+ENTRYPOINT []
 CMD ["/run.sh"]

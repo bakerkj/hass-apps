@@ -3,7 +3,7 @@
   "slug": "haos_configurator",
   "description": "Installs persistent HAOS host files declared in a user-supplied manifest. Drop files and a manifest.yaml into the add-on's config directory, start the add-on, and the listed files are written to the host with per-file on-change actions (e.g. reload udev, run init scripts).",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "arch": ["amd64", "aarch64"],
   "stage": "experimental",
   "startup": "once",

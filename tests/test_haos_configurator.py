@@ -237,6 +237,37 @@ def test_host_run_check_false_does_not_raise() -> None:
 
 
 # ---------------------------------------------------------------------------
+# host.host_sha256 — happy-path parsing + missing-file → None
+# ---------------------------------------------------------------------------
+
+
+def test_host_sha256_happy_path() -> None:
+    """sha256sum returns 0 + the standard ``<hash>  <path>\\n`` line."""
+    with patch("subprocess.run") as run:
+        proc = run.return_value
+        proc.returncode = 0
+        proc.stdout = (
+            b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            b"  /etc/hostname\n"
+        )
+        result = host.host_sha256("/etc/hostname")
+    assert result == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+
+def test_host_sha256_returns_none_on_missing_file() -> None:
+    """``test -f`` returning non-zero (or ``sha256sum`` itself failing)
+    surfaces as ``None`` rather than raising."""
+    with patch("subprocess.run") as run:
+        proc = run.return_value
+        proc.returncode = 1
+        proc.stdout = b""
+        proc.stderr = b"sha256sum: /nope: No such file or directory\n"
+        assert host.host_sha256("/nope") is None
+
+
+# ---------------------------------------------------------------------------
 # host.run_user_action — array form bypasses sh -c
 # ---------------------------------------------------------------------------
 

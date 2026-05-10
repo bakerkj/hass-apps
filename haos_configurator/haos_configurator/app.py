@@ -59,7 +59,8 @@ def configure_logging(level: str) -> None:
     }
     logging.basicConfig(
         level=levels.get(level.upper(), logging.INFO),
-        format="[%(levelname)s] %(message)s",
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
 
@@ -103,6 +104,7 @@ def process_files(manifest: dict[str, Any], *, dry_run: bool) -> set[str]:
 
         s_hash = local_sha256(src_local)
         d_hash = host_sha256(dst)
+        log.debug("hash %s: src=%s dst=%s", dst, s_hash, d_hash)
         if s_hash == d_hash:
             log.debug("unchanged: host:%s (sha256 match)", dst)
             continue
@@ -142,10 +144,38 @@ def main() -> int:
     log.info("HAOS Configurator v%s starting", __version__)
     log.debug("Options:\n%s", json.dumps(opts, indent=2, sort_keys=True))
 
-    if host_run(["true"], check=False).returncode != 0:
+    # Detect HA's Protection mode silently downgrading ``host_pid: true``.
+    #
+    # When Protection mode is ON in the add-on's Info tab, Supervisor
+    # ignores our ``host_pid: true`` and starts the container with its
+    # own PID namespace — so our process is PID 1 inside that ns.
+    # ``nsenter -t 1`` then enters our *own* (container) namespace, not
+    # the host's, and every read of a host path silently fails or
+    # returns the wrong content.  The previous ``nsenter true`` probe
+    # passed through this case happily, so the add-on would run end-to
+    # -end and falsely report every host file as "needs install".
+    #
+    # When Protection mode is OFF, Supervisor honors ``host_pid`` and
+    # the container shares the host's PID namespace — our process gets
+    # a real host PID (not 1), and ``nsenter -t 1`` actually targets
+    # the host's init.
+    #
+    # ``os.getpid() == 1`` is the cleanest distinguisher: True means we
+    # have our own PID namespace; False means we share the host's.
+    if os.getpid() == 1:
         log.error(
-            "Cannot enter host mount namespace.  Need full_access + "
-            "host_pid + SYS_ADMIN, and Protection mode must be OFF."
+            "This add-on is PID 1 inside its container — host_pid: true"
+            " was not honored, so nsenter cannot reach the host."
+        )
+        log.error("")
+        log.error(
+            "Almost always this means **Home Assistant's Protection"
+            " mode is ON** for this add-on."
+        )
+        log.error("")
+        log.error(
+            "Fix: open the add-on's Info tab in the HA UI and toggle"
+            " Protection mode OFF, then restart the add-on."
         )
         return 1
 
