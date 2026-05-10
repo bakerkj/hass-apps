@@ -11,7 +11,7 @@
   "init": false,
   "host_pid": true,
   "full_access": true,
-  "privileged": ["SYS_ADMIN"],
+  "privileged": ["SYS_ADMIN", "SYS_PTRACE"],
   "apparmor": false,
   "map": ["addon_config:ro"],
   "options": {

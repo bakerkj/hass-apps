@@ -14,7 +14,7 @@ only for genuinely host-side ops:
 
 Modeled on adamoutler's HassOsEnableSSH for the host-namespace pattern:
 
-    https://github.com/adamoutler/HAOSConfigurator/tree/main/HassOsEnableSSH
+    https://github.com/adamoutler/HassOSConfigurator/tree/main/HassOsEnableSSH
 """
 
 from __future__ import annotations
@@ -86,9 +86,11 @@ def install_file(src_local: str, dst: str, mode: str, *, dry_run: bool) -> None:
     log.info("Installed host:%s (mode %s)", dst, mode)
 
 
-def process_files(manifest: dict[str, Any], *, dry_run: bool) -> set[str]:
+def process_files(manifest: dict[str, Any], *, dry_run: bool) -> tuple[bool, set[str]]:
     """Walk ``files[]``, install anything whose sha256 differs from the
-    host's copy, and return the set of action names to fire."""
+    host's copy.  Returns ``(any_changed, fired_actions)`` so callers
+    can tell apart "nothing to do" from "files written but the entries
+    declared no on_change actions"."""
     fired: set[str] = set()
     any_changed = False
     for entry in manifest.get("files") or []:
@@ -112,7 +114,7 @@ def process_files(manifest: dict[str, Any], *, dry_run: bool) -> set[str]:
         install_file(src_local, dst, mode, dry_run=dry_run)
         any_changed = True
         fired.update(on_change)
-    return fired if any_changed else set()
+    return any_changed, fired
 
 
 def run_actions(manifest: dict[str, Any], fired: set[str], *, dry_run: bool) -> None:
@@ -143,6 +145,24 @@ def main() -> int:
     configure_logging(log_level)
     log.info("HAOS Configurator v%s starting", __version__)
     log.debug("Options:\n%s", json.dumps(opts, indent=2, sort_keys=True))
+
+    # Surface security-context info at DEBUG so failures of nsenter-based
+    # host operations are diagnosable from the log alone.
+    try:
+        with open("/proc/self/attr/current") as f:
+            log.debug("AppArmor label: %s", f.read().strip())
+    except OSError as exc:
+        log.debug("AppArmor: %s", exc)
+    log.debug("os.getpid()=%d", os.getpid())
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith(
+                    ("Uid", "CapEff", "CapBnd", "Seccomp", "NoNewPrivs")
+                ):
+                    log.debug("/proc/self/status: %s", line.strip())
+    except OSError as exc:
+        log.debug("/proc/self/status: %s", exc)
 
     # Detect HA's Protection mode silently downgrading ``host_pid: true``.
     #
@@ -190,14 +210,21 @@ def main() -> int:
             return 0
 
         validate_manifest(manifest)
-        fired = process_files(manifest, dry_run=dry_run)
-        if not fired:
+        any_changed, fired = process_files(manifest, dry_run=dry_run)
+        if not any_changed:
             log.info("All files already match host content; no actions to run.")
             return 0
         if not apply_post_actions:
             log.info(
-                "Files changed, but apply_post_actions=false; skipping"
-                " on_change actions."
+                "Files %s, but apply_post_actions=false; skipping on_change actions.",
+                "would change" if dry_run else "changed",
+            )
+            return 0
+        if not fired:
+            log.info(
+                "Files %s, but no on_change actions are configured for"
+                " those entries; nothing to fire.",
+                "would change" if dry_run else "changed",
             )
             return 0
 
