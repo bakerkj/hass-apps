@@ -7,6 +7,15 @@
 > source and fully understand what it does before you install it anywhere — the
 > burden is on you to evaluate this add-on.
 
+> **_Protection mode must be OFF._**
+>
+> Open the add-on's **Info** tab in Home Assistant and toggle **Protection
+> mode** off. With Protection mode on, Supervisor silently downgrades the
+> `host_pid` privilege the add-on requires, and the add-on cannot reach the host
+> filesystem to read or write any of the files it's supposed to install. The
+> add-on detects this case and exits with a clear error, but you still have to
+> flip the toggle yourself.
+
 A one-shot Home Assistant add-on that installs persistent host files into HAOS
 according to a user-supplied manifest. You drop your files and a `manifest.yaml`
 into the add-on's config directory, start the add-on, and the listed files are

@@ -11,8 +11,11 @@ design (action commands are user-authored shell strings).
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from typing import IO
+
+log = logging.getLogger(__name__)
 
 # Host mount + UTS + IPC.  *Not* network — actions that genuinely need
 # the host net ns can prefix with ``nsenter -t 1 -n -- …`` themselves.
@@ -45,10 +48,26 @@ def host_isfile(path: str) -> bool:
 
 
 def host_sha256(path: str) -> str | None:
-    """sha256 of a file on the host, or ``None`` if it doesn't exist."""
+    """sha256 of a file on the host, or ``None`` if it doesn't exist /
+    can't be read.
+
+    If the ``host_isfile`` pre-check passes but ``sha256sum`` itself
+    still fails (permission denied, I/O error, etc.), log its stderr at
+    DEBUG so the cause shows up in the add-on log instead of being
+    silently swallowed.
+    """
     if not host_isfile(path):
         return None
-    out = host_run(["sha256sum", path]).stdout.decode().strip()
+    proc = host_run(["sha256sum", path], check=False)
+    if proc.returncode != 0:
+        log.debug(
+            "host_sha256(%s): sha256sum rc=%d stderr=%s",
+            path,
+            proc.returncode,
+            proc.stderr.decode(errors="replace").strip(),
+        )
+        return None
+    out = proc.stdout.decode().strip()
     return out.split(maxsplit=1)[0] if out else None
 
 
