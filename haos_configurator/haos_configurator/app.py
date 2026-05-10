@@ -59,7 +59,8 @@ def configure_logging(level: str) -> None:
     }
     logging.basicConfig(
         level=levels.get(level.upper(), logging.INFO),
-        format="[%(levelname)s] %(message)s",
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
 
