@@ -106,9 +106,10 @@ def process_files(manifest: dict[str, Any], *, dry_run: bool) -> tuple[bool, set
 
         s_hash = local_sha256(src_local)
         d_hash = host_sha256(dst)
-        log.debug("hash %s: src=%s dst=%s", dst, s_hash, d_hash)
+        log.debug("src=%s hash=%s", src_local, s_hash)
+        log.debug("dst=%s hash=%s", dst, d_hash)
         if s_hash == d_hash:
-            log.debug("unchanged: host:%s (sha256 match)", dst)
+            log.info("unchanged: host:%s (sha256 match)", dst)
             continue
 
         install_file(src_local, dst, mode, dry_run=dry_run)
@@ -144,7 +145,31 @@ def main() -> int:
 
     configure_logging(log_level)
     log.info("HAOS Configurator v%s starting", __version__)
-    log.debug("Options:\n%s", json.dumps(opts, indent=2, sort_keys=True))
+    # Dump Options as INFO so each line gets the timestamp+level prefix.
+    # logging treats the message as one record, so embedded "\n" produce
+    # bare-content lines without the formatter prefix — which is harder
+    # to grep / read.  Splitting into per-line calls fixes that.
+    log.info("Options:")
+    for line in json.dumps(opts, indent=2, sort_keys=True).splitlines():
+        log.info("  %s", line)
+
+    # Surface security-context info at DEBUG so failures of nsenter-based
+    # host operations are diagnosable from the log alone.
+    try:
+        with open("/proc/self/attr/current") as f:
+            log.debug("AppArmor label: %s", f.read().strip())
+    except OSError as exc:
+        log.debug("AppArmor: %s", exc)
+    log.debug("os.getpid()=%d", os.getpid())
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith(
+                    ("Uid", "CapEff", "CapBnd", "Seccomp", "NoNewPrivs")
+                ):
+                    log.debug("/proc/self/status: %s", line.strip())
+    except OSError as exc:
+        log.debug("/proc/self/status: %s", exc)
 
     # Surface security-context info at DEBUG so failures of nsenter-based
     # host operations are diagnosable from the log alone.
@@ -201,10 +226,9 @@ def main() -> int:
 
     try:
         manifest = load_manifest()
-        log.debug(
-            "Manifest:\n%s",
-            yaml.safe_dump(manifest, sort_keys=False).rstrip(),
-        )
+        log.info("Manifest:")
+        for line in yaml.safe_dump(manifest, sort_keys=False).rstrip().splitlines():
+            log.info("  %s", line)
         if not manifest.get("files"):
             log.warning("Manifest declares no files; nothing to do.")
             return 0
