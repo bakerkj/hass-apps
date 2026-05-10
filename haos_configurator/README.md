@@ -98,7 +98,7 @@ restarting the add-on on a quiet system does no work.
 ## Persistence model
 
 The add-on follows the
-[HAOSConfigurator/HassOsEnableSSH](https://github.com/adamoutler/HAOSConfigurator/tree/main/HassOsEnableSSH)
+[HassOSConfigurator/HassOsEnableSSH](https://github.com/adamoutler/HassOSConfigurator/tree/main/HassOsEnableSSH)
 pattern: with `host_pid: true`, `full_access: true`, and `SYS_ADMIN`, it uses
 `nsenter -t 1 -m` to enter the host's mount namespace and writes directly into
 HAOS-persistent paths.

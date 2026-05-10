@@ -17,10 +17,21 @@ from typing import IO
 
 log = logging.getLogger(__name__)
 
-# Host mount + UTS + IPC.  *Not* network — actions that genuinely need
-# the host net ns can prefix with ``nsenter -t 1 -n -- …`` themselves.
-# PID is irrelevant: the add-on already runs with ``host_pid: true``.
-_NSENTER = ["nsenter", "-t", "1", "-m", "-u", "-i", "--"]
+# Enter only the host's MOUNT namespace.
+#
+# We previously also entered UTS (-u) and IPC (-i), but under HA's
+# Protection-OFF environment opening /proc/1/ns/ipc is denied even
+# with full_access + host_pid + SYS_ADMIN — apparently the AppArmor
+# profile doesn't permit it.  We don't actually need UTS (hostname)
+# or IPC (System V IPC) for any of our host operations: ``sha256sum``,
+# ``test -f``, ``cp``, ``mv``, ``chmod``, ``mkdir``, and user-supplied
+# ``actions[].run`` shell strings only need the mount namespace.
+#
+# Network is intentionally not entered either — actions that genuinely
+# need the host's net ns can prefix with ``nsenter -t 1 -n -- …``
+# themselves.  PID is irrelevant: the add-on already runs with
+# ``host_pid: true``.
+_NSENTER = ["nsenter", "-t", "1", "-m", "--"]
 
 
 def host_run(
@@ -44,19 +55,32 @@ def host_run(
 
 
 def host_isfile(path: str) -> bool:
-    return host_run(["test", "-f", path], check=False).returncode == 0
+    proc = host_run(["test", "-f", path], check=False)
+    if proc.returncode != 0:
+        log.debug(
+            "host_isfile(%s): test -f rc=%d stderr=%s",
+            path,
+            proc.returncode,
+            proc.stderr.decode(errors="replace").strip(),
+        )
+    return proc.returncode == 0
 
 
 def host_sha256(path: str) -> str | None:
     """sha256 of a file on the host, or ``None`` if it doesn't exist /
     can't be read.
 
-    If the ``host_isfile`` pre-check passes but ``sha256sum`` itself
-    still fails (permission denied, I/O error, etc.), log its stderr at
-    DEBUG so the cause shows up in the add-on log instead of being
-    silently swallowed.
+    Two failure paths can return ``None`` and we log each at DEBUG so
+    the cause surfaces in the add-on log instead of being swallowed:
+
+    * ``host_isfile`` returning False — ``test -f`` says the path is
+      not a regular file in the host's view, or the call itself
+      failed (e.g. AppArmor blocking the read).
+    * ``sha256sum`` itself failing post-pre-check (permission denied,
+      I/O error, etc.).
     """
     if not host_isfile(path):
+        log.debug("host_sha256(%s): host_isfile returned False", path)
         return None
     proc = host_run(["sha256sum", path], check=False)
     if proc.returncode != 0:
