@@ -18,6 +18,7 @@ jobs:
         with:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
+          cache-suffix: mypy
       - run:
           uv run mypy container_info_mqtt ffmpeg_snapshotter frigate_compressor
           haos_configurator intel_gpu_top_mqtt system_resource_tuner
