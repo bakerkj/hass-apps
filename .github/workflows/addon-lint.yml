@@ -8,21 +8,59 @@ permissions:
   contents: read
 
 jobs:
+  discover:
+    name: Discover addons
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build addon list
+        id: matrix
+        env:
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          # See addon-build-smoke.yml for the same rationale.  Branch name
+          # shape comes from src/util/branch-name.ts:79 in googleapis/release-please.
+          rp_prefix="release-please--branches--main--components--"
+          target_addon=""
+          case "$HEAD_REF" in
+            "$rp_prefix"*)
+              target_addon="${HEAD_REF#"$rp_prefix"}"
+              echo "release-please component branch detected -> scoping to: $target_addon"
+              ;;
+            *)
+              echo "non-release-please branch -> linting full matrix"
+              ;;
+          esac
+
+          matrix='{"include":['
+          first=true
+          for cfg in */config.json; do
+            addon=$(dirname "$cfg")
+            if [ -n "$target_addon" ] && [ "$addon" != "$target_addon" ]; then
+              continue
+            fi
+            if [ "$first" = true ]; then
+              first=false
+            else
+              matrix+=','
+            fi
+            matrix+="{\"addon\":\"$addon\"}"
+          done
+          matrix+=']}'
+          echo "matrix: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   addon-linter:
+    name: Lint ${{ matrix.addon }}
+    needs: discover
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      matrix:
-        addon:
-          - birdnet_audio_stream
-          - container_info_mqtt
-          - ffmpeg_snapshotter
-          - frigate_compressor
-          - haos_configurator
-          - intel_gpu_top_mqtt
-          - system_resource_tuner
-          - turbostat_mqtt
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
