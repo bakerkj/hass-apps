@@ -31,6 +31,35 @@ Each add-on below will then appear in the store.
 See each add-on's own `README.md` for configuration options and operational
 notes.
 
+## Development
+
+Commits must follow the
+[Conventional Commits](https://www.conventionalcommits.org/) spec —
+[release-please](https://github.com/googleapis/release-please) uses commit
+prefixes (`feat:`, `fix:`, …) to drive per-addon version bumps and changelogs.
+In this monorepo, **scope each commit to the addon it touches**:
+
+```
+feat(haos_configurator): support array-form actions
+fix(frigate_compressor): drop host_isfile in favor of sha256sum exit code
+chore(turbostat_mqtt): bump pinned coreutils version
+```
+
+The scope determines which addon's version and `CHANGELOG.md` get bumped on the
+next release-please run. Each addon releases independently (its own
+`<addon>-vX.Y.Z` tag, its own GitHub release, its own PR via release-please's
+`separate-pull-requests` mode).
+
+Install the pre-commit hooks **including the commit-msg hook** (the default
+`pre-commit install` only wires up pre-commit-stage hooks):
+
+```
+uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+Without `--hook-type commit-msg`, malformed commit messages won't be caught
+locally — CI (the `Commitlint` workflow) will still reject them, just later.
+
 ## License
 
 Each add-on directory contains its own `LICENSE.md`.

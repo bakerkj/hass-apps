@@ -4,7 +4,10 @@
   "description": "Publishes Docker container metrics and limits (cpuset, CPU shares, blkio weight) as Home Assistant MQTT Discovery sensors.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.1.18",
-  "arch": ["amd64", "aarch64"],
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
   "startup": "services",
   "init": false,
   "docker_api": true,

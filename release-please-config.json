@@ -1,0 +1,119 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "include-component-in-tag": true,
+  "tag-separator": "-",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance Improvements" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "chore", "section": "Miscellaneous Chores" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "style", "section": "Styles" },
+    { "type": "refactor", "section": "Code Refactoring" },
+    { "type": "test", "section": "Tests" },
+    { "type": "build", "section": "Build System" },
+    { "type": "ci", "section": "Continuous Integration" }
+  ],
+  "packages": {
+    "birdnet_audio_stream": {
+      "release-type": "simple",
+      "package-name": "birdnet_audio_stream",
+      "component": "birdnet_audio_stream",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "birdnet_audio_stream/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "container_info_mqtt": {
+      "release-type": "simple",
+      "package-name": "container_info_mqtt",
+      "component": "container_info_mqtt",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "container_info_mqtt/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "ffmpeg_snapshotter": {
+      "release-type": "simple",
+      "package-name": "ffmpeg_snapshotter",
+      "component": "ffmpeg_snapshotter",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "ffmpeg_snapshotter/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "frigate_compressor": {
+      "release-type": "simple",
+      "package-name": "frigate_compressor",
+      "component": "frigate_compressor",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "frigate_compressor/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "haos_configurator": {
+      "release-type": "simple",
+      "package-name": "haos_configurator",
+      "component": "haos_configurator",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "haos_configurator/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "intel_gpu_top_mqtt": {
+      "release-type": "simple",
+      "package-name": "intel_gpu_top_mqtt",
+      "component": "intel_gpu_top_mqtt",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "intel_gpu_top_mqtt/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "system_resource_tuner": {
+      "release-type": "simple",
+      "package-name": "system_resource_tuner",
+      "component": "system_resource_tuner",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "system_resource_tuner/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "turbostat_mqtt": {
+      "release-type": "simple",
+      "package-name": "turbostat_mqtt",
+      "component": "turbostat_mqtt",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "turbostat_mqtt/config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}

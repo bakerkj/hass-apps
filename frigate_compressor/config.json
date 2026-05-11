@@ -4,11 +4,19 @@
   "slug": "frigate_compressor",
   "description": "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age. Tracks state in a local SQLite database.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "arch": ["amd64"],
+  "arch": [
+    "amd64"
+  ],
   "init": false,
   "video": true,
-  "map": ["media:rw", "addon_config:rw", "all_addon_configs:rw"],
-  "devices": ["/dev/dri"],
+  "map": [
+    "media:rw",
+    "addon_config:rw",
+    "all_addon_configs:rw"
+  ],
+  "devices": [
+    "/dev/dri"
+  ],
   "options": {
     "encoder": "qsv",
     "max_parallel_jobs": 2,

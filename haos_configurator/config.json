@@ -4,16 +4,24 @@
   "description": "Installs persistent HAOS host files declared in a user-supplied manifest. Drop files and a manifest.yaml into the add-on's config directory, start the add-on, and the listed files are written to the host with per-file on-change actions (e.g. reload udev, run init scripts).",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.4",
-  "arch": ["amd64", "aarch64"],
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
   "stage": "experimental",
   "startup": "once",
   "boot": "manual",
   "init": false,
   "host_pid": true,
   "full_access": true,
-  "privileged": ["SYS_ADMIN", "SYS_PTRACE"],
+  "privileged": [
+    "SYS_ADMIN",
+    "SYS_PTRACE"
+  ],
   "apparmor": false,
-  "map": ["addon_config:ro"],
+  "map": [
+    "addon_config:ro"
+  ],
   "options": {
     "dry_run": false,
     "apply_post_actions": true,

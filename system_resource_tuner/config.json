@@ -4,13 +4,19 @@
   "description": "Applies system resource tuning for containers (cpuset, CPU shares priority, blkio weight) and keeps it reconciled.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.28",
-  "arch": ["amd64", "aarch64"],
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
   "startup": "services",
   "init": false,
   "docker_api": true,
   "host_pid": true,
   "full_access": true,
-  "privileged": ["SYS_ADMIN", "SYS_NICE"],
+  "privileged": [
+    "SYS_ADMIN",
+    "SYS_NICE"
+  ],
   "apparmor": false,
   "options": {
     "interval_seconds": 60,
