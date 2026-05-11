@@ -31,7 +31,7 @@ jobs:
           target_addon=""
           case "$HEAD_REF" in
             "$rp_prefix"*)
-              target_addon="${HEAD_REF#$rp_prefix}"
+              target_addon="${HEAD_REF#"$rp_prefix"}"
               echo "release-please component branch detected -> scoping to: $target_addon"
               ;;
             *)
