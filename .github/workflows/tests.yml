@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
+          cache-suffix: tests
       - run: uv run pytest tests/ -m "not integration" --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
@@ -36,6 +37,7 @@ jobs:
         with:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
+          cache-suffix: integration-tests
       - run: sudo apt-get install -y ffmpeg
       - run:
           uv run pytest tests/ -m integration -v --no-cov --junit-xml=junit.xml
