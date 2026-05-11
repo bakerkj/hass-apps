@@ -4,11 +4,17 @@
   "description": "Runs intel_gpu_top and publishes Intel GPU metrics to MQTT (separate topics per sensor) with Home Assistant discovery.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.3.28",
-  "arch": ["amd64"],
+  "arch": [
+    "amd64"
+  ],
   "startup": "services",
   "init": false,
-  "privileged": ["PERFMON"],
-  "devices": ["/dev/dri"],
+  "privileged": [
+    "PERFMON"
+  ],
+  "devices": [
+    "/dev/dri"
+  ],
   "options": {
     "interval_seconds": 30,
     "mqtt_host": "core-mosquitto",

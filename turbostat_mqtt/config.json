@@ -4,10 +4,15 @@
   "description": "Runs turbostat and publishes to MQTT.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.31",
-  "arch": ["amd64"],
+  "arch": [
+    "amd64"
+  ],
   "startup": "services",
   "init": false,
-  "privileged": ["PERFMON", "SYS_RAWIO"],
+  "privileged": [
+    "PERFMON",
+    "SYS_RAWIO"
+  ],
   "options": {
     "interval_seconds": 30,
     "mqtt_host": "core-mosquitto",
