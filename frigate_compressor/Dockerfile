@@ -28,7 +28,7 @@ RUN apk add --no-cache \
       sqlite=3.51.2-r0 \
  && apk add --no-cache \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
-      onevpl-intel-gpu=25.4.6-r0
+      onevpl-intel-gpu=25.4.6-r1
 
 COPY run.sh /run.sh
 COPY frigate_compressor /opt/frigate_compressor
