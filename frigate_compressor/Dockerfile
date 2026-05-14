@@ -11,11 +11,12 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 # Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
-# second pulls onevpl-intel-gpu from Alpine edge/testing because Alpine 3.23
-# stable only ships the libvpl dispatcher, not its runtime backend
-# (libmfx-gen).  Without the runtime, h264_qsv fails.  --repository scopes the alternate
-# repo to the second apk call only, so future stable updates can't
-# accidentally come from edge.
+# second pulls onevpl-intel-gpu from Alpine edge because Alpine 3.23 stable
+# only ships the libvpl dispatcher, not its runtime backend (libmfx-gen).
+# Without the runtime, h264_qsv fails.  The package has moved between edge
+# subrepos (testing -> community) before, so list both; --repository scopes
+# the edge repos to the second apk call only, so future stable updates
+# can't accidentally come from edge.
 RUN apk add --no-cache \
       ffmpeg=8.0.1-r1 \
       intel-media-driver=25.4.6-r0 \
@@ -27,6 +28,7 @@ RUN apk add --no-cache \
       python3=3.12.13-r0 \
       sqlite=3.51.2-r0 \
  && apk add --no-cache \
+      --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       onevpl-intel-gpu=25.4.6-r1
 
