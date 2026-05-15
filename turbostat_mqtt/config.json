@@ -4,6 +4,7 @@
   "description": "Runs turbostat and publishes to MQTT.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.31",
+  "image": "ghcr.io/bakerkj/{arch}-turbostat_mqtt",
   "arch": [
     "amd64"
   ],

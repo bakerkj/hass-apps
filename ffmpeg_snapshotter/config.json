@@ -4,6 +4,7 @@
   "description": "Runs ffmpeg on-demand (per snapshot) to create timestamped JPEG snapshots from RTSP streams and maintains latest.jpg symlinks.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.8.11",
+  "image": "ghcr.io/bakerkj/{arch}-ffmpeg_snapshotter",
   "arch": [
     "amd64"
   ],
