@@ -4,7 +4,7 @@
   "ffmpeg_snapshotter": "0.8.12",
   "frigate_compressor": "0.0.52",
   "haos_configurator": "0.0.4",
-  "intel_gpu_top_mqtt": "0.3.28",
+  "intel_gpu_top_mqtt": "0.3.29",
   "system_resource_tuner": "0.0.29",
   "turbostat_mqtt": "0.0.32"
 }
