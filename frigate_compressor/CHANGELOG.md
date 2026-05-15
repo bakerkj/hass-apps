@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.52](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.51...frigate_compressor-v0.0.52) (2026-05-15)
+
+
+### Bug Fixes
+
+* **frigate_compressor:** bump config.json to 0.0.51 + correct release-please extra-files paths ([#151](https://github.com/bakerkj/hass-apps/issues/151)) ([0f97be7](https://github.com/bakerkj/hass-apps/commit/0f97be711f8ae8b5a8aa82356cf7cb1cad7c83db))
+
 ## [0.0.51](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.50...frigate_compressor-v0.0.51) (2026-05-15)
 
 
