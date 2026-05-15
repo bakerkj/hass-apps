@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -17,7 +18,7 @@ LABEL \
 # subrepos (testing -> community) before, so list both; --repository scopes
 # the edge repos to the second apk call only, so future stable updates
 # can't accidentally come from edge.
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
       ffmpeg=8.0.1-r1 \
       intel-media-driver=25.4.6-r0 \
       libva=2.22.0-r1 \
@@ -27,7 +28,7 @@ RUN apk add --no-cache \
       py3-yaml=6.0.3-r0 \
       python3=3.12.13-r0 \
       sqlite=3.51.2-r0 \
- && apk add --no-cache \
+ && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       onevpl-intel-gpu=25.4.6-r1

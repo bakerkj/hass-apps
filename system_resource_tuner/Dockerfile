@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -10,7 +11,7 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
   docker-cli=29.1.3-r4 \
   python3=3.12.13-r0
 

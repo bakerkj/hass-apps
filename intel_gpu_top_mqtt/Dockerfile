@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -15,10 +16,10 @@ LABEL \
 # edge/testing because Alpine 3.23 stable doesn't package it.
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
       py3-paho-mqtt=1.6.1-r3 \
       python3=3.12.13-r0 \
- && apk add --no-cache \
+ && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       igt-gpu-tools=2.3-r0
 

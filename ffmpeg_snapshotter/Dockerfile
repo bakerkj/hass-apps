@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -10,7 +11,7 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
   coreutils=9.8-r1 \
   ffmpeg=8.0.1-r1 \
   findutils=4.10.0-r0 \
