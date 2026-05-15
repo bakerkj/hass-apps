@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -13,7 +14,7 @@ LABEL \
 # Pin every apk to a concrete Alpine 3.23 version so renovate's
 # alpine_3_23 custom manager (see renovate.json) can bump them.
 # nsenter comes from busybox in the HA base image.
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.12.13-r0 \
       py3-yaml=6.0.3-r0
 

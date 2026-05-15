@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -10,8 +11,8 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-RUN set -eux; \
-    apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk set -eux; \
+    apk add \
         alsa-lib=1.2.14-r2 \
         alsa-plugins-pulse=1.2.12-r2 \
         alsa-utils=1.2.14-r4 \

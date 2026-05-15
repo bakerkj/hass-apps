@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
@@ -11,7 +12,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 # turbostat is part of linux-tools on Alpine
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk apk add \
       cpupower=6.19.14-r0 \
       linux-tools=6.19.14-r0 \
       py3-paho-mqtt=1.6.1-r3 \
