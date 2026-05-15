@@ -132,9 +132,9 @@ jobs:
           image:
             ghcr.io/${{ github.repository_owner }}/${{ matrix.arch }}-${{
             matrix.addon }}
-          image-tags: >-
-            ${{ needs.discover.outputs.mode == 'release' && format('{0} latest',
-            matrix.version) || 'test' }}
+          image-tags: |
+            ${{ needs.discover.outputs.mode == 'release' && matrix.version || 'test' }}
+            ${{ needs.discover.outputs.mode == 'release' && 'latest' || '' }}
           version: ${{ matrix.version }}
           push:
             ${{ needs.discover.outputs.mode == 'release' && 'true' || 'false' }}
