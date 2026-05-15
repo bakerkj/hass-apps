@@ -27,7 +27,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "birdnet_audio_stream/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -39,7 +39,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "container_info_mqtt/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -51,7 +51,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "ffmpeg_snapshotter/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -63,7 +63,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "frigate_compressor/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -75,7 +75,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "haos_configurator/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -87,7 +87,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "intel_gpu_top_mqtt/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -99,7 +99,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "system_resource_tuner/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
@@ -111,7 +111,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "turbostat_mqtt/config.json",
+          "path": "config.json",
           "jsonpath": "$.version"
         }
       ]
