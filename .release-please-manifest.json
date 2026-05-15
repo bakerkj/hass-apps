@@ -2,7 +2,7 @@
   "birdnet_audio_stream": "0.1.15",
   "container_info_mqtt": "0.1.18",
   "ffmpeg_snapshotter": "0.8.11",
-  "frigate_compressor": "0.0.50",
+  "frigate_compressor": "0.0.51",
   "haos_configurator": "0.0.4",
   "intel_gpu_top_mqtt": "0.3.28",
   "system_resource_tuner": "0.0.28",

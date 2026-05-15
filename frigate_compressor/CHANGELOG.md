@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.51](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.50...frigate_compressor-v0.0.51) (2026-05-15)
+
+
+### Build System
+
+* use buildkit apk cache mount in addon Dockerfiles ([#149](https://github.com/bakerkj/hass-apps/issues/149)) ([4ffdd60](https://github.com/bakerkj/hass-apps/commit/4ffdd60e064b49de1050eb617604edf04d3cc3f9))
+
 ## [0.0.50](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.49...frigate_compressor-v0.0.50) (2026-05-14)
 
 
