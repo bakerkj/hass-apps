@@ -1,5 +1,5 @@
 {
-  "birdnet_audio_stream": "0.1.15",
+  "birdnet_audio_stream": "0.1.16",
   "container_info_mqtt": "0.1.19",
   "ffmpeg_snapshotter": "0.8.12",
   "frigate_compressor": "0.0.52",
