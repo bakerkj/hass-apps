@@ -1,0 +1,63 @@
+configuration:
+  interval_seconds:
+    name: Collection interval (seconds)
+    description:
+      Seconds between Docker metric collection/publish cycles (1-300).
+  docker_timeout_seconds:
+    name: Docker API timeout (seconds)
+    description: Timeout for Docker API calls (1-120).
+  include_metrics:
+    name: Per-container metrics
+    description: >-
+      Comma-separated metrics published as per-container sensors (e.g.
+      cpu_percent, memory_usage, network_rx_rate, uptime_seconds).
+  summary_metrics:
+    name: Summary metrics
+    description: >-
+      Comma-separated metrics aggregated into the summary device. Leave blank to
+      disable the summary device.
+  container_include_regex:
+    name: Container include regex
+    description: >-
+      Only containers whose name matches this regex are published. Blank = all
+      (still subject to the exclude filter).
+  container_exclude_regex:
+    name: Container exclude regex
+    description: >-
+      Containers whose name matches this regex are skipped (applied after the
+      include filter).
+  mqtt_host:
+    name: MQTT host
+    description: MQTT broker hostname or IP (e.g. core-mosquitto).
+  mqtt_port:
+    name: MQTT port
+    description: MQTT broker port.
+  mqtt_username:
+    name: MQTT username
+    description: MQTT username. Leave blank if the broker requires no auth.
+  mqtt_password:
+    name: MQTT password
+    description: MQTT password. Leave blank if the broker requires no auth.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description: Home Assistant MQTT discovery prefix.
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Base topic under which state is published.
+  client_id:
+    name: MQTT client ID
+    description: Client identifier used for the MQTT connection.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  expire_after_multiplier:
+    name: Expire-after multiplier
+    description: >-
+      Sensor availability timeout as a multiple of the collection interval; Home
+      Assistant marks entities unavailable after interval x this value with no
+      update (2-10).
+  mqtt_disconnect_timeout_seconds:
+    name: MQTT disconnect timeout (seconds)
+    description: >-
+      Exit (for the supervisor to restart the add-on) if the broker stays
+      disconnected longer than this many seconds (5-600).
