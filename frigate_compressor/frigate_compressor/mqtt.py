@@ -36,7 +36,7 @@ class RateTracker:
 
     def update(self, key: str, value: float, now: float | None = None) -> float | None:
         if now is None:
-            now = time.time()
+            now = time.monotonic()
         samples = self._samples.setdefault(key, [])
         samples.append((float(now), float(value)))
         cutoff = now - self._window
@@ -497,14 +497,16 @@ class MqttPublisher:
 
     def _run(self) -> None:
         while not self.stopping.is_set():
-            t0 = time.time()
+            # Monotonic: loop pacing must be immune to NTP steps. The watchdog
+            # below stays on wall clock to match the health timestamps.
+            t0 = time.monotonic()
             try:
                 self.publish_once()
             except Exception as e:
                 log("ERROR", f"MQTT publish failed: {e}")
             if self._check_watchdogs(time.time()):
                 return
-            elapsed = time.time() - t0
+            elapsed = time.monotonic() - t0
             sleep_for = max(1.0, self.mqtt_cfg.publish_interval_seconds - elapsed)
             if self.stopping.wait(timeout=sleep_for):
                 return
@@ -559,7 +561,9 @@ class MqttPublisher:
         thread.
         """
         stats = collect_frigate_stats(self.ctx)
-        now = time.time()
+        # Monotonic: this timestamp only feeds RateTracker, whose deltas must
+        # survive an NTP step. Watchdog/health timestamps stay on wall clock.
+        now = time.monotonic()
 
         # Top-level "Frigate Storage" device
         top_device_id = "frigate_compressor_storage"
