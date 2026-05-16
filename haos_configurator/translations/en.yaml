@@ -1,0 +1,12 @@
+configuration:
+  dry_run:
+    name: Dry run
+    description: Log what would be written without modifying any host files.
+  apply_post_actions:
+    name: Apply post actions
+    description: >-
+      Run each file's configured on-change post-actions (e.g. reload udev, run
+      init scripts) after install.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
