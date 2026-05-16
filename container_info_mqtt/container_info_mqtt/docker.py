@@ -16,6 +16,7 @@ import json
 import logging
 import socket
 import subprocess
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -334,6 +335,7 @@ def fetch_containers(
 
         now_wall = time.time()
         uptime_seconds: float | None = None
+        started_at_iso: str | None = None
         if (
             status.lower() == "running"
             and isinstance(started_at, float)
@@ -341,6 +343,9 @@ def fetch_containers(
             and started_at <= now_wall
         ):
             uptime_seconds = now_wall - started_at
+            started_at_iso = datetime.fromtimestamp(
+                started_at, tz=timezone.utc
+            ).isoformat()
 
         container: dict[str, Any] = {
             "id": container_id,
@@ -353,6 +358,8 @@ def fetch_containers(
 
         if uptime_seconds is not None:
             container["uptime_seconds"] = uptime_seconds
+        if started_at_iso is not None:
+            container["started_at"] = started_at_iso
 
         cpu_percent = safe_float(stats_info.get("cpu_percent"))
         memory_usage = safe_float(stats_info.get("memory_usage"))

@@ -126,6 +126,17 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "state_class": "measurement",
         "suggested_display_precision": 0,
     },
+    # Fixed container start time as an ISO 8601 timestamp. Unlike
+    # ``uptime_seconds`` (which changes every poll and churns the HA
+    # recorder), this only changes on a restart, while HA still renders a
+    # ``timestamp`` sensor as relative time ("3 days ago").
+    "started_at": {
+        "paths": [("started_at",)],
+        "name": "Started",
+        "icon": "mdi:clock-start",
+        "device_class": "timestamp",
+        "value_type": "timestamp",
+    },
 }
 
 RATE_SOURCE_METRICS: dict[str, str] = {
@@ -146,7 +157,7 @@ def metric_value(container: dict[str, Any], metric_key: str) -> Any:
     value_type = metric_def.get("value_type", "number")
     for path in metric_def["paths"]:
         raw_value = deep_get(container, path)
-        if value_type == "string":
+        if value_type in ("string", "timestamp"):
             text_value = safe_text(raw_value)
             if text_value is not None:
                 return text_value
@@ -159,6 +170,29 @@ def metric_value(container: dict[str, Any], metric_key: str) -> Any:
             if number_value is not None:
                 return number_value
     return None
+
+
+def render_metric_state(metric_def: dict[str, Any], value: Any) -> tuple[str, Any]:
+    """Convert a raw metric value into ``(state_payload, attribute_value)``.
+
+    ``state_payload`` is the string published to the MQTT state topic;
+    ``attribute_value`` is the typed value embedded in the summary JSON
+    attributes. Both publish call sites go through here so the value_type
+    handling can never drift between them (a ``timestamp`` value must not be
+    coerced with ``float()``).
+    """
+    value_type = metric_def.get("value_type", "number")
+    if value_type in ("string", "timestamp"):
+        text = str(value)
+        return text, text
+    if value_type == "integer":
+        int_value = int(value)
+        return str(int_value), int_value
+    numeric_value = float(value)
+    round_digits = metric_def.get("round_digits")
+    if isinstance(round_digits, int):
+        numeric_value = round(numeric_value, round_digits)
+    return str(numeric_value), numeric_value
 
 
 def compute_rate_metrics(

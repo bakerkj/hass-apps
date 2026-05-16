@@ -25,6 +25,7 @@ from .metrics import (
     compute_rate_metrics,
     metric_value,
     parse_include_metrics,
+    render_metric_state,
 )
 from .mqtt import (
     MqttHealth,
@@ -80,14 +81,14 @@ def main() -> int:
         args.include_metrics,
         "include_metrics",
         "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,uptime_seconds",
+        "io_read_rate,io_write_rate,started_at",
         str,
     )
     args.summary_metrics = resolve(
         args.summary_metrics,
         "summary_metrics",
         "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,uptime_seconds,"
+        "io_read_rate,io_write_rate,started_at,"
         "cpu_shares,cpuset_cpus,blkio_weight",
         str,
     )
@@ -511,22 +512,7 @@ def main() -> int:
 
                 state_topic = f"{base_topic}/{container_slug}/{metric_key}/state"
 
-                value_type = metric_def.get("value_type", "number")
-                if value_type == "string":
-                    summary_value: Any = str(value)
-                    state_payload = summary_value
-                elif value_type == "integer":
-                    int_value = int(value)
-                    summary_value = int_value
-                    state_payload = str(int_value)
-                else:
-                    numeric_value = float(value)
-                    round_digits = metric_def.get("round_digits")
-                    if isinstance(round_digits, int):
-                        numeric_value = round(numeric_value, round_digits)
-                    summary_value = numeric_value
-                    state_payload = str(numeric_value)
-
+                state_payload, summary_value = render_metric_state(metric_def, value)
                 summary_attributes[metric_key] = summary_value
                 client.publish(state_topic, state_payload, qos=0, retain=False)
 
@@ -540,17 +526,9 @@ def main() -> int:
                     value = metric_value(container, metric_key)
                 if value is None:
                     continue
-                value_type = metric_def.get("value_type", "number")
-                if value_type == "string":
-                    summary_attributes[metric_key] = str(value)
-                elif value_type == "integer":
-                    summary_attributes[metric_key] = int(value)
-                else:
-                    numeric_value = float(value)
-                    round_digits = metric_def.get("round_digits")
-                    if isinstance(round_digits, int):
-                        numeric_value = round(numeric_value, round_digits)
-                    summary_attributes[metric_key] = numeric_value
+                _, summary_attributes[metric_key] = render_metric_state(
+                    metric_def, value
+                )
 
             summary_state = container.get("status", "unknown")
             summary_state_topic = f"{base_topic}/{container_slug}/summary/state"
