@@ -245,13 +245,19 @@ def main() -> int:
     client.on_message = on_message
     last_heartbeat_time = 0.0
     last_sample_time = 0.0
+    # Monotonic mirror of last_sample_time used only by the stall watchdog:
+    # the published last_sample_age_s stays on wall clock, but the restart
+    # decision must survive an NTP step.
+    last_sample_monotonic = 0.0
     last_intel_restart_attempt = 0.0
     samples_since_intel_start = 0
 
     def restart_intel_gpu_top(reason: str) -> None:
         nonlocal proc, buf, last_intel_restart_attempt, dev_arg, dev_path, listing
         nonlocal samples_since_intel_start
-        now = time.time()
+        # Monotonic: the restart-grace debounce is a pure duration and must
+        # not be defeated by a wall-clock step.
+        now = time.monotonic()
         if now - last_intel_restart_attempt < args.intel_restart_grace_seconds:
             log.warning(
                 "Skipping intel_gpu_top restart (grace period) reason=%s", reason
@@ -292,15 +298,24 @@ def main() -> int:
             # ----- Watchdogs -----
 
             now = time.time()
+            now_mono = time.monotonic()
 
             # GPU disappearance / device node check
             if dev_path is not None and not os.path.exists(dev_path):
                 log.error("GPU render node disappeared: %s", dev_path)
                 restart_intel_gpu_top("render_node_disappeared")
 
-            # Sample timeout watchdog
-            if last_sample_time > 0 and (now - last_sample_time) > expire_after_s:
-                log.error("No intel_gpu_top samples for %.1fs", now - last_sample_time)
+            # Sample timeout watchdog. Monotonic so a wall-clock step can't
+            # suppress restarting a dead intel_gpu_top; the published
+            # last_sample_age_s below deliberately stays on wall clock.
+            if (
+                last_sample_monotonic > 0
+                and (now_mono - last_sample_monotonic) > expire_after_s
+            ):
+                log.error(
+                    "No intel_gpu_top samples for %.1fs",
+                    now_mono - last_sample_monotonic,
+                )
                 # Try restart once; if it keeps failing, we'll exit via repeated timeout
                 restart_intel_gpu_top("sample_timeout")
 
@@ -352,6 +367,7 @@ def main() -> int:
                     continue
 
                 last_sample_time = time.time()
+                last_sample_monotonic = time.monotonic()
                 metrics = build_metrics(obj)
                 samples_since_intel_start += 1
                 log.debug("Parsed metrics keys=%s", list(metrics.keys()))
@@ -371,11 +387,12 @@ def main() -> int:
                     )
                     discovery_published = True
 
-                # Rate-limit publishing to once per interval_seconds
-                now = time.time()
-                if now - last_publish_time < interval_s:
+                # Rate-limit publishing to once per interval_seconds.
+                # Monotonic: a wall-clock step must not stall or burst publishing.
+                now_pub_mono = time.monotonic()
+                if now_pub_mono - last_publish_time < interval_s:
                     continue
-                last_publish_time = now
+                last_publish_time = now_pub_mono
 
                 warmup_sample = samples_since_intel_start <= 1
                 if warmup_sample:
