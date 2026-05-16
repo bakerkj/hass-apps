@@ -39,6 +39,10 @@ class SnapshotStats:
     summing the window and dividing by its length.  The error flag flips on
     when either (a) the most recent attempt failed or (b) more than
     ``error_timeout_seconds`` have elapsed since the last success.
+
+    Sample timestamps use ``time.monotonic()``: every consumer here is a
+    delta (window eviction, time-since-success) and none are exposed as a
+    wall-clock timestamp, so the deltas must survive an NTP step.
     """
 
     def __init__(
@@ -54,7 +58,7 @@ class SnapshotStats:
         self._last_error_ts: float | None = None
 
     def record_success(self, bytes_: int, now: float | None = None) -> None:
-        now = time.time() if now is None else float(now)
+        now = time.monotonic() if now is None else float(now)
         with self._lock:
             self._successes.append((now, int(bytes_)))
             self._last_success_ts = now
@@ -63,7 +67,7 @@ class SnapshotStats:
             self._evict_old(now)
 
     def record_error(self, now: float | None = None) -> None:
-        now = time.time() if now is None else float(now)
+        now = time.monotonic() if now is None else float(now)
         with self._lock:
             self._last_error_ts = now
             self._last_attempt_success = False
@@ -75,7 +79,7 @@ class SnapshotStats:
             self._successes.pop(0)
 
     def snapshot(self, now: float | None = None) -> SnapshotView:
-        now = time.time() if now is None else float(now)
+        now = time.monotonic() if now is None else float(now)
         with self._lock:
             self._evict_old(now)
             count = len(self._successes)

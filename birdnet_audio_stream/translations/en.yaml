@@ -1,0 +1,53 @@
+configuration:
+  stream_name:
+    name: Stream name
+    description: >-
+      go2rtc stream name; the RTSP path becomes
+      rtsp://<host>:8554/<stream_name>.
+  alsa_device:
+    name: ALSA device
+    description: ALSA capture device (e.g. default, hw:1,0).
+  sample_rate:
+    name: Sample rate (Hz)
+    description: Audio sample rate in Hz (8000-192000). BirdNET expects 48000.
+  channels:
+    name: Channels
+    description: Input channel count (1 = mono, 2 = stereo).
+  codec:
+    name: Codec
+    description: Stream audio codec (opus, flac, or pcm).
+  bitrate:
+    name: Bitrate
+    description: >-
+      Audio bitrate for lossy codecs (e.g. 96k). Leave blank for the codec
+      default; ignored for flac/pcm.
+  username:
+    name: Username
+    description: RTSP/go2rtc username. Leave blank for no authentication.
+  password:
+    name: Password
+    description: RTSP/go2rtc password. Leave blank for no authentication.
+  input_format:
+    name: Input format
+    description: Audio capture backend (alsa or pulse).
+  go2rtc_log_level:
+    name: go2rtc log level
+    description: go2rtc log verbosity.
+  ffmpeg_log_level:
+    name: FFmpeg log level
+    description: ffmpeg log verbosity.
+  ffmpeg_volume:
+    name: FFmpeg volume
+    description: >-
+      Software gain applied to captured audio via the ffmpeg volume filter
+      (0.0-5.0; 1.0 = unity).
+  mixer_control:
+    name: ALSA mixer control
+    description: >-
+      Optional ALSA mixer control set once at startup (e.g. Capture, Mic).
+      Requires Mixer volume.
+  mixer_volume:
+    name: ALSA mixer volume
+    description: >-
+      Value applied to the mixer control via amixer at startup (e.g. 80%).
+      Requires ALSA mixer control.

@@ -1,0 +1,32 @@
+configuration:
+  interval_seconds:
+    name: Reconcile interval (seconds)
+    description: >-
+      Seconds between reconciliation passes that re-apply tuning if it has
+      drifted (5-86400).
+  apply_on_start:
+    name: Apply on start
+    description: >-
+      Apply all tuning immediately at startup instead of waiting for the first
+      interval.
+  dry_run:
+    name: Dry run
+    description: Log the intended changes without applying them.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  targets:
+    name: Container resource targets
+    description: >-
+      Per-container cgroup tuning. Each entry takes: container (name), and
+      optional cpuset_cpus, cpu_shares (2-262144), blkio_weight (10-1000).
+  process_targets:
+    name: In-container process targets
+    description: >-
+      Tuning for processes inside a container. Each entry takes optional:
+      container, process_match_regex, nice, cpuset_cpus.
+  host_process_targets:
+    name: Host process targets
+    description: >-
+      Tuning for processes on the host. Each entry takes optional:
+      process_match_regex, nice, cpuset_cpus.

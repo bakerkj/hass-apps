@@ -141,6 +141,10 @@ def main() -> int:
     last_heartbeat = 0.0
     last_status_line = 0.0
     last_sample_time = 0.0
+    # Monotonic mirror of last_sample_time used only by the stall watchdog:
+    # the published last_sample_age_s stays on wall clock, but the restart
+    # decision must survive an NTP step.
+    last_sample_monotonic = 0.0
     first_sample_time = 0.0
 
     def on_message(_client, _userdata, msg):
@@ -165,11 +169,14 @@ def main() -> int:
         samples_since_turbostat_start = 0
 
         def restart_turbostat(reason: str) -> None:
-            nonlocal proc, last_sample_time, first_sample_time
+            nonlocal proc, last_sample_time, last_sample_monotonic
+            nonlocal first_sample_time
             nonlocal last_turbostat_restart_attempt, turbostat_started_at
             nonlocal samples_since_turbostat_start
 
-            now_local = time.time()
+            # Monotonic: the restart-grace debounce is a pure duration and
+            # must not be defeated by a wall-clock step.
+            now_local = time.monotonic()
             if (
                 reason != "initial_start"
                 and (now_local - last_turbostat_restart_attempt) < restart_grace_seconds
@@ -196,6 +203,7 @@ def main() -> int:
             parser.reset()
             first_sample_time = 0.0
             last_sample_time = 0.0
+            last_sample_monotonic = 0.0
             samples_since_turbostat_start = 0
             health.last_state_publish_ok = 0.0
 
@@ -208,7 +216,9 @@ def main() -> int:
                     log_level,
                 )
                 raise
-            turbostat_started_at = time.time()
+            # Monotonic: only feeds the startup-no-samples restart watchdog,
+            # never exposed as a wall-clock timestamp.
+            turbostat_started_at = time.monotonic()
             log(
                 "INFO",
                 f"Started turbostat: interval={interval}s reason={reason}",
@@ -219,6 +229,7 @@ def main() -> int:
 
         while not stop["v"]:
             now = time.time()
+            now_mono = time.monotonic()
 
             if (
                 not health.connected
@@ -235,23 +246,23 @@ def main() -> int:
             if (
                 samples_since_turbostat_start == 0
                 and turbostat_started_at > 0
-                and (now - turbostat_started_at) > expire_after_s
+                and (now_mono - turbostat_started_at) > expire_after_s
             ):
                 log(
                     "ERROR",
-                    f"No turbostat samples since process start for {now - turbostat_started_at:.1f}s",
+                    f"No turbostat samples since process start for {now_mono - turbostat_started_at:.1f}s",
                     log_level,
                 )
                 restart_turbostat("startup_no_samples")
 
             if (
                 samples_since_turbostat_start > 0
-                and last_sample_time > 0
-                and (now - last_sample_time) > expire_after_s
+                and last_sample_monotonic > 0
+                and (now_mono - last_sample_monotonic) > expire_after_s
             ):
                 log(
                     "ERROR",
-                    f"No turbostat samples for {now - last_sample_time:.1f}s",
+                    f"No turbostat samples for {now_mono - last_sample_monotonic:.1f}s",
                     log_level,
                 )
                 restart_turbostat("sample_timeout")
@@ -329,6 +340,7 @@ def main() -> int:
 
             samples_since_turbostat_start += 1
             last_sample_time = now
+            last_sample_monotonic = time.monotonic()
             if first_sample_time == 0.0:
                 first_sample_time = now
 
