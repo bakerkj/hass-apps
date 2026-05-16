@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from .util import log
+
 
 @dataclass
 class TypeSettings:
@@ -364,6 +366,26 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
     defaults = _merge_defaults(_BUILTIN_DEFAULTS, yaml_cfg.get("defaults") or {})
 
     # MQTT from options.json
+    publish_interval = int(opts.get("mqtt_publish_interval_seconds", 60))
+    rate_window = int(opts.get("rate_window_seconds", 300))
+    # RateTracker emits a rate from the oldest+newest samples inside the
+    # window; a sample is added once per publish_interval. At exactly the
+    # interval the prior sample is evicted before the next lands (→ 1 sample
+    # → permanent None); at 2× a third sample is held and flaps on the eviction
+    # boundary, so dt jumps between one and two intervals. 1.5× is the sweet
+    # spot: steady state holds exactly two samples with a stable dt and ~0.5×
+    # jitter margin. Clamp below 1.5× so a misconfig can't reintroduce either
+    # the disabling or the flapping failure.
+    min_rate_window = (publish_interval * 3) // 2
+    if rate_window < min_rate_window:
+        log(
+            "WARNING",
+            f"rate_window_seconds ({rate_window}s) should be >= 1.5x"
+            f" mqtt_publish_interval_seconds ({publish_interval}s) for stable"
+            f" *_rate sensors; clamping to {min_rate_window}s.",
+        )
+        rate_window = min_rate_window
+
     mqtt_cfg = MqttConfig(
         host=str(opts.get("mqtt_host", "") or ""),
         port=int(opts.get("mqtt_port", 1883)),
@@ -372,8 +394,8 @@ def load_config(options_path: str, yaml_path: str | None = None) -> Config:
         discovery_prefix=str(opts.get("mqtt_discovery_prefix", "homeassistant")),
         base_topic=str(opts.get("mqtt_base_topic", "frigate_compressor")),
         client_id=str(opts.get("mqtt_client_id", "frigate-compressor")),
-        publish_interval_seconds=int(opts.get("mqtt_publish_interval_seconds", 60)),
-        rate_window_seconds=int(opts.get("rate_window_seconds", 300)),
+        publish_interval_seconds=publish_interval,
+        rate_window_seconds=rate_window,
         disconnect_timeout_seconds=max(
             5, int(opts.get("mqtt_disconnect_timeout_seconds", 300))
         ),
