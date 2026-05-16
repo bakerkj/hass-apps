@@ -212,14 +212,15 @@ def test_publish_state_reflects_stats_values():
 
     import time as _t
 
-    _real_time = _t.time
+    _real_monotonic = _t.monotonic
     try:
-        # Freeze wall-clock so the publisher's snapshot() call matches.
-        _t.time = lambda: 1060.0  # type: ignore[assignment]
+        # SnapshotStats uses time.monotonic(); freeze it so the publisher's
+        # snapshot() call lands on the same scale as the injected samples.
+        _t.monotonic = lambda: 1060.0  # type: ignore[assignment]
         publisher, cams, client = _build_publisher({"cam": stats})
         publisher.publish_once()
     finally:
-        _t.time = _real_time  # type: ignore[assignment]
+        _t.monotonic = _real_monotonic  # type: ignore[assignment]
 
     by_topic = {t: p for t, p, _ in client.publishes}
     assert by_topic["ffmpeg_snapshotter/cam/snapshot_rate/state"] == "2"
