@@ -1,0 +1,77 @@
+configuration:
+  encoder:
+    name: Video encoder
+    description: >-
+      qsv = Intel Quick Sync (libmfx), vaapi = Intel/AMD direct VA-API, nvenc =
+      NVIDIA, cpu = software libx264 fallback.
+  max_parallel_jobs:
+    name: Max parallel jobs
+    description:
+      Maximum number of concurrent ffmpeg compression processes (1-8).
+  housekeeping_interval_days:
+    name: Housekeeping interval (days)
+    description: >-
+      How often to prune the compression-tracking database and log a storage
+      summary.
+  frigate_db:
+    name: Frigate database path
+    description: Path to Frigate's SQLite recordings database.
+  recordings_dir:
+    name: Recordings directory
+    description: Path to Frigate's recordings directory.
+  compress_db:
+    name: Compression database path
+    description: Path to this add-on's compression-tracking SQLite database.
+  config_path:
+    name: Camera config file
+    description: Path to the per-camera YAML configuration file.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  mqtt_host:
+    name: MQTT host
+    description:
+      MQTT broker hostname or IP. Leave blank to disable MQTT publishing.
+  mqtt_port:
+    name: MQTT port
+    description: MQTT broker port.
+  mqtt_username:
+    name: MQTT username
+    description: MQTT username. Leave blank if the broker requires no auth.
+  mqtt_password:
+    name: MQTT password
+    description: MQTT password. Leave blank if the broker requires no auth.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description: Home Assistant MQTT discovery prefix.
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Base topic under which state is published.
+  mqtt_client_id:
+    name: MQTT client ID
+    description: Client identifier used for the MQTT connection.
+  mqtt_publish_interval_seconds:
+    name: MQTT publish interval (seconds)
+    description: Seconds between MQTT state publishes (5-3600).
+  mqtt_disconnect_timeout_seconds:
+    name: MQTT disconnect timeout (seconds)
+    description: >-
+      Mark entities unavailable if the broker stays disconnected for longer than
+      this (5-3600).
+  mqtt_backlog_timeout_seconds:
+    name: Backlog stall timeout (seconds)
+    description: >-
+      Flag the compression backlog as unhealthy if the oldest pending recording
+      is older than this (60-86400).
+  rate_window_seconds:
+    name: Rate averaging window (seconds)
+    description: >-
+      Averaging window for the *_rate sensors. Keep at least 1.5x the MQTT
+      publish interval: lower values leave too few samples and are automatically
+      clamped (with a logged warning) to keep the rate sensors stable
+      (60-86400).
+  detached_ffmpeg:
+    name: Detached ffmpeg (advanced)
+    description: >-
+      Spawn ffmpeg via a double-fork so it is reaped by PID 1 instead of this
+      daemon. Leave off unless you are diagnosing process-reaping issues.

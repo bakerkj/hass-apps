@@ -1,0 +1,52 @@
+configuration:
+  interval_seconds:
+    name: Sampling interval (seconds)
+    description: intel_gpu_top sampling interval in seconds (1-60).
+  mqtt_host:
+    name: MQTT host
+    description: MQTT broker hostname or IP (e.g. core-mosquitto).
+  mqtt_port:
+    name: MQTT port
+    description: MQTT broker port.
+  mqtt_username:
+    name: MQTT username
+    description: MQTT username. Leave blank if the broker requires no auth.
+  mqtt_password:
+    name: MQTT password
+    description: MQTT password. Leave blank if the broker requires no auth.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description: Home Assistant MQTT discovery prefix.
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Base topic under which state is published.
+  client_id:
+    name: MQTT client ID
+    description: Client identifier used for the MQTT connection.
+  preferred_device_regex:
+    name: Preferred device regex
+    description: >-
+      Regex used to pick the GPU/render node when several are present. Blank =
+      auto-select.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  publish_raw_sample:
+    name: Publish raw sample
+    description: >-
+      Also publish the raw intel_gpu_top JSON sample to a debug topic.
+  expire_after_multiplier:
+    name: Expire-after multiplier
+    description: >-
+      Sensor availability timeout as a multiple of the sampling interval; Home
+      Assistant marks entities unavailable after interval x this value with no
+      update (2-10).
+  mqtt_disconnect_timeout_seconds:
+    name: MQTT disconnect timeout (seconds)
+    description: >-
+      Exit (for the supervisor to restart the add-on) if the broker stays
+      disconnected longer than this many seconds (5-600).
+  intel_restart_grace_seconds:
+    name: intel_gpu_top restart grace (seconds)
+    description: >-
+      Minimum seconds between automatic intel_gpu_top restarts (1-60).
