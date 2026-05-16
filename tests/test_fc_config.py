@@ -484,3 +484,41 @@ def test_load_config_missing_yaml_uses_builtin_defaults(tmp_path):
     # No YAML → builtin defaults → quality=0, tiers disabled
     assert cfg.cameras["driveway"].tier1.continuous.quality == 0
     assert cfg.cameras["driveway"].tier1.enabled is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# load_config — rate_window vs publish_interval guard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_rate_window_clamped_when_not_above_publish_interval(tmp_path, capsys):
+    """rate_window < 1.5× publish_interval is clamped to 1.5× the interval + warns."""
+    cfg = _make_config(
+        tmp_path,
+        mqtt_publish_interval_seconds=60,
+        rate_window_seconds=60,  # equal → would disable every *_rate sensor
+    )
+    assert cfg.mqtt.publish_interval_seconds == 60
+    assert cfg.mqtt.rate_window_seconds == 90
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "rate_window_seconds" in out
+
+
+def test_rate_window_clamped_when_below_publish_interval(tmp_path):
+    cfg = _make_config(
+        tmp_path,
+        mqtt_publish_interval_seconds=60,
+        rate_window_seconds=30,
+    )
+    assert cfg.mqtt.rate_window_seconds == 90
+
+
+def test_rate_window_preserved_when_above_publish_interval(tmp_path, capsys):
+    cfg = _make_config(
+        tmp_path,
+        mqtt_publish_interval_seconds=60,
+        rate_window_seconds=300,
+    )
+    assert cfg.mqtt.rate_window_seconds == 300
+    assert "rate_window_seconds" not in capsys.readouterr().out
