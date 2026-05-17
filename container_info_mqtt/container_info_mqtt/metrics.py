@@ -21,7 +21,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "icon": "mdi:chip",
         "state_class": "measurement",
         "suggested_display_precision": 1,
-        "round_digits": 3,
+        "round_digits": 1,
     },
     "memory_usage": {
         "paths": [("memory_usage",)],
@@ -70,7 +70,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_rate",
         "state_class": "measurement",
         "suggested_display_precision": 0,
-        "round_digits": 3,
+        "round_digits": 0,
     },
     "network_tx_rate": {
         "name": "Network TX Rate",
@@ -79,7 +79,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_rate",
         "state_class": "measurement",
         "suggested_display_precision": 0,
-        "round_digits": 3,
+        "round_digits": 0,
     },
     "io_read_rate": {
         "name": "Disk Read Rate",
@@ -88,7 +88,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_rate",
         "state_class": "measurement",
         "suggested_display_precision": 0,
-        "round_digits": 3,
+        "round_digits": 0,
     },
     "io_write_rate": {
         "name": "Disk Write Rate",
@@ -97,7 +97,7 @@ METRIC_DEFS: dict[str, dict[str, Any]] = {
         "device_class": "data_rate",
         "state_class": "measurement",
         "suggested_display_precision": 0,
-        "round_digits": 3,
+        "round_digits": 0,
     },
     "cpuset_cpus": {
         "paths": [("cpuset_cpus",)],
