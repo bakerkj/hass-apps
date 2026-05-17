@@ -12,7 +12,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.1.3-r4 \
+  docker-cli=29.1.3-r5 \
   python3=3.12.13-r0
 
 COPY run.sh /run.sh
