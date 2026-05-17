@@ -576,11 +576,11 @@ def test_summary_only_default_config_deduplicates_correctly():
     # extra ones (cpu_shares, cpuset_cpus, blkio_weight) should appear.
     default_include = (
         "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,uptime_seconds"
+        "io_read_rate,io_write_rate,started_at"
     )
     default_summary = (
         "cpu_percent,memory_usage,network_rx_rate,network_tx_rate,"
-        "io_read_rate,io_write_rate,uptime_seconds,"
+        "io_read_rate,io_write_rate,started_at,"
         "cpu_shares,cpuset_cpus,blkio_weight"
     )
     result = _summary_only(default_summary, default_include)
@@ -751,6 +751,74 @@ def test_metric_value_integer_type_from_float():
     container: dict[str, Any] = {"blkio_weight": 500.9}
     result = cim.metric_value(container, "blkio_weight")
     assert result == 500
+
+
+def test_metric_value_timestamp_passthrough():
+    container: dict[str, Any] = {"started_at": "2026-01-15T10:30:00+00:00"}
+    result = cim.metric_value(container, "started_at")
+    assert result == "2026-01-15T10:30:00+00:00"
+
+
+def test_started_at_metric_def_is_timestamp_and_uptime_kept():
+    started = cim.METRIC_DEFS["started_at"]
+    assert started["device_class"] == "timestamp"
+    # timestamp sensors take no state_class / unit_of_measurement.
+    assert "state_class" not in started
+    assert "unit" not in started
+    # uptime_seconds stays registered as an opt-in metric.
+    assert "uptime_seconds" in cim.METRIC_DEFS
+
+
+def test_render_metric_state_timestamp_not_floated():
+    # Regression: started_at is a timestamp ISO string. The buggy publish
+    # path float()'d any non-string/integer value_type, so this raised
+    # ValueError and crashed the main loop on the first running container.
+    mdef = cim.METRIC_DEFS["started_at"]
+    state_payload, attr = cim.render_metric_state(mdef, "2026-01-15T10:30:00+00:00")
+    assert state_payload == "2026-01-15T10:30:00+00:00"
+    assert attr == "2026-01-15T10:30:00+00:00"
+
+
+def test_render_metric_state_number_rounds_and_stringifies():
+    mdef = {"value_type": "number", "round_digits": 2}
+    state_payload, attr = cim.render_metric_state(mdef, 3.14159)
+    assert attr == pytest.approx(3.14)
+    assert state_payload == "3.14"
+
+
+def test_render_metric_state_integer_coerces():
+    mdef = {"value_type": "integer"}
+    state_payload, attr = cim.render_metric_state(mdef, 500.9)
+    assert attr == 500
+    assert state_payload == "500"
+
+
+def test_render_metric_state_string_passthrough():
+    mdef = {"value_type": "string"}
+    state_payload, attr = cim.render_metric_state(mdef, "0-3")
+    assert attr == "0-3"
+    assert state_payload == "0-3"
+
+
+def test_render_metric_state_default_value_type_is_number():
+    # No value_type key -> treated as number (the publish-path default).
+    state_payload, attr = cim.render_metric_state({}, 42.0)
+    assert attr == pytest.approx(42.0)
+    assert state_payload == "42.0"
+
+
+def test_render_metric_state_every_metric_def_renders():
+    # Every registered metric must render without raising for a value of its
+    # own declared type — catches a new value_type the helper does not handle.
+    sample_by_type = {
+        "number": 1.5,
+        "integer": 7,
+        "string": "x",
+        "timestamp": "2026-01-15T10:30:00+00:00",
+    }
+    for key, mdef in cim.METRIC_DEFS.items():
+        sample = sample_by_type[mdef.get("value_type", "number")]
+        cim.render_metric_state(mdef, sample)  # must not raise
 
 
 def test_metric_value_unknown_key_returns_none():

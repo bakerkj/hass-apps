@@ -36,6 +36,7 @@ from .metrics import (  # noqa: E402,F401
     metric_value,
     parse_docker_timestamp,
     parse_include_metrics,
+    render_metric_state,
     sum_blkio_totals,
     sum_network_totals,
 )
