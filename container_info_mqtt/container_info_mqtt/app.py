@@ -572,13 +572,25 @@ def main() -> int:
             retained_snapshot = {
                 node_id: set(metrics) for node_id, metrics in retained_configs.items()
             }
+            # For each active slug, the discovery configs we actually publish:
+            # the per-metric sensors in `discovered` plus the always-on
+            # "summary" sensor. Anything else retained on the broker for an
+            # active slug is an orphan from a prior config/version and gets
+            # reconciled away.
+            expected_by_slug = {
+                slug: (
+                    set(discovered.get(slug, set()))
+                    | ({"summary"} if slug in summary_discovered else set())
+                )
+                for slug in seen_slugs
+            }
             prune_stale_discovery(
                 client,
                 args.mqtt_discovery_prefix,
                 base_topic,
                 args.client_id,
                 retained_snapshot,
-                seen_slugs,
+                expected_by_slug,
                 log,
             )
             client.unsubscribe(discovery_filter)

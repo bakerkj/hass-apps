@@ -125,39 +125,66 @@ def prune_stale_discovery(
     base_topic: str,
     device_id: str,
     retained_configs: dict[str, set[str]],
-    active_slugs: set[str],
+    expected_by_slug: dict[str, set[str]],
     log: logging.Logger,
 ) -> int:
-    """Clear retained discovery + availability for slugs not currently active.
+    """Reconcile retained discovery on the broker against what we publish.
 
     `retained_configs` maps node_id -> set of metric_keys observed as retained
-    discovery configs on the broker for our device_id. Any node whose slug is
-    not in `active_slugs` is pruned: every metric's discovery config is cleared
-    and the per-slug availability topic is also cleared.
+    discovery configs on the broker for our device_id. `expected_by_slug` maps
+    each currently-active slug -> the set of discovery metric_keys this process
+    actually publishes for it (everything in `discovered[slug]` plus "summary").
 
-    Returns the number of stale slugs pruned.
+    For every retained node:
+
+    * slug **not** in `expected_by_slug` -> fully stale (removed/excluded
+      container): every metric's discovery config is cleared and the per-slug
+      availability topic is also cleared. Counts toward the return value.
+    * slug **in** `expected_by_slug` -> active: only retained metric configs
+      that we no longer publish are cleared (e.g. a metric dropped from
+      `include_metrics`, renamed across a version, or now network-gated off).
+      The container stays online, so availability is left untouched and the
+      slug is *not* counted as pruned.
+
+    Returns the number of fully-stale slugs pruned.
     """
     device_node_prefix = f"{device_id}_"
-    active_node_ids = {f"{device_node_prefix}{slug}" for slug in active_slugs}
-    stale_node_ids = set(retained_configs.keys()) - active_node_ids
-    if not stale_node_ids:
-        return 0
+    pruned_slugs = 0
 
-    for node_id in stale_node_ids:
+    for node_id, retained_metrics in retained_configs.items():
+        if not node_id.startswith(device_node_prefix):
+            continue
         slug = node_id[len(device_node_prefix) :]
-        metric_keys = retained_configs[node_id]
-        for metric_key in metric_keys:
+        expected = expected_by_slug.get(slug)
+
+        if expected is None:
+            for metric_key in retained_metrics:
+                clear_discovery(client, discovery_prefix, device_id, slug, metric_key)
+            # Also clear the retained availability topic for this slug.
+            client.publish(
+                f"{base_topic}/{slug}/availability",
+                "",
+                qos=1,
+                retain=True,
+            )
+            log.info(
+                "Pruned stale discovery for slug=%s (metrics: %s)",
+                slug,
+                ", ".join(sorted(retained_metrics)),
+            )
+            pruned_slugs += 1
+            continue
+
+        # Active slug: drop only the discovery configs we no longer publish.
+        orphan_metrics = retained_metrics - expected
+        if not orphan_metrics:
+            continue
+        for metric_key in orphan_metrics:
             clear_discovery(client, discovery_prefix, device_id, slug, metric_key)
-        # Also clear the retained availability topic for this slug.
-        client.publish(
-            f"{base_topic}/{slug}/availability",
-            "",
-            qos=1,
-            retain=True,
-        )
         log.info(
-            "Pruned stale discovery for slug=%s (metrics: %s)",
+            "Reconciled discovery for active slug=%s (cleared: %s)",
             slug,
-            ", ".join(sorted(metric_keys)),
+            ", ".join(sorted(orphan_metrics)),
         )
-    return len(stale_node_ids)
+
+    return pruned_slugs

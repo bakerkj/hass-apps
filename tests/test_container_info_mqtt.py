@@ -630,7 +630,7 @@ class _RecordingClient:
 
 
 def _prune(
-    retained: dict[str, set[str]], active: set[str]
+    retained: dict[str, set[str]], expected_by_slug: dict[str, set[str]]
 ) -> tuple[int, _RecordingClient]:
     client = _RecordingClient()
     pruned = cim.prune_stale_discovery(
@@ -639,21 +639,21 @@ def _prune(
         "container_info",
         "container-info-mqtt",
         retained,
-        active,
+        expected_by_slug,
         _LOG,
     )
     return pruned, client
 
 
 def test_prune_no_retained_returns_zero():
-    pruned, client = _prune({}, {"foo"})
+    pruned, client = _prune({}, {"foo": set()})
     assert pruned == 0
     assert client.published == []
 
 
 def test_prune_all_retained_active_returns_zero():
     retained = {"container-info-mqtt_foo": {"cpu_percent", "summary"}}
-    pruned, client = _prune(retained, {"foo"})
+    pruned, client = _prune(retained, {"foo": {"cpu_percent", "summary"}})
     assert pruned == 0
     assert client.published == []
 
@@ -662,7 +662,7 @@ def test_prune_single_stale_clears_all_metrics_and_availability():
     retained = {
         "container-info-mqtt_builder_x": {"cpu_percent", "memory_usage", "summary"},
     }
-    pruned, client = _prune(retained, {"other"})
+    pruned, client = _prune(retained, {"other": set()})
     assert pruned == 1
 
     topics = [t for (t, _, _, _) in client.published]
@@ -690,7 +690,7 @@ def test_prune_mix_stale_and_active_only_clears_stale():
         "container-info-mqtt_keepme": {"cpu_percent", "summary"},
         "container-info-mqtt_builder_x": {"cpu_percent"},
     }
-    pruned, client = _prune(retained, {"keepme"})
+    pruned, client = _prune(retained, {"keepme": {"cpu_percent", "summary"}})
     assert pruned == 1
     topics = {t for (t, _, _, _) in client.published}
     # Stale node's topics cleared.
@@ -710,11 +710,94 @@ def test_prune_multiple_stale_returns_count():
         "container-info-mqtt_builder_b": {"summary"},
         "container-info-mqtt_builder_c": {"cpu_percent", "summary"},
     }
-    pruned, client = _prune(retained, set())
+    pruned, client = _prune(retained, {})
     assert pruned == 3
     # 3 nodes × (their metrics + 1 availability) publishes.
     # builder_a: 1+1; builder_b: 1+1; builder_c: 2+1 = 7 total.
     assert len(client.published) == 7
+
+
+def test_reconcile_active_slug_clears_only_orphan_metric():
+    # Snapshotter retained an old uptime_seconds config from a prior version;
+    # this process now publishes started_at instead. uptime_seconds must be
+    # tombstoned while cpu_percent/started_at/summary are left intact and the
+    # container stays online (availability untouched, not counted as pruned).
+    retained = {
+        "container-info-mqtt_ffmpeg_snapshotter": {
+            "cpu_percent",
+            "uptime_seconds",
+            "started_at",
+            "summary",
+        },
+    }
+    pruned, client = _prune(
+        retained,
+        {"ffmpeg_snapshotter": {"cpu_percent", "started_at", "summary"}},
+    )
+    assert pruned == 0  # active slug reconciliation is not counted
+
+    cleared = {t for (t, _, _, _) in client.published}
+    assert cleared == {
+        "homeassistant/sensor/container-info-mqtt_ffmpeg_snapshotter/uptime_seconds/config"
+    }
+    # The orphan was cleared with an empty retained payload (a tombstone).
+    topic, payload, _qos, retain = client.published[0]
+    assert payload == ""
+    assert retain is True
+    # Availability for an online container is never touched.
+    assert "ffmpeg_snapshotter/availability" not in cleared
+
+
+def test_reconcile_active_slug_no_orphans_is_noop():
+    retained = {
+        "container-info-mqtt_ffmpeg_snapshotter": {
+            "cpu_percent",
+            "started_at",
+            "summary",
+        },
+    }
+    pruned, client = _prune(
+        retained,
+        {"ffmpeg_snapshotter": {"cpu_percent", "started_at", "summary"}},
+    )
+    assert pruned == 0
+    assert client.published == []
+
+
+def test_reconcile_and_stale_prune_combined():
+    retained = {
+        # Active container with a dropped metric.
+        "container-info-mqtt_ffmpeg_snapshotter": {
+            "uptime_seconds",
+            "started_at",
+            "summary",
+        },
+        # Whole container gone (now excluded / removed).
+        "container-info-mqtt_builder_x": {"cpu_percent", "summary"},
+    }
+    pruned, client = _prune(
+        retained,
+        {"ffmpeg_snapshotter": {"started_at", "summary"}},
+    )
+    assert pruned == 1  # only the fully-stale slug is counted
+
+    cleared = {t for (t, _, _, _) in client.published}
+    # Active slug: only the orphan metric, no availability change.
+    assert (
+        "homeassistant/sensor/container-info-mqtt_ffmpeg_snapshotter/uptime_seconds/config"
+        in cleared
+    )
+    assert "container_info/ffmpeg_snapshotter/availability" not in cleared
+    assert (
+        "homeassistant/sensor/container-info-mqtt_ffmpeg_snapshotter/started_at/config"
+        not in cleared
+    )
+    # Fully-stale slug: every metric + availability cleared.
+    assert (
+        "homeassistant/sensor/container-info-mqtt_builder_x/cpu_percent/config"
+        in cleared
+    )
+    assert "container_info/builder_x/availability" in cleared
 
 
 # ---------------------------------------------------------------------------
