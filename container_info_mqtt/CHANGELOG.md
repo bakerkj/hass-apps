@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.21...container_info_mqtt-v0.1.22) (2026-05-18)
+
+
+### Bug Fixes
+
+* **container_info_mqtt:** reconcile retained discovery for active containers ([#178](https://github.com/bakerkj/hass-apps/issues/178)) ([aac5aba](https://github.com/bakerkj/hass-apps/commit/aac5aba68853495e9103a2a6428eaea5aec544c9))
+
 ## [0.1.21](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.20...container_info_mqtt-v0.1.21) (2026-05-17)
 
 
