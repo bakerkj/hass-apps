@@ -38,7 +38,13 @@ jobs:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
           cache-suffix: integration-tests
-      - run: sudo apt-get install -y ffmpeg
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: ffmpeg=7:6.1.1-3ubuntu5
+      # Fail loud if the cache restored nothing: the integration tests
+      # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
+      # silently drop coverage instead of erroring.
+      - run: ffmpeg -version && ffprobe -version
       - run:
           uv run pytest tests/ -m integration -v --no-cov --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
