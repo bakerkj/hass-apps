@@ -38,6 +38,15 @@
     },
     {
       "customType": "regex",
+      "description": "Pinned ffmpeg apt package in the integration-test workflow",
+      "managerFilePatterns": ["/.github/workflows/tests\\.ya?ml$/"],
+      "matchStrings": ["FFMPEG_APT_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "ffmpeg",
+      "datasourceTemplate": "deb",
+      "versioningTemplate": "deb"
+    },
+    {
+      "customType": "regex",
       "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
@@ -74,6 +83,17 @@
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["repology"],
       "groupName": "alpine apk packages"
+    },
+    {
+      "description": "ffmpeg apt package resolves from the Ubuntu 24.04 (noble) universe archive, matching the GitHub runner's sources",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "http://archive.ubuntu.com/ubuntu?suite=noble&components=universe&binaryArch=amd64",
+        "http://archive.ubuntu.com/ubuntu?suite=noble-updates&components=universe&binaryArch=amd64",
+        "http://security.ubuntu.com/ubuntu?suite=noble-security&components=universe&binaryArch=amd64"
+      ],
+      "groupName": "apt packages"
     },
     {
       "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.23 repo",

@@ -31,6 +31,10 @@ jobs:
   integration-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
@@ -38,7 +42,33 @@ jobs:
           python-version: "3.13"
           cache-dependency-glob: "uv.lock"
           cache-suffix: integration-tests
-      - run: sudo apt-get install -y ffmpeg
+      # Cache only the downloaded .deb archives. The real `apt-get install`
+      # still runs every time, so dpkg postinst / update-alternatives
+      # execute normally and libblas.so.3 et al. are created — the failure
+      # mode cache-apt-pkgs-action hit. apt reuses the cached .debs for the
+      # pinned version (same version => same hash) instead of re-downloading
+      # ~100 MB of dependencies. Keyed on the pin so a renovate bump busts
+      # it. A user-owned archives dir avoids the root-owned
+      # /var/cache/apt/archives permission problem on cache restore.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.apt-archives
+          key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
+      - run: |
+          set -euo pipefail
+          mkdir -p ~/.apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y \
+            -o Dir::Cache::archives="$HOME/.apt-archives" \
+            ffmpeg="$FFMPEG_APT_VERSION"
+          # apt runs as root and leaves a root-owned partial/ (0700) and
+          # lock that the non-root cache-save tar can't read, aborting the
+          # save. Hand the tree back to the runner so the .debs get cached.
+          sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
+      # Fail loud if the binaries are missing: the integration tests
+      # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
+      # silently drop coverage instead of erroring.
+      - run: ffmpeg -version && ffprobe -version
       - run:
           uv run pytest tests/ -m integration -v --no-cov --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
