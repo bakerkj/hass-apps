@@ -41,6 +41,15 @@ jobs:
       - uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
           packages: ffmpeg=7:6.1.1-3ubuntu5
+          # ffmpeg pulls in libblas3/liblapack3, whose shared libs are
+          # update-alternatives symlinks created by postinst, not packaged
+          # files — so a cache restore alone leaves libblas.so.3 missing.
+          # Replay the maintainer scripts on restore to recreate them.
+          execute_install_scripts: true
+          # Cache salt: bump to force a clean rebuild when install
+          # behaviour changes (the existing broken cache key is reused
+          # otherwise). 1 = first rebuild with execute_install_scripts.
+          version: "1"
       # Fail loud if the cache restored nothing: the integration tests
       # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
       # silently drop coverage instead of erroring.
