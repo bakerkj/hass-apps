@@ -19,6 +19,7 @@ import time
 from .context import CompressorContext
 from .database import (
     STATUS_DIRECT,
+    STATUS_GIVE_UP,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
 )
@@ -60,9 +61,17 @@ def get_eligible_swaps(ctx: CompressorContext) -> list[dict]:
         if suppress_dry_run and cam.dry_run:
             continue
         cutoff = now - (cam.tier2.min_days * 86400)
-        # Same partial index (idx_files_t2_pending_age) the encode-loop
-        # eligibility uses.  The added ``t2_status = 'direct'`` filter is
-        # an equality check on the already-tiny pending subset.
+        # Driven by the partial index ``idx_files_t2_pending_age``.  The
+        # ``(t2_status IS NULL OR t2_status NOT IN (...))`` conjunct is
+        # VERBATIM the index's WHERE predicate; it has to be present
+        # syntactically (alongside the t1_status conjunct that's also
+        # verbatim) for SQLite's partial-index implication prover to
+        # accept the index.  Logically the conjunct is redundant —
+        # ``t2_status = 'direct'`` already implies it — but the prover
+        # doesn't chain ``= 'direct'`` through to ``NOT IN (...)``, so
+        # without the verbatim conjunct the plan falls back to a full
+        # ``files`` SCAN (see the equivalent split in
+        # ``encode_eligibility._build_eligible_where`` for the same fix).
         parts.append(
             f"""
             SELECT * FROM (
@@ -71,6 +80,10 @@ def get_eligible_swaps(ctx: CompressorContext) -> list[dict]:
                 WHERE f.camera = ? AND f.start_time < ?
                   AND f.t1_status IN
                       ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}')
+                  AND (f.t2_status IS NULL
+                       OR f.t2_status NOT IN
+                          ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
+                           '{STATUS_GIVE_UP}'))
                   AND f.t2_status = '{STATUS_DIRECT}'
                 ORDER BY f.start_time ASC
                 LIMIT {_MAX_SWAPS_PER_WINDOW}

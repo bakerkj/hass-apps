@@ -99,6 +99,35 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
             # surfaces tier-2 rows that need a CHAINED re-encode of an
             # existing tier-1 file (t2_status NULL or error-retry), which
             # is GPU work and belongs alongside tier-1 in the main loop.
+            #
+            # The t2_status predicate is split into TWO conjuncts on
+            # purpose:
+            #
+            #  (a) ``(t2_status IS NULL OR t2_status NOT IN
+            #         ('ok','segment_update_failed','give_up'))`` —
+            #      VERBATIM the WHERE of ``idx_files_t2_pending_age``.
+            #      SQLite's partial-index usability check is a syntactic
+            #      implication prover that requires the index's WHERE to
+            #      appear as a conjunct of the query's WHERE.  Folding the
+            #      ``direct`` exclusion *into* this NOT IN list (a single
+            #      4-element list) produced a query whose NOT IN list was
+            #      longer than the index's 3-element NOT IN list; even
+            #      though the query is logically strictly more restrictive,
+            #      the prover doesn't reason about list inclusion and
+            #      rejected the index → 6 full ``files`` SCANs per
+            #      main-loop cycle (~247 ms at 1M rows).  Keeping the
+            #      verbatim conjunct restores ``SEARCH USING INDEX
+            #      idx_files_t2_pending_age``.  Index left unchanged
+            #      because ``swap_eligibility.get_eligible_swaps`` relies
+            #      on it to find ``t2_status='direct'`` rows.
+            #
+            #  (b) ``(t2_status IS NULL OR t2_status <> 'direct')`` —
+            #      the actual ``direct`` exclusion, kept SEPARATE from (a)
+            #      so the prover can still match (a) against the index's
+            #      WHERE.  The ``IS NULL OR`` half is required because
+            #      ``NULL <> 'direct'`` is NULL (not true) under SQL three-
+            #      valued logic, and the NULL t2_status rows are exactly
+            #      the chained-re-encode candidates we want.
             t2_parts.append(
                 f"""
                 SELECT * FROM (
@@ -110,7 +139,9 @@ def _build_eligible_where(cfg: Config, effective_now: float) -> tuple[str, list]
                       AND (f.t2_status IS NULL
                            OR f.t2_status NOT IN
                               ('{STATUS_OK}', '{STATUS_SEGMENT_UPDATE_FAILED}',
-                               '{STATUS_DIRECT}', '{STATUS_GIVE_UP}'))
+                               '{STATUS_GIVE_UP}'))
+                      AND (f.t2_status IS NULL
+                           OR f.t2_status <> '{STATUS_DIRECT}')
                       AND (f.t2_next_retry_at IS NULL
                            OR f.t2_next_retry_at <= ?)
                     ORDER BY f.start_time ASC
