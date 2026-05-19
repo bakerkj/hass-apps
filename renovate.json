@@ -38,11 +38,10 @@
     },
     {
       "customType": "regex",
-      "description": "ffmpeg apt package pinned in the integration-test workflow",
+      "description": "Pinned ffmpeg apt package in the integration-test workflow",
       "managerFilePatterns": ["/.github/workflows/tests\\.ya?ml$/"],
-      "matchStrings": [
-        "packages:\\s*(?<depName>ffmpeg)=(?<currentValue>[^\\s\"']+)"
-      ],
+      "matchStrings": ["FFMPEG_APT_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "ffmpeg",
       "datasourceTemplate": "deb",
       "versioningTemplate": "deb"
     },
