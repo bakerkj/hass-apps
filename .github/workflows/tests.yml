@@ -50,7 +50,7 @@ jobs:
       # ~100 MB of dependencies. Keyed on the pin so a renovate bump busts
       # it. A user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
