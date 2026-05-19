@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.53](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.52...frigate_compressor-v0.0.53) (2026-05-19)
+
+
+### Bug Fixes
+
+* **frigate_compressor:** clamp rate_window and use monotonic clock for rate sensors ([#154](https://github.com/bakerkj/hass-apps/issues/154)) ([3121180](https://github.com/bakerkj/hass-apps/commit/31211809bfb318423394628cfc98599aa7a3e95c))
+* **frigate_compressor:** make idx_files_t2_pending_age usable by both eligibility consumers ([#182](https://github.com/bakerkj/hass-apps/issues/182)) ([0f58dd8](https://github.com/bakerkj/hass-apps/commit/0f58dd85f11d3b3c6403961be741a1adc69132c4))
+
+
+### Documentation
+
+* **frigate_compressor:** add config screen labels and descriptions ([#155](https://github.com/bakerkj/hass-apps/issues/155)) ([c67295d](https://github.com/bakerkj/hass-apps/commit/c67295d57d591afb1e44ce646a9f15cd6579860d))
+
 ## [0.0.52](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.51...frigate_compressor-v0.0.52) (2026-05-15)
 
 
