@@ -28,7 +28,10 @@ configuration:
     description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
   publish_raw_sample:
     name: Publish raw sample
-    description: Also publish the raw turbostat sample to a debug topic.
+    description: >-
+      Publish one consolidated raw turbostat sample to a dedicated debug topic
+      (turbostat/raw_sample). Disabled by default; never attached to the
+      individual sensor entities.
   expire_after_multiplier:
     name: Expire-after multiplier
     description: >-

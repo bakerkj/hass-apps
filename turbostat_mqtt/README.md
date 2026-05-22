@@ -8,11 +8,12 @@ Home Assistant discovery.
 - Parses turbostat summary output dynamically from headers.
 - Creates MQTT discovery sensors from detected columns.
 - Publishes:
-  - a combined JSON state payload
   - per-sensor state topics
   - add-on availability topic
   - heartbeat topic
-- Optional raw sample payload fields (`publish_raw_sample`).
+- Optionally publishes one consolidated raw turbostat sample to a dedicated
+  debug topic (`publish_raw_sample`, disabled by default). The raw sample is
+  never attached to the individual sensor entities.
 
 ## MQTT Topics
 
@@ -20,8 +21,8 @@ Default base topic: `turbostat`
 
 - Availability: `turbostat/availability`
 - Heartbeat: `turbostat/heartbeat`
-- Combined state JSON: `turbostat/state`
 - Per-sensor state: `turbostat/<sensor_key>/state`
+- Raw sample (only when `publish_raw_sample` is enabled): `turbostat/raw_sample`
 
 ## Availability and Stale Data
 
