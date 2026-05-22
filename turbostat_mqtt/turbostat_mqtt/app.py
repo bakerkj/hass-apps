@@ -48,7 +48,7 @@ def main() -> int:
     mqtt_password = opts.get("mqtt_password", "") or ""
     client_id = opts.get("client_id") or "turbostat-app"
 
-    publish_raw = bool(opts.get("publish_raw_sample", True))
+    publish_raw = bool(opts.get("publish_raw_sample", False))
 
     heartbeat_interval = int(interval)
     disconnect_timeout = max(5, int(opts.get("mqtt_disconnect_timeout_seconds", 300)))
@@ -57,7 +57,7 @@ def main() -> int:
     )
     expire_after_s = max(60, int(interval) * expire_after_multiplier)
 
-    state_topic = f"{base_topic}/state"
+    raw_topic = f"{base_topic}/raw_sample"
     availability_topic = f"{base_topic}/availability"
     heartbeat_topic = f"{base_topic}/heartbeat"
 
@@ -382,14 +382,6 @@ def main() -> int:
                 except Exception:
                     payload[key] = val
 
-            payload["_ts_ms"] = int(now * 1000)
-            if publish_raw:
-                payload["_raw"] = {
-                    cols_map[c]: values[c] for c in values.keys() if c in cols_map
-                }
-                payload["_raw_header"] = header
-                payload["_raw_line"] = raw_line
-
             if not discovered and health.connected:
                 mqtt_publish(
                     client,
@@ -422,7 +414,6 @@ def main() -> int:
                     discovery_prefix=discovery_prefix,
                     device_id=device_id,
                     device_name=device_name,
-                    state_topic=state_topic,
                     base_topic=base_topic,
                     availability_topic=availability_topic,
                     cols=cols_map,
@@ -457,19 +448,25 @@ def main() -> int:
                     log_level,
                 )
 
-            mqtt_publish(
-                client,
-                state_topic,
-                json.dumps(payload, separators=(",", ":")),
-                qos=0,
-                retain=False,
-                log_level=log_level,
-                health=health,
-                mark_state=True,
-            )
+            if publish_raw:
+                raw_payload = {
+                    "_ts_ms": int(now * 1000),
+                    "_raw": {
+                        cols_map[c]: values[c] for c in values.keys() if c in cols_map
+                    },
+                    "_raw_header": header,
+                    "_raw_line": raw_line,
+                }
+                mqtt_publish(
+                    client,
+                    raw_topic,
+                    json.dumps(raw_payload, separators=(",", ":")),
+                    qos=0,
+                    retain=False,
+                    log_level=log_level,
+                    health=health,
+                )
             for k, v in payload.items():
-                if k.startswith("_"):
-                    continue
                 mqtt_publish(
                     client,
                     f"{base_topic}/{k}/state",

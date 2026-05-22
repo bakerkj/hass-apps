@@ -24,7 +24,7 @@
     "mqtt_base_topic": "turbostat",
     "client_id": "turbostat-mqtt",
     "log_level": "INFO",
-    "publish_raw_sample": true,
+    "publish_raw_sample": false,
     "expire_after_multiplier": 4,
     "mqtt_disconnect_timeout_seconds": 300
   },

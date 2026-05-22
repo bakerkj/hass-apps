@@ -253,7 +253,6 @@ def test_build_discovery_payloads_structure():
         discovery_prefix="homeassistant",
         device_id="turbostat",
         device_name="Turbostat",
-        state_topic="turbostat/state",
         base_topic="turbostat",
         availability_topic="turbostat/availability",
         cols=cols,
@@ -280,7 +279,6 @@ def test_build_discovery_payloads_expire_after_minimum():
         discovery_prefix="homeassistant",
         device_id="turbostat",
         device_name="Turbostat",
-        state_topic="turbostat/state",
         base_topic="turbostat",
         availability_topic="turbostat/availability",
         cols=cols,
@@ -298,7 +296,6 @@ def test_build_discovery_payloads_no_unit_for_unknown():
         discovery_prefix="ha",
         device_id="ts",
         device_name="TS",
-        state_topic="ts/state",
         base_topic="ts",
         availability_topic="ts/avail",
         cols=cols,
@@ -314,7 +311,6 @@ def test_build_discovery_payloads_empty_cols():
         discovery_prefix="ha",
         device_id="ts",
         device_name="TS",
-        state_topic="ts/state",
         base_topic="ts",
         availability_topic="ts/avail",
         cols={},
@@ -784,7 +780,6 @@ def test_build_discovery_payloads_percent_col():
         discovery_prefix="ha",
         device_id="ts",
         device_name="TS",
-        state_topic="ts/state",
         base_topic="ts",
         availability_topic="ts/avail",
         cols=cols,
@@ -798,7 +793,7 @@ def test_build_discovery_payloads_percent_col():
     assert p["suggested_display_precision"] == 1
     assert p["availability_topic"] == "ts/avail"
     assert p["state_topic"] == "ts/busy_pct/state"
-    assert p["json_attributes_topic"] == "ts/state"
+    assert "json_attributes_topic" not in p
 
 
 def test_build_discovery_payloads_temperature_col():
@@ -807,7 +802,6 @@ def test_build_discovery_payloads_temperature_col():
         discovery_prefix="ha",
         device_id="ts",
         device_name="TS",
-        state_topic="ts/state",
         base_topic="ts",
         availability_topic="ts/avail",
         cols=cols,
@@ -824,7 +818,6 @@ def test_build_discovery_payloads_multiple_cols_share_device():
         discovery_prefix="ha",
         device_id="ts",
         device_name="TS",
-        state_topic="ts/state",
         base_topic="ts",
         availability_topic="ts/avail",
         cols=cols,
