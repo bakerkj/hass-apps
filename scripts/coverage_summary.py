@@ -4,16 +4,13 @@
 """Render the combined coverage report as Markdown for CI.
 
 Reads a coverage JSON report (``coverage json``) from the path given as the
-first argument (default ``coverage.json``) and prints, for each grouping, the
-overall TOTAL row up front followed by the full breakdown in a collapsed
+first argument (default ``coverage.json``) and prints the per-module roll-up
+as a visible table, followed by the full per-file breakdown in a collapsed
 ``<details>`` block:
 
     ## Coverage
     ### By module
-    <TOTAL row>
-    <details> per-module table </details>
-    ### By file
-    <TOTAL row>
+    <per-module table>
     <details> per-file table </details>
 
 The per-file rows and every TOTAL reuse coverage's own ``percent_covered_display``
@@ -57,21 +54,6 @@ def _table(header: str, body: list[str], total: str) -> list[str]:
     ]
 
 
-def _section(heading: str, header: str, body: list[str], total_row: str) -> list[str]:
-    """A grouping: heading, the TOTAL row alone, then the breakdown collapsed."""
-    return [
-        f"### {heading}",
-        "",
-        *_table(header, [], total_row),
-        "",
-        "<details><summary>Breakdown</summary>",
-        "",
-        *_table(header, body, total_row),
-        "",
-        "</details>",
-    ]
-
-
 def main() -> None:
     report = Path(sys.argv[1] if len(sys.argv) > 1 else "coverage.json")
     data = json.loads(report.read_text())
@@ -106,9 +88,14 @@ def main() -> None:
         module_body.append(_data_row(name, stmts, stmts - covered, pct))
 
     lines = ["## Coverage", ""]
-    lines += _section("By module", "Module", module_body, overall)
-    lines += [""]
-    lines += _section("By file", "Name", file_body, overall)
+    # Per-module roll-up, shown expanded as the headline.
+    lines += ["### By module", ""]
+    lines += _table("Module", module_body, overall)
+    # Full per-file breakdown, collapsed by default (blank lines around the
+    # table so GitHub renders it inside the <details>).
+    lines += ["", "<details><summary>By file</summary>", ""]
+    lines += _table("Name", file_body, overall)
+    lines += ["", "</details>"]
     print("\n".join(lines))
 
 
