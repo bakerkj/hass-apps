@@ -37,7 +37,18 @@ pythonpath = [
     "system_resource_tuner",
     "turbostat_mqtt",
 ]
-addopts = "--cov=container_info_mqtt --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt --cov-fail-under=30"
+# No --cov-fail-under here: the unit and integration jobs each collect only
+# part of the picture (integration exercises the real ffmpeg/ffprobe paths).
+# The threshold is enforced once on the combined total in the `coverage` CI job.
+addopts = "--cov=container_info_mqtt --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
     "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
 ]
+
+[tool.coverage.run]
+# relative_files: store source paths relative to the repo root so coverage
+# data captured in the separate unit and integration CI jobs merges cleanly
+# (and so the `coverage` job can re-analyze the sources after `coverage
+# combine`). Each job renames its .coverage to a unique .coverage.<job> name
+# before upload; coverage combine merges those in the reporting job.
+relative_files = true
