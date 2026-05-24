@@ -133,10 +133,14 @@ jobs:
             echo
             uv run python scripts/coverage_summary.py coverage.json
             echo
-            # ...followed by the full per-file breakdown.
-            echo '### By file'
+            # ...followed by the full per-file breakdown, collapsed by
+            # default (blank lines around the table so GitHub renders it
+            # inside the <details>).
+            echo '<details><summary>By file</summary>'
             echo
             uv run coverage report --format=markdown
+            echo
+            echo '</details>'
           } | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
           # Enforce the floor on the combined total (was --cov-fail-under in
           # pytest addopts, which could only see one job's data at a time).
