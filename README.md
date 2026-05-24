@@ -50,12 +50,18 @@ next release-please run. Each addon releases independently (its own
 `<addon>-vX.Y.Z` tag, its own GitHub release, its own PR via release-please's
 `separate-pull-requests` mode).
 
-Install the pre-commit hooks **including the commit-msg hook** (the default
-`pre-commit install` only wires up pre-commit-stage hooks):
+Install the git hooks with [prek](https://github.com/j178/prek) **including the
+commit-msg hook** (the default `prek install` only wires up pre-commit-stage
+hooks):
 
 ```
-uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+uvx prek install -f --hook-type pre-commit --hook-type commit-msg
 ```
+
+The `-f` matters if you previously ran `pre-commit install`: without it, prek
+moves the old pre-commit shim to a `.legacy` hook and runs it alongside its own,
+which fails now that `pre-commit` is no longer a dependency. `-f` replaces those
+shims outright and is harmless on a fresh clone.
 
 Without `--hook-type commit-msg`, malformed commit messages won't be caught
 locally — CI (the `Commitlint` workflow) will still reject them, just later.
