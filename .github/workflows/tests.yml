@@ -27,6 +27,18 @@ jobs:
         with:
           check_name: "Unit test results"
           files: junit.xml
+      # Hand the unit-run coverage to the `coverage` job under a unique name so
+      # it can be combined with the integration coverage. .coverage is a hidden
+      # file, so include-hidden-files is required for upload-artifact@v4.
+      - run: mv .coverage .coverage.unit
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-unit
+          path: .coverage.unit
+          include-hidden-files: true
+          if-no-files-found: error
 
   integration-tests:
     runs-on: ubuntu-24.04
@@ -69,10 +81,69 @@ jobs:
       # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
       # silently drop coverage instead of erroring.
       - run: ffmpeg -version && ffprobe -version
-      - run:
-          uv run pytest tests/ -m integration -v --no-cov --junit-xml=junit.xml
+      # Collect coverage here too (no --no-cov): these are the only tests that
+      # exercise the real ffmpeg/ffprobe code paths, so they meaningfully add
+      # to the combined total reported by the `coverage` job.
+      - run: uv run pytest tests/ -m integration -v --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
         with:
           check_name: "Integration test results"
           files: junit.xml
+      - run: mv .coverage .coverage.integration
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-integration
+          path: .coverage.integration
+          include-hidden-files: true
+          if-no-files-found: error
+
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [tests, integration-tests]
+    # Report whatever coverage was produced even if a test job failed; the
+    # failing job already reds the build.
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: coverage
+      # Pull both jobs' data files into the repo root so `coverage combine`
+      # (and the subsequent source re-analysis) find them and the sources.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+      - name: Combine and report
+        run: |
+          set -euo pipefail
+          uv run coverage combine
+          uv run coverage json -q -o coverage.json
+          {
+            echo '## Coverage'
+            echo
+            # Per-module roll-up (one row per add-on)...
+            echo '### By module'
+            echo
+            uv run python scripts/coverage_summary.py coverage.json
+            echo
+            # ...followed by the full per-file breakdown.
+            echo '### By file'
+            echo
+            uv run coverage report --format=markdown
+          } | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
+          # Enforce the floor on the combined total (was --cov-fail-under in
+          # pytest addopts, which could only see one job's data at a time).
+          uv run coverage report --fail-under=30
+      - name: Sticky PR comment
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          path: coverage.md
