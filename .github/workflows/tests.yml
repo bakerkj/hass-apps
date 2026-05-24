@@ -125,23 +125,10 @@ jobs:
           set -euo pipefail
           uv run coverage combine
           uv run coverage json -q -o coverage.json
-          {
-            echo '## Coverage'
-            echo
-            # Per-module roll-up (one row per add-on)...
-            echo '### By module'
-            echo
-            uv run python scripts/coverage_summary.py coverage.json
-            echo
-            # ...followed by the full per-file breakdown, collapsed by
-            # default (blank lines around the table so GitHub renders it
-            # inside the <details>).
-            echo '<details><summary>By file</summary>'
-            echo
-            uv run coverage report --format=markdown
-            echo
-            echo '</details>'
-          } | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
+          # Renders the full Markdown report: a TOTAL row per grouping
+          # (by module, by file) with each breakdown collapsed beneath.
+          uv run python scripts/coverage_summary.py coverage.json \
+            | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
           # Enforce the floor on the combined total (was --cov-fail-under in
           # pytest addopts, which could only see one job's data at a time).
           uv run coverage report --fail-under=30

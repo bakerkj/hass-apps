@@ -1,13 +1,24 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Render a per-module coverage summary as a Markdown table.
+"""Render the combined coverage report as Markdown for CI.
 
-coverage.py reports per file; the CI `coverage` job rolls those up to one row
-per top-level add-on directory (the "module"), which is the headline shown in
-the GitHub step summary and the PR comment. Reads a coverage JSON report
-(``coverage json``) from the path given as the first argument, defaulting to
-``coverage.json``.
+Reads a coverage JSON report (``coverage json``) from the path given as the
+first argument (default ``coverage.json``) and prints, for each grouping, the
+overall TOTAL row up front followed by the full breakdown in a collapsed
+``<details>`` block:
+
+    ## Coverage
+    ### By module
+    <TOTAL row>
+    <details> per-module table </details>
+    ### By file
+    <TOTAL row>
+    <details> per-file table </details>
+
+The per-file rows and every TOTAL reuse coverage's own ``percent_covered_display``
+so they match ``coverage report`` exactly; per-module percentages (which coverage
+does not compute) are derived from the summed statement counts.
 """
 
 from __future__ import annotations
@@ -17,35 +28,87 @@ import sys
 from pathlib import Path
 
 
-def main() -> None:
-    report_path = Path(sys.argv[1] if len(sys.argv) > 1 else "coverage.json")
-    files = json.loads(report_path.read_text())["files"]
+def _esc(name: str) -> str:
+    """Escape underscores so names like ``__init__.py`` are not rendered as
+    bold/italic inside a GitHub-flavored Markdown table (matches coverage)."""
+    return name.replace("_", r"\_")
 
-    # module name -> [num_statements, covered_lines]
+
+def _row(cells: list[str], *, bold: bool = False) -> str:
+    if bold:
+        cells = [f"**{c}**" for c in cells]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _data_row(name: str, stmts: int, miss: int, pct: str) -> str:
+    return _row([_esc(name), str(stmts), str(miss), f"{pct}%"])
+
+
+def _total_row(stmts: int, miss: int, pct: str) -> str:
+    return _row(["TOTAL", str(stmts), str(miss), f"{pct}%"], bold=True)
+
+
+def _table(header: str, body: list[str], total: str) -> list[str]:
+    return [
+        _row([header, "Stmts", "Miss", "Cover"]),
+        "| --- | ---: | ---: | ---: |",
+        *body,
+        total,
+    ]
+
+
+def _section(heading: str, header: str, body: list[str], total_row: str) -> list[str]:
+    """A grouping: heading, the TOTAL row alone, then the breakdown collapsed."""
+    return [
+        f"### {heading}",
+        "",
+        *_table(header, [], total_row),
+        "",
+        "<details><summary>Breakdown</summary>",
+        "",
+        *_table(header, body, total_row),
+        "",
+        "</details>",
+    ]
+
+
+def main() -> None:
+    report = Path(sys.argv[1] if len(sys.argv) > 1 else "coverage.json")
+    data = json.loads(report.read_text())
+    files = data["files"]
+    totals = data["totals"]
+
+    overall = _total_row(
+        totals["num_statements"],
+        totals["missing_lines"],
+        totals["percent_covered_display"],
+    )
+
+    # Per-file rows reuse coverage's own display percentage.
+    file_body: list[str] = []
+    # Per-module aggregation by top-level add-on directory.
     modules: dict[str, list[int]] = {}
-    for path, info in files.items():
-        module = Path(path).parts[0]
-        summary = info["summary"]
-        agg = modules.setdefault(module, [0, 0])
-        agg[0] += summary["num_statements"]
+    for path in sorted(files):
+        summary = files[path]["summary"]
+        stmts = summary["num_statements"]
+        miss = summary["missing_lines"]
+        file_body.append(
+            _data_row(path, stmts, miss, summary["percent_covered_display"])
+        )
+        agg = modules.setdefault(Path(path).parts[0], [0, 0])
+        agg[0] += stmts
         agg[1] += summary["covered_lines"]
 
-    def row(name: str, stmts: int, covered: int, *, bold: bool = False) -> str:
-        miss = stmts - covered
-        pct = 100 if stmts == 0 else round(100 * covered / stmts)
-        cells = [name, str(stmts), str(miss), f"{pct}%"]
-        if bold:
-            cells = [f"**{c}**" for c in cells]
-        return "| " + " | ".join(cells) + " |"
-
-    lines = ["| Module | Stmts | Miss | Cover |", "| --- | ---: | ---: | ---: |"]
-    total_stmts = total_covered = 0
+    module_body: list[str] = []
     for name in sorted(modules):
         stmts, covered = modules[name]
-        total_stmts += stmts
-        total_covered += covered
-        lines.append(row(name, stmts, covered))
-    lines.append(row("TOTAL", total_stmts, total_covered, bold=True))
+        pct = "100" if stmts == 0 else str(round(100 * covered / stmts))
+        module_body.append(_data_row(name, stmts, stmts - covered, pct))
+
+    lines = ["## Coverage", ""]
+    lines += _section("By module", "Module", module_body, overall)
+    lines += [""]
+    lines += _section("By file", "Name", file_body, overall)
     print("\n".join(lines))
 
 
