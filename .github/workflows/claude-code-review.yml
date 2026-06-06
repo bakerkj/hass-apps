@@ -1,11 +1,5 @@
 name: Claude Code Review
 
-# Built from the action's pr-review-comprehensive.yml example rather than
-# the `code-review@claude-code-plugins` plugin, which has multiple open
-# upstream bugs (anthropics/claude-code-action #1383, #1308, #1087, #825).
-# See ha-weewx for the full rationale; the prompt body is the only piece
-# that meaningfully varies between repos.
-
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
@@ -54,34 +48,42 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            This is a monorepo of Home Assistant add-ons. Each top-level
-            subdirectory (birdnet_audio_stream, container_info_mqtt,
-            dashboard_entity_proxy, ffmpeg_snapshotter, frigate_compressor,
-            haos_configurator, intel_gpu_top_mqtt, system_resource_tuner,
-            turbostat_mqtt) is a self-contained addon with its own
-            Dockerfile, config.json, and run scripts. Most use s6-overlay,
-            many publish MQTT Discovery sensors, and several wrap
-            video/audio (ffmpeg, go2rtc) or system-level tooling
-            (turbostat, intel_gpu_top, nsenter into the HAOS host).
+            This is a monorepo of Home Assistant add-ons. Each
+            top-level subdirectory is a self-contained addon with its
+            own Dockerfile, config.json, and run scripts:
 
-            Review this PR for *real* issues. Prioritize, in order:
+            - birdnet_audio_stream — streams microphone audio over
+              RTSP via go2rtc + ffmpeg.
+            - container_info_mqtt — publishes per-container Docker
+              metrics and resource limits to MQTT Discovery.
+            - ffmpeg_snapshotter — captures timestamped JPEG snapshots
+              from RTSP streams on demand (VAAPI-capable).
+            - frigate_compressor — long-running daemon that re-encodes
+              older Frigate NVR recordings using Intel QSV with
+              VAAPI / NVENC / CPU fallback; tracks state in SQLite.
+            - haos_configurator — manifest-driven installer for
+              persistent HAOS host files via `nsenter`.
+            - intel_gpu_top_mqtt — wraps `intel_gpu_top` and publishes
+              GPU engine / power / frequency metrics to MQTT Discovery.
+            - system_resource_tuner — applies and reconciles container
+              resource tuning (cpuset, CPU shares, blkio weight) plus
+              per-process nice / cpuset.
+            - turbostat_mqtt — wraps `turbostat` and publishes CPU
+              package / core power, frequency, and C-state metrics
+              to MQTT Discovery.
 
-            1. Bugs — logic errors, race conditions, off-by-ones, broken
-               edge cases. If you find one, leave an inline comment at the
-               specific line.
-            2. CI / build correctness — shell pipefail, missing quotes,
-               cache key mistakes, Dockerfile layer order, addon
-               config.json schema correctness, multi-arch build issues.
-            3. Addon hygiene — MQTT Discovery topic/payload shape against
-               the documented HA contract, s6 service dependency ordering,
-               ffmpeg / hardware-accel pipeline correctness (VAAPI / QSV
-               fallback chains), state persistence in long-running
-               daemons (frigate_compressor SQLite, snapshotter symlinks).
-            4. Security — only at trust boundaries: HTTP/MQTT handlers,
-               shell-escaped user data, anything that nsenters into the
-               HAOS host (haos_configurator), anything that runs ffmpeg
-               on untrusted RTSP. Don't flag internal code that's
-               already guarded.
+            Most use s6-overlay, many publish MQTT Discovery sensors,
+            and several wrap video/audio (ffmpeg, go2rtc) or
+            system-level tooling.
+
+            Review this PR. Prioritize, in order:
+
+            1. Bugs — logic errors, race conditions, off-by-ones,
+               broken edge cases. If you find one, leave an inline
+               comment at the specific line.
+            2. CI / build correctness.
+            3. Addon hygiene, including MQTT.
+            4. Security.
 
             Hard rules:
 
