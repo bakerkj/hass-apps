@@ -76,16 +76,6 @@
     },
     {
       "customType": "regex",
-      "description": "python-version inputs for setup-uv across workflows",
-      "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": [
-        "python-version:\\s*\"(?<currentValue>3\\.\\d+(?:\\.\\d+)?)\""
-      ],
-      "depNameTemplate": "python",
-      "datasourceTemplate": "python-version"
-    },
-    {
-      "customType": "regex",
       "description": "npm-style entries inside pre-commit additional_dependencies",
       "managerFilePatterns": ["/\\.pre-commit-config\\.ya?ml$/"],
       "matchStrings": ["\"(?<depName>@[\\w./-]+)@(?<currentValue>[\\d.]+)\""],
@@ -141,6 +131,11 @@
       "matchPackageNames": ["alpine_3_23/onevpl-intel-gpu"],
       "matchDatasources": ["repology"],
       "overridePackageName": "alpine_edge/onevpl-intel-gpu"
+    },
+    {
+      "description": "Hold CI Python on the 3.12 line to match the Alpine base image runtime",
+      "matchDepNames": ["python"],
+      "allowedVersions": "<3.13"
     }
   ]
 }

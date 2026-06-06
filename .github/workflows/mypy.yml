@@ -16,7 +16,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
         with:
-          python-version: "3.13"
           cache-dependency-glob: "uv.lock"
           cache-suffix: mypy
       - uses: actions/cache@v5
