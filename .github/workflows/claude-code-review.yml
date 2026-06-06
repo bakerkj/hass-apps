@@ -48,9 +48,15 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            This is a monorepo of Home Assistant add-ons. Each
-            top-level subdirectory is a self-contained addon with its
-            own Dockerfile, config.json, and run scripts.
+            This is a monorepo of Home Assistant add-ons. Each top-level
+            subdirectory (birdnet_audio_stream, container_info_mqtt,
+            dashboard_entity_proxy, ffmpeg_snapshotter, frigate_compressor,
+            haos_configurator, intel_gpu_top_mqtt, system_resource_tuner,
+            turbostat_mqtt) is a self-contained addon with its own
+            Dockerfile, config.json, and run scripts. Most use s6-overlay,
+            many publish MQTT Discovery sensors, and several wrap
+            video/audio (ffmpeg, go2rtc) or system-level tooling
+            (turbostat, intel_gpu_top, nsenter into the HAOS host).
 
             Review this PR. Prioritize, in order:
 
