@@ -55,6 +55,41 @@
       "datasourceTemplate": "repology",
       "versioningTemplate": "loose",
       "packageNameTemplate": "alpine_3_23/{{depName}}"
+    },
+    {
+      "customType": "regex",
+      "description": "home-assistant/builder build-image action (calver-tagged sub-path)",
+      "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "home-assistant/builder/actions/build-image@(?<currentValue>[\\w.-]+)"
+      ],
+      "depNameTemplate": "home-assistant/builder",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "frenck/action-addon-linter schema URLs in pre-commit config",
+      "managerFilePatterns": ["/\\.pre-commit-config\\.ya?ml$/"],
+      "matchStrings": ["frenck/action-addon-linter/(?<currentValue>v[\\d.]+)/"],
+      "depNameTemplate": "frenck/action-addon-linter",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "description": "python-version inputs for setup-uv across workflows",
+      "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "python-version:\\s*\"(?<currentValue>3\\.\\d+(?:\\.\\d+)?)\""
+      ],
+      "depNameTemplate": "python",
+      "datasourceTemplate": "python-version"
+    },
+    {
+      "customType": "regex",
+      "description": "npm-style entries inside pre-commit additional_dependencies",
+      "managerFilePatterns": ["/\\.pre-commit-config\\.ya?ml$/"],
+      "matchStrings": ["\"(?<depName>@[\\w./-]+)@(?<currentValue>[\\d.]+)\""],
+      "datasourceTemplate": "npm"
     }
   ],
   "packageRules": [
