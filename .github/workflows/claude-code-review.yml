@@ -58,8 +58,7 @@ jobs:
                broken edge cases. If you find one, leave an inline
                comment at the specific line.
             2. CI / build correctness.
-            3. Addon hygiene — MQTT Discovery topic / payload shape
-               against the documented HA contract is a key concern.
+            3. Addon hygiene, including MQTT.
             4. Security.
 
             Hard rules:
