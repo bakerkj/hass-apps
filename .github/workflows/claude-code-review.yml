@@ -76,20 +76,31 @@ jobs:
             and several wrap video/audio (ffmpeg, go2rtc) or
             system-level tooling.
 
-            Review this PR. Prioritize, in order:
+            Review this PR, looking for:
 
-            1. Bugs — logic errors, race conditions, off-by-ones,
-               broken edge cases. If you find one, leave an inline
-               comment at the specific line.
-            2. CI / build correctness.
-            3. Addon hygiene, including MQTT.
-            4. Security.
+            - Bugs — logic errors, race conditions, off-by-ones,
+              broken edge cases. If you find one, leave an inline
+              comment at the specific line.
+            - CI / build correctness.
+            - Addon hygiene, including MQTT.
+            - Security.
+            - Software-engineering best practices — design choices
+              worth a second look, duplicated logic that could share
+              a single source of truth, or patterns that block
+              plausible near-term change.
+            - Reuse opportunities — places where a well-known library
+              (stdlib or external) would do better than hand-rolled
+              code.
 
             Hard rules:
 
             - Do NOT comment on style, naming, formatting, or "consider
               adding a docstring" — the repo runs ruff + prettier + shfmt
               in pre-commit and intentionally avoids redundant comments.
+            - Best-practice and reuse comments must point at something
+              concrete (a named library, a specific duplicate, a
+              measurable improvement) — generic refactoring advice isn't
+              useful.
             - Do NOT leave general praise or summary fluff.
             - If you have nothing substantive to flag, post a single
               short top-level comment saying "No issues found." That's
