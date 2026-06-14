@@ -254,7 +254,12 @@ def test_build_metrics_power_fallback_package():
 
 
 def test_build_metrics_missing_engine_returns_none():
-    raw = {"engines": {}, "power": {}, "frequency": {}, "interrupts": {}}
+    raw: dict[str, dict[str, object]] = {
+        "engines": {},
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
     metrics = igm.build_metrics(raw)
     assert metrics["engine_render_3d_busy_percent"]["value"] is None
 

@@ -676,7 +676,7 @@ def test_run_loop_success_advances_next_due_and_resets_backoff(tmp_path):
             w.stop_event.set()
         return 0
 
-    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    w._run_one_snapshot = fake_snap
     w.next_due = time.monotonic()  # fire immediately
     start_due = w.next_due
     w._run()
@@ -693,7 +693,7 @@ def test_run_loop_failure_doubles_backoff(tmp_path):
     def fake_snap():
         return 1  # always fail
 
-    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    w._run_one_snapshot = fake_snap
     w.next_due = time.monotonic()
 
     # Manually drive one iteration by running in a thread that we stop
@@ -742,7 +742,7 @@ def test_run_loop_stop_event_exits_promptly(tmp_path):
     def fake_snap():
         return 0
 
-    w._run_one_snapshot = fake_snap  # type: ignore[assignment]
+    w._run_one_snapshot = fake_snap
     # next_due far in the future — loop is waiting.
     w.next_due = time.monotonic() + 3600
     w.stop_event.set()  # pre-set so the initial wait returns immediately

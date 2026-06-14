@@ -140,6 +140,7 @@ def test_probe_returns_correct_dimensions(real_video):
 
 def test_probe_returns_correct_fps(real_video):
     info = fc._probe(real_video)
+    assert info is not None
     assert info["fps"] is not None
     assert abs(info["fps"] - 10.0) < 0.5
 
@@ -402,7 +403,9 @@ def test_compress_one_fps_cap_produces_capped_fps(tmp_path, real_video):
     )
 
     assert result is True
-    fps = fc._probe(rec_path)["fps"]
+    probe_info = fc._probe(rec_path)
+    assert probe_info is not None
+    fps = probe_info["fps"]
     assert fps is not None
     assert fps <= 4.5, f"expected fps ≤ 4, got {fps}"
 

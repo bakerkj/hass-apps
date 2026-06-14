@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import Any
 
 import ffmpeg_snapshotter as fs
 
@@ -52,8 +53,8 @@ class _RecordingClient:
         pass
 
 
-def _make_mqtt_cfg(**overrides) -> fs.MqttConfig:
-    kwargs = dict(
+def _make_mqtt_cfg(**overrides: Any) -> fs.MqttConfig:
+    kwargs: dict[str, Any] = dict(
         host="example",
         port=1883,
         username="",
@@ -84,7 +85,7 @@ def _build_publisher(
         }
     publisher = fs.MqttPublisher(_make_mqtt_cfg(), cams, threading.Event())
     client = _RecordingClient()
-    publisher.client = client  # bypass start() so the loop thread isn't spun
+    publisher.client = client  # type: ignore[assignment]  # bypass start() so the loop thread isn't spun
     return publisher, cams, client
 
 
@@ -216,11 +217,11 @@ def test_publish_state_reflects_stats_values():
     try:
         # SnapshotStats uses time.monotonic(); freeze it so the publisher's
         # snapshot() call lands on the same scale as the injected samples.
-        _t.monotonic = lambda: 1060.0  # type: ignore[assignment]
+        _t.monotonic = lambda: 1060.0
         publisher, cams, client = _build_publisher({"cam": stats})
         publisher.publish_once()
     finally:
-        _t.monotonic = _real_monotonic  # type: ignore[assignment]
+        _t.monotonic = _real_monotonic
 
     by_topic = {t: p for t, p, _ in client.publishes}
     assert by_topic["ffmpeg_snapshotter/cam/snapshot_rate/state"] == "2"
@@ -260,7 +261,7 @@ def test_publish_image_skipped_when_publish_images_false():
         _make_mqtt_cfg(publish_images=False), cams, threading.Event()
     )
     client = _RecordingClient()
-    publisher.client = client
+    publisher.client = client  # type: ignore[assignment]
     publisher.publish_image("cam", b"\xff\xd8X")
     assert client.publishes == []
 
@@ -298,7 +299,7 @@ def test_camera_discovery_skipped_when_publish_images_false():
         _make_mqtt_cfg(publish_images=False), cams, threading.Event()
     )
     client = _RecordingClient()
-    publisher.client = client
+    publisher.client = client  # type: ignore[assignment]
     publisher.publish_once()
     cam_discovery = [
         t for t, _, _ in client.publishes if t.startswith("homeassistant/camera/")
@@ -325,11 +326,11 @@ def test_publish_state_error_flag_on_after_failure():
 
     _real_time = _t.time
     try:
-        _t.time = lambda: 1001.0  # type: ignore[assignment]
+        _t.time = lambda: 1001.0
         publisher, _, client = _build_publisher({"cam": stats})
         publisher.publish_once()
     finally:
-        _t.time = _real_time  # type: ignore[assignment]
+        _t.time = _real_time
 
     by_topic = {t: p for t, p, _ in client.publishes}
     assert by_topic["ffmpeg_snapshotter/cam/snapshot_error/state"] == "ON"

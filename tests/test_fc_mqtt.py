@@ -753,7 +753,7 @@ def _build_publisher(
     stopping = threading.Event()
     publisher = fc.MqttPublisher(ctx, mqtt_cfg, stopping)
     client = _RecordingClient()
-    publisher.client = client  # bypass start() so the loop thread isn't spun
+    publisher.client = client  # type: ignore[assignment]  # bypass start() so the loop thread isn't spun
     return publisher, ctx, writer, client
 
 

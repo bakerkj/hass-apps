@@ -370,7 +370,7 @@ class MqttPublisher:
         # such enum.  Detect at runtime so this works on either pin.
         if hasattr(paho_mqtt, "CallbackAPIVersion"):
             # paho 2.x: requires CallbackAPIVersion as first positional.
-            client = paho_mqtt.Client(  # type: ignore[misc,call-arg]
+            client = paho_mqtt.Client(  # type: ignore[misc]
                 paho_mqtt.CallbackAPIVersion.VERSION1,
                 client_id=self.mqtt_cfg.client_id,
                 clean_session=True,
