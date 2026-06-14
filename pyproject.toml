@@ -26,7 +26,10 @@ mypy_path = [
     "intel_gpu_top_mqtt",
     "system_resource_tuner",
     "turbostat_mqtt",
+    "tests",
 ]
+check_untyped_defs = true
+warn_unused_ignores = true
 
 
 

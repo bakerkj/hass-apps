@@ -2163,18 +2163,23 @@ def _fake_dispatch_ctx(*, source: str, t2_enabled: bool):
     return fake_ctx
 
 
+def _record(calls: list[str], tag: str) -> bool:
+    calls.append(tag)
+    return True
+
+
 def test_pace_then_compress_dispatches_to_direct_when_source_direct(monkeypatch):
     """tier=1, source=direct, t2 enabled → compress_direct, not compress_one."""
     calls: list[str] = []
     monkeypatch.setattr(
         fc.app,
         "compress_direct",
-        lambda *a, **k: calls.append("direct") or True,
+        lambda *a, **k: _record(calls, "direct"),
     )
     monkeypatch.setattr(
         fc.app,
         "compress_one",
-        lambda *a, **k: calls.append("one") or True,
+        lambda *a, **k: _record(calls, "one"),
     )
     ctx = _fake_dispatch_ctx(source="direct", t2_enabled=True)
     fc._pace_then_compress(
@@ -2188,12 +2193,12 @@ def test_pace_then_compress_dispatches_to_one_when_source_chained(monkeypatch):
     monkeypatch.setattr(
         fc.app,
         "compress_direct",
-        lambda *a, **k: calls.append("direct") or True,
+        lambda *a, **k: _record(calls, "direct"),
     )
     monkeypatch.setattr(
         fc.app,
         "compress_one",
-        lambda *a, **k: calls.append("one") or True,
+        lambda *a, **k: _record(calls, "one"),
     )
     ctx = _fake_dispatch_ctx(source="chained", t2_enabled=True)
     fc._pace_then_compress(
@@ -2210,12 +2215,12 @@ def test_pace_then_compress_dispatches_to_one_for_tier2_regardless_of_source(
     monkeypatch.setattr(
         fc.app,
         "compress_direct",
-        lambda *a, **k: calls.append("direct") or True,
+        lambda *a, **k: _record(calls, "direct"),
     )
     monkeypatch.setattr(
         fc.app,
         "compress_one",
-        lambda *a, **k: calls.append("one") or True,
+        lambda *a, **k: _record(calls, "one"),
     )
     ctx = _fake_dispatch_ctx(source="direct", t2_enabled=True)
     fc._pace_then_compress(
@@ -2230,12 +2235,12 @@ def test_pace_then_compress_dispatches_to_one_when_t2_type_disabled(monkeypatch)
     monkeypatch.setattr(
         fc.app,
         "compress_direct",
-        lambda *a, **k: calls.append("direct") or True,
+        lambda *a, **k: _record(calls, "direct"),
     )
     monkeypatch.setattr(
         fc.app,
         "compress_one",
-        lambda *a, **k: calls.append("one") or True,
+        lambda *a, **k: _record(calls, "one"),
     )
     ctx = _fake_dispatch_ctx(source="direct", t2_enabled=False)
     fc._pace_then_compress(
@@ -2432,11 +2437,9 @@ def test_pace_then_compress_dispatches_to_one_for_chained_tier2(monkeypatch):
     reach this path; they're filtered out of get_eligible_recordings."""
     calls: list[str] = []
     monkeypatch.setattr(
-        fc.app, "compress_direct", lambda *a, **k: calls.append("direct") or True
+        fc.app, "compress_direct", lambda *a, **k: _record(calls, "direct")
     )
-    monkeypatch.setattr(
-        fc.app, "compress_one", lambda *a, **k: calls.append("one") or True
-    )
+    monkeypatch.setattr(fc.app, "compress_one", lambda *a, **k: _record(calls, "one"))
     fake_ctx = MagicMock()
     fake_ctx.rate_limiter.acquire = lambda _stopping: None
     fake_ctx.cfg.cameras = {"cam": MagicMock()}

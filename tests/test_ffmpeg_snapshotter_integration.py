@@ -20,6 +20,7 @@ import struct
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -72,7 +73,7 @@ def source_mp4(tmp_path_factory) -> Path:
 
 def _make_worker(tmp_path: Path, url: str, **overrides) -> fs.Worker:
     """Build a Worker pointed at a given URL (file path works for FFmpeg)."""
-    cfg_kwargs = dict(
+    cfg_kwargs: dict[str, Any] = dict(
         name="integration_cam",
         url=url,
         interval_seconds=1,

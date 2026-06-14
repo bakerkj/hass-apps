@@ -217,6 +217,7 @@ def test_probe_zero_division_fps(tmp_path):
     stdout = "width=1920\nheight=1080\nr_frame_rate=0/0\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
         info = fc._probe(f)
+    assert info is not None
     assert fc._probe_dims(info) == (1920, 1080)
     assert info["fps"] is None  # ZeroDivisionError swallowed gracefully
 
@@ -227,6 +228,7 @@ def test_probe_bad_dimensions(tmp_path):
     stdout = "width=N/A\nheight=N/A\nr_frame_rate=25/1\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
         info = fc._probe(f)
+    assert info is not None
     assert fc._probe_dims(info) is None
     assert info["fps"] == pytest.approx(25.0)
 
@@ -237,6 +239,7 @@ def test_probe_valid_dims_and_fps(tmp_path):
     stdout = "width=1920\nheight=1080\nr_frame_rate=30000/1001\n"
     with patch("subprocess.run", return_value=_fake_probe_result(stdout)):
         info = fc._probe(f)
+    assert info is not None
     assert fc._probe_dims(info) == (1920, 1080)
     assert info["fps"] == pytest.approx(30000 / 1001)
 

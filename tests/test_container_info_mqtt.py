@@ -634,7 +634,7 @@ def _prune(
 ) -> tuple[int, _RecordingClient]:
     client = _RecordingClient()
     pruned = cim.prune_stale_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "homeassistant",
         "container_info",
         "container-info-mqtt",
@@ -1101,7 +1101,7 @@ def test_publish_discovery_basic_payload():
     client = _RecordingClient()
     metric_def = cim.METRIC_DEFS["cpu_percent"]
     cim.publish_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "homeassistant",
         "container-info-mqtt",
         "container_info",
@@ -1141,7 +1141,7 @@ def test_publish_discovery_no_optional_fields():
     client = _RecordingClient()
     minimal_def: dict[str, Any] = {"name": "Custom", "paths": [("custom",)]}
     cim.publish_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "ha",
         "dev",
         "base",
@@ -1164,7 +1164,7 @@ def test_publish_discovery_expire_after_minimum_clamp():
     client = _RecordingClient()
     metric_def = {"name": "Test", "paths": [("t",)]}
     cim.publish_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "ha",
         "dev",
         "base",
@@ -1183,7 +1183,7 @@ def test_publish_discovery_with_device_class():
     client = _RecordingClient()
     metric_def = cim.METRIC_DEFS["memory_usage"]
     cim.publish_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "ha",
         "dev",
         "base",
@@ -1205,7 +1205,7 @@ def test_publish_discovery_with_device_class():
 def test_publish_summary_discovery_payload():
     client = _RecordingClient()
     cim.publish_summary_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "homeassistant",
         "container-info-mqtt",
         "container_info",
@@ -1238,7 +1238,7 @@ def test_publish_summary_discovery_payload():
 def test_publish_summary_discovery_expire_clamp():
     client = _RecordingClient()
     cim.publish_summary_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "ha",
         "dev",
         "base",
@@ -1258,7 +1258,7 @@ def test_publish_summary_discovery_expire_clamp():
 def test_clear_discovery_publishes_empty_retained():
     client = _RecordingClient()
     cim.clear_discovery(
-        client,
+        client,  # type: ignore[arg-type]
         "homeassistant",
         "container-info-mqtt",
         "my_app",
@@ -1274,7 +1274,7 @@ def test_clear_discovery_publishes_empty_retained():
 
 def test_clear_discovery_different_metric():
     client = _RecordingClient()
-    cim.clear_discovery(client, "ha", "dev", "slug", "summary")
+    cim.clear_discovery(client, "ha", "dev", "slug", "summary")  # type: ignore[arg-type]
     topic = client.published[0][0]
     assert topic == "ha/sensor/dev_slug/summary/config"
 
