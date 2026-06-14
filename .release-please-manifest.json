@@ -1,7 +1,7 @@
 {
   "birdnet_audio_stream": "0.1.16",
   "container_info_mqtt": "0.1.22",
-  "dashboard_entity_proxy": "0.0.0",
+  "dashboard_entity_proxy": "1.0.0",
   "ffmpeg_snapshotter": "0.8.12",
   "frigate_compressor": "0.0.53",
   "haos_configurator": "0.0.5",
