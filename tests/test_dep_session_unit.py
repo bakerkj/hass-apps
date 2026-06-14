@@ -1041,8 +1041,11 @@ def test_apply_scope_suppresses_remove_burst_after_watchdog_widening():
     assert sent_adds == []
     # Flag cleared so subsequent navigations diff normally.
     assert s._scope.widened_by_watchdog is False
-    # New scope is recorded for future diffs.
-    assert s._scope.set == {"light.a"}
+    # New scope is recorded for future diffs. apply() re-applies the user's
+    # filters and baseline, so the FRONTEND_BASELINE ids appear alongside
+    # the resolver's chosen id.
+    assert s._scope.set is not None
+    assert "light.a" in s._scope.set
 
 
 def test_apply_scope_intervening_all_entities_preserves_watchdog_flag():
@@ -2103,6 +2106,61 @@ def test_domain_scope_handles_multi_domain_key():
         "zone",
         "geo_location",
     }
+
+
+def test_domain_scope_honors_exclude_entity_globs():
+    """``exclude_entity_globs`` must filter out entities on domain panels
+    too — the user opted them out at session level and expects them gone
+    from /calendar, /todo, /map, /media-browser just like dashboards.
+    Regression for the bug where ``_domain_scope`` passed an empty list to
+    ``apply_filters`` and ``apply()`` later re-expanded patterns without
+    re-applying the filter.
+    """
+    from dashboard_entity_proxy.options import Options
+
+    s = build_session_for_test(
+        opts=Options(exclude_globs=["calendar.old_*"]),
+    )
+    # Seed the mirror with two calendar entities, one matching the exclude.
+    s._scope._store._entities.update(
+        {"calendar.old_holidays": {}, "calendar.new_holidays": {}}
+    )
+
+    # _domain_scope filters the initial set.
+    scope = s._scope._domain_scope("calendar")
+    assert "calendar.new_holidays" in scope.ids
+    assert "calendar.old_holidays" not in scope.ids
+
+    # apply() preserves the filter even after expand_patterns runs.
+    s._scope.apply(scope)
+    assert s._scope.set is not None
+    assert "calendar.new_holidays" in s._scope.set
+    assert "calendar.old_holidays" not in s._scope.set
+
+
+def test_fold_in_pattern_matches_honors_exclude_entity_globs():
+    """Late-arriving entities that match a card's include pattern (or
+    ALWAYS_IN_SCOPE_DOMAINS) still must not sneak past the user's
+    exclude_entity_globs. Regression for the bypass in
+    ``fold_in_pattern_matches``.
+    """
+    from dashboard_entity_proxy.options import Options
+
+    s = build_session_for_test(
+        opts=Options(exclude_globs=["calendar.old_*"]),
+    )
+    # Establish a live calendar scope so fold_in has something to fold into.
+    scope = s._scope._domain_scope("calendar")
+    s._scope.apply(scope)
+
+    # Now simulate two new calendar entities arriving.
+    s._scope.fold_in_pattern_matches(
+        {"a": {"calendar.new_event": {}, "calendar.old_event": {}}}
+    )
+
+    assert s._scope.set is not None
+    assert "calendar.new_event" in s._scope.set
+    assert "calendar.old_event" not in s._scope.set
 
 
 def test_energy_scope_uses_resolved_entities_when_present():

@@ -131,11 +131,18 @@ class ScopeResolver:
     def _domain_scope(self, key: str) -> ScopeSet:
         """Scope for a system panel whose content comes from one or more
         entity domains (``/calendar``, ``/todo``, ``/map``, ``/media-browser``).
+        Domain entities present in the mirror at resolution time are passed
+        through the user's include/exclude filter; the extract pattern is
+        kept so later-arriving entities still fold in (subject to the same
+        filter via :meth:`fold_in_pattern_matches`).
         """
         domains = tuple(d for d in key.split(",") if d)
         extract = dashboard.ExtractResult(include_domains=domains)
+        domain_ids = [
+            eid for eid in self._store.ids() if eid.split(".", 1)[0] in domains
+        ]
         scoped = dashboard.apply_filters(
-            [],
+            domain_ids,
             self._filters.extra,
             self._filters.include,
             self._filters.exclude,
@@ -216,10 +223,14 @@ class ScopeResolver:
         else:
             ids_set = set(entry.ids)
             if entry.extract is not None and entry.has_patterns:
-                # Expand patterns against the current mirror. New entities
-                # added later are folded in by ``fold_in_pattern_matches``.
-                ids_set = dashboard.expand_patterns(entry.extract, self._store.ids())
-                ids_set.update(entry.ids)
+                # Expand card-level patterns against the current mirror.
+                # New entities added later are folded in by
+                # ``fold_in_pattern_matches``. The expansion only honors
+                # the card's own include/exclude patterns; the user's
+                # session-level filters are re-applied below.
+                ids_set.update(
+                    dashboard.expand_patterns(entry.extract, self._store.ids())
+                )
             # Always carry entities in ``ALWAYS_IN_SCOPE_DOMAINS`` regardless
             # of the resolved view, so the HA system panels for those
             # domains (calendar, todo) render correctly on first navigation
@@ -230,6 +241,19 @@ class ScopeResolver:
                 eid
                 for eid in self._store.ids()
                 if eid.split(".", 1)[0] in ALWAYS_IN_SCOPE_DOMAINS
+            )
+            # Re-apply user filters once more so card-level pattern matches
+            # and ALWAYS_IN_SCOPE_DOMAINS additions still honor the user's
+            # ``include_entity_globs`` / ``exclude_entity_globs`` /
+            # customization rules.
+            ids_set = set(
+                dashboard.apply_filters(
+                    sorted(ids_set),
+                    self._filters.extra,
+                    self._filters.include,
+                    self._filters.exclude,
+                    self._filters.customization,
+                )
             )
             new_set = ids_set
             new_ids = sorted(ids_set)
@@ -310,19 +334,30 @@ class ScopeResolver:
             if entry is not None and entry.has_patterns and entry.extract is not None
             else None
         )
+        exclude = self._filters.exclude
+        include = self._filters.include
         for eid in added:
             if eid in self.set:
                 continue
             domain = eid.split(".", 1)[0]
-            if domain in ALWAYS_IN_SCOPE_DOMAINS or (
-                extract is not None and dashboard.matches_extract(extract, eid)
+            if not (
+                domain in ALWAYS_IN_SCOPE_DOMAINS
+                or (extract is not None and dashboard.matches_extract(extract, eid))
             ):
-                self.set.add(eid)
-                if self.ids is not None:
-                    # ``ids`` is kept sorted by ``apply``; preserve that
-                    # invariant on fold-ins so status snapshots stay
-                    # order-stable.
-                    bisect.insort(self.ids, eid)
+                continue
+            # Honor the session-level include/exclude filters on late
+            # arrivals too, so a card-pattern or ALWAYS_IN_SCOPE_DOMAINS
+            # match doesn't sneak past the user's globs.
+            if exclude and dashboard._matches_any(eid, exclude):
+                continue
+            if include and not dashboard._matches_any(eid, include):
+                continue
+            self.set.add(eid)
+            if self.ids is not None:
+                # ``ids`` is kept sorted by ``apply``; preserve that
+                # invariant on fold-ins so status snapshots stay
+                # order-stable.
+                bisect.insort(self.ids, eid)
 
     # ---- ConfigFetch / ClientConfig integration --------------------------
 
