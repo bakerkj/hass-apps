@@ -18,7 +18,7 @@ dev = [
     "aiohttp>=3.13.5",
     "pytest-asyncio>=1.4.0",
     "humanfriendly>=10.0",
-    "voluptuous==0.15.2",
+    "voluptuous==0.16.0",
     # Integration tests: drive a real headless Chrome through the proxy +
     # a HA docker container. Required only when running ``tests/integration``.
     "selenium>=4.0",
