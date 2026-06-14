@@ -193,8 +193,6 @@ http {
       proxy_set_header X-Forwarded-For $dep_ws_xff;
 __XFWD_BLOCK__
 
-      add_header X-Dep-Proxy-Backend $dep_backend always;
-
       proxy_buffering off;
       proxy_read_timeout 86400s;
       proxy_send_timeout 86400s;
@@ -229,10 +227,6 @@ __XFWD_BLOCK__
       proxy_set_header X-Real-IP $dep_ws_real_ip;
       proxy_set_header X-Forwarded-For $dep_ws_xff;
 __XFWD_BLOCK__
-
-      # Diagnostic: which backend served this request — helps confirm
-      # the routing split is doing what it claims.
-      add_header X-Dep-Proxy-Backend $dep_backend always;
 
       proxy_buffering on;
       proxy_read_timeout 60s;
