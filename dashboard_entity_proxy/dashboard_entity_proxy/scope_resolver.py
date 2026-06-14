@@ -285,16 +285,17 @@ class ScopeResolver:
         """Compute and send the add/remove diff between two scope sets.
         A ``None`` set means "all entities": anything currently in the
         mirror is considered in-scope on that side of the comparison.
+
+        Uses set arithmetic against a snapshot of the mirror so the only
+        per-entity work is the membership/diff operations and a final
+        sort of the (typically small) diff lists, instead of iterating
+        the full sorted mirror id list on every scope transition.
         """
-        removed: list[str] = []
-        added: list[str] = []
-        for eid in self._store.ids():
-            old_in = old is None or eid in old
-            new_in = new is None or eid in new
-            if old_in and not new_in:
-                removed.append(eid)
-            elif not old_in and new_in:
-                added.append(eid)
+        mirror_ids = set(self._store.ids())
+        old_in_mirror = mirror_ids if old is None else old & mirror_ids
+        new_in_mirror = mirror_ids if new is None else new & mirror_ids
+        removed = sorted(old_in_mirror - new_in_mirror)
+        added = sorted(new_in_mirror - old_in_mirror)
         if removed:
             self._emit_remove(removed)
         if added:
