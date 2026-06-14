@@ -1,0 +1,56 @@
+# Built-in per-card entity-key defaults shipped with the add-on.
+#
+# The schema here is intentionally identical to the user-side
+# customization.yaml — the parser is the same, and the user's example
+# file (customization.example.yaml in the repo root of this add-on)
+# doubles as the reference for both. User entries layer ADDITIVELY on
+# top of what's defined here via the walker's ``_merge_frames`` step.
+#
+# Adding support for a new card should be a one-line YAML PR; only the
+# walker-logic changes (new ``_harvest_*`` helpers, suffix branches,
+# etc.) need Python edits.
+
+version: 1
+
+cards:
+  # ``custom:power-flow-card`` short ``entities:`` dict, where each slot
+  # is a bare entity id: ``entities: {battery: sensor.x, grid: sensor.y}``.
+  "custom:power-flow-card":
+    entity_keys:
+      singles: [battery, battery_charge, grid, solar, home]
+
+  # ``custom:power-flow-card-plus`` supports both the short shape and a
+  # split ``entity: {consumption: ..., production: ...}`` form, plus
+  # ``state_of_charge`` and ``fossil_fuel_percentage`` siblings.
+  "custom:power-flow-card-plus":
+    entity_keys:
+      singles:
+        - battery
+        - battery_charge
+        - grid
+        - solar
+        - home
+        - consumption
+        - production
+        - state_of_charge
+        - fossil_fuel_percentage
+
+  # ``custom:energy-flow-card-plus`` — sibling project using the same
+  # split-entity convention.
+  "custom:energy-flow-card-plus":
+    entity_keys:
+      singles: [consumption, production, state_of_charge]
+
+  # ``custom:light-entity-card`` — ``effects_list:`` is either a list of
+  # effect names or an ``input_select`` entity id; both safe via
+  # ``_add_one_or_many`` + ``_looks_like_entity``.
+  "custom:light-entity-card":
+    entity_keys:
+      singles: [effects_list]
+
+  # ``custom:button-card`` — ``triggers_update:`` lists extra entities
+  # that force a re-render. Sentinel ``"all"`` is rejected by
+  # ``_looks_like_entity``.
+  "custom:button-card":
+    entity_keys:
+      singles: [triggers_update]

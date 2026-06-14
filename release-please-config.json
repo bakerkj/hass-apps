@@ -44,6 +44,18 @@
         }
       ]
     },
+    "dashboard_entity_proxy": {
+      "release-type": "simple",
+      "package-name": "dashboard_entity_proxy",
+      "component": "dashboard_entity_proxy",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "ffmpeg_snapshotter": {
       "release-type": "simple",
       "package-name": "ffmpeg_snapshotter",

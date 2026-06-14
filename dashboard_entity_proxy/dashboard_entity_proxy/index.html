@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard Entity Proxy</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1c1c1c;
+        --muted: #666;
+        --border: #d0d0d0;
+        --card: #fafafa;
+        --accent: #03a9f4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e1e1e1;
+          --muted: #9aa0a6;
+          --border: #383838;
+          --card: #1f1f1f;
+        }
+      }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0;
+        padding: 16px;
+        color: var(--fg);
+      }
+      .title-row {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        font-size: 1.2rem;
+        margin: 0;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 12px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 10px;
+        padding: 12px 14px;
+        order: 0;
+        /* Cap each card at half the viewport so a long entity list or a
+           busy HTTP-traffic pane doesn't push the rest off-screen; the
+           card body scrolls internally instead. */
+        max-height: 50vh;
+        overflow-y: auto;
+      }
+      /* Lingering "this tab just disconnected" cards: greyed and sorted to
+         the bottom via flex `order` so live sessions stay at the top. */
+      .card.disconnected {
+        opacity: 0.55;
+        order: 1;
+      }
+      .pill.disconnected {
+        background: color-mix(in srgb, var(--muted) 22%, transparent);
+        color: var(--muted);
+      }
+      .card h2 {
+        font-size: 0.95rem;
+        margin: 0 0 8px;
+        word-break: break-all;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 0.85rem;
+        padding: 2px 0;
+      }
+      .row .k {
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      /* Long URL paths can blow out the card on narrow screens; allow the
+         value side of a row to wrap and break inside long path segments. */
+      .row .v {
+        text-align: right;
+        min-width: 0;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+      .pill {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        background: color-mix(in srgb, var(--accent) 22%, transparent);
+        color: var(--accent);
+      }
+      details {
+        margin-top: 8px;
+        font-size: 0.8rem;
+      }
+      details ul {
+        margin: 6px 0 0;
+        padding-left: 18px;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 24px 0;
+      }
+      table.http-rows {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8rem;
+      }
+      table.http-rows td {
+        padding: 3px 6px;
+        vertical-align: top;
+        word-break: break-all;
+      }
+      table.http-rows td.k {
+        color: var(--muted);
+        white-space: nowrap;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="title-row">
+      <h1>Dashboard Entity Proxy</h1>
+      <span class="sub" id="summary">Loading…</span>
+    </header>
+    <div class="cards" id="cards"></div>
+
+    <script>
+      const fmtDuration = (secs) => {
+        secs = Math.max(0, Math.floor(secs));
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const s = secs % 60;
+        if (h) return `${h}h ${m}m`;
+        if (m) return `${m}m ${s}s`;
+        return `${s}s`;
+      };
+
+      // The status JSON carries ``scope_count`` (always) and ``scope_sample``
+      // (up to 50 entity ids, when not scope_all). The full ``scope_entities``
+      // list is only present when the poll asked for ``?detail=full`` —
+      // ``scopeEntities`` here normalises across both shapes so the rest of
+      // the render code doesn't have to.
+      const scopeEntities = (sess) => sess.scope_entities || sess.scope_sample || [];
+
+      const scopeLabel = (sess) => {
+        if (!sess.scope_ready) return '<span class="pill">resolving…</span>';
+        if (sess.scope_all)
+          return `<span class="pill">all entities</span> (${sess.mirror_entities} in mirror)`;
+        const n = typeof sess.scope_count === 'number'
+          ? sess.scope_count
+          : scopeEntities(sess).length;
+        return `<span class="pill">${n} entit${n === 1 ? 'y' : 'ies'}</span>`;
+      };
+
+      const entityList = (sess) => {
+        const ents = scopeEntities(sess);
+        if (sess.scope_ready && !sess.scope_all && ents.length) {
+          const items = ents.map((e) => `<li><code>${e}</code></li>`).join('');
+          const total = typeof sess.scope_count === 'number' ? sess.scope_count : ents.length;
+          const hint = total > ents.length
+            ? ` (showing ${ents.length} of ${total})`
+            : '';
+          return `<details open><summary>entities being sent${hint}</summary><ul>${items}</ul></details>`;
+        }
+        return '';
+      };
+
+      const KIND_LABEL = {
+        intercept: 'intercepted',
+        passthrough: 'pass-through',
+        tunnel: 'tunnelled',
+        http_client: 'HTTP client',
+      };
+
+      // Compact byte rendering via the browser's Intl.NumberFormat
+      // (style="unit", unit="byte", notation="compact"). 1234 → "1.2 kB".
+      // Built into every modern browser; no library dependency.
+      const _bytesFmt = new Intl.NumberFormat(undefined, {
+        style: 'unit',
+        unit: 'byte',
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      });
+      const fmtBytes = (n) => _bytesFmt.format(n || 0);
+
+      // Stable per-card identifier so the render pass can find an existing
+      // card across polls and update it in place rather than re-creating it.
+      const cardId = (s) => `${s.kind}:${s.remote_addr}:${s.connected_at}`;
+
+      // Templates run only when a card first appears. After that, the card's
+      // DOM is reused across polls and individual ``data-field`` nodes are
+      // updated via textContent / innerHTML — no more wholesale rebuild.
+      const interceptTemplate = (s) => {
+        const kindLabel = KIND_LABEL[s.kind] || s.kind;
+        return `<div class="card" data-id="${cardId(s)}">
+          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
+          <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
+          <div class="row"><span class="k">View</span><span class="v"><code data-field="view"></code></span></div>
+          <div class="row"><span class="k">Scope</span><span class="v" data-field="scope"></span></div>
+          <div class="row"><span class="k">Mirror entities</span><span class="v" data-field="mirror"></span></div>
+          <div class="row"><span class="k">Queued</span><span class="v" data-field="queued"></span></div>
+          <div class="row"><span class="k">Messages sent</span><span class="v" data-field="sent"></span></div>
+          <div class="row"><span class="k">rx / tx (client)</span><span class="v" data-field="bytes-client"></span></div>
+          <div class="row"><span class="k">rx / tx (HA)</span><span class="v" data-field="bytes-ha"></span></div>
+          <div class="row"><span class="k">Throttle</span><span class="v" data-field="throttle"></span></div>
+          <div data-field="entities"></div>
+        </div>`;
+      };
+
+      const tunnelTemplate = (s) => {
+        const kindLabel = KIND_LABEL[s.kind] || s.kind;
+        return `<div class="card" data-id="${cardId(s)}">
+          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
+          <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
+          <div class="row"><span class="k">→ HA</span><span class="v" data-field="ha-msgs"></span></div>
+          <div class="row"><span class="k">→ client</span><span class="v" data-field="client-msgs"></span></div>
+          <div class="row"><span class="k">rx / tx</span><span class="v" data-field="bytes"></span></div>
+        </div>`;
+      };
+
+      // One pane per HTTP client (source IP). Rows are per-target
+      // aggregates; the row list is filled in by updateHttpClient on
+      // every poll and sorted by last_seen DESC.
+      const httpClientTemplate = (s) => {
+        const kindLabel = KIND_LABEL[s.kind] || s.kind;
+        return `<div class="card" data-id="${cardId(s)}">
+          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <div class="row"><span class="k">Requests</span><span class="v" data-field="reqs"></span></div>
+          <div class="row"><span class="k">rx / tx</span><span class="v" data-field="bytes"></span></div>
+          <table class="http-rows" data-field="rows"></table>
+        </div>`;
+      };
+
+      const setText = (card, name, value) => {
+        const el = card.querySelector(`[data-field="${name}"]`);
+        if (el && el.textContent !== String(value)) el.textContent = value;
+      };
+
+      const setHTML = (card, name, html) => {
+        const el = card.querySelector(`[data-field="${name}"]`);
+        if (el && el.innerHTML !== html) el.innerHTML = html;
+      };
+
+      const toggleRow = (card, name, show) => {
+        const row = card.querySelector(`[data-row="${name}"]`);
+        if (row) row.style.display = show ? '' : 'none';
+      };
+
+      // Rebuild the entity-list <details> only when the entity set actually
+      // changes; otherwise the existing DOM (and its scroll position +
+      // open/closed state) survives untouched.
+      const updateEntityList = (card, s) => {
+        const container = card.querySelector('[data-field="entities"]');
+        if (!container) return;
+        const ents = scopeEntities(s);
+        const has = s.scope_ready && !s.scope_all && ents.length > 0;
+        if (!has) {
+          if (container.children.length) {
+            container.innerHTML = '';
+            delete container.dataset.hash;
+          }
+          return;
+        }
+        const total = typeof s.scope_count === 'number' ? s.scope_count : ents.length;
+        const hash = total + ':' + ents.length + ':' + ents.join(',');
+        if (container.dataset.hash === hash) return;
+        container.dataset.hash = hash;
+        const items = ents.map((e) => `<li><code>${e}</code></li>`).join('');
+        const hint = total > ents.length
+          ? ` (showing ${ents.length} of ${total})`
+          : '';
+        container.innerHTML = `<details open><summary>entities being sent${hint}</summary><ul>${items}</ul></details>`;
+      };
+
+      // Apply the .disconnected class + add/update a "disconnected Xs ago"
+      // pill next to the kind pill. Lingering sessions move to the bottom
+      // (via the .disconnected CSS order rule) and grey out.
+      const applyDisconnectState = (card, s, now) => {
+        const isDisconnected = !!s.disconnected_at;
+        card.classList.toggle('disconnected', isDisconnected);
+        const h2 = card.querySelector('h2');
+        if (!h2) return;
+        let pill = h2.querySelector('.pill.disconnected');
+        if (isDisconnected) {
+          const ago = fmtDuration((now - new Date(s.disconnected_at).getTime()) / 1000);
+          const text = `disconnected ${ago} ago`;
+          if (!pill) {
+            pill = document.createElement('span');
+            pill.className = 'pill disconnected';
+            h2.appendChild(document.createTextNode(' '));
+            h2.appendChild(pill);
+          }
+          if (pill.textContent !== text) pill.textContent = text;
+        } else if (pill) {
+          pill.remove();
+        }
+      };
+
+      const updateIntercept = (card, s, age) => {
+        setText(card, 'connected', fmtDuration(age));
+        setText(card, 'path', s.current_path || '');
+        toggleRow(card, 'path', !!s.current_path);
+        setText(card, 'view', s.current_view);
+        setHTML(card, 'scope', scopeLabel(s));
+        setText(card, 'mirror', s.mirror_entities);
+        setText(card, 'queued', s.queue_depth);
+        setText(card, 'sent', s.messages_sent);
+        setText(
+          card,
+          'bytes-client',
+          `${fmtBytes(s.rx_bytes || 0)} ↑ / ${fmtBytes(s.tx_bytes || 0)} ↓`
+        );
+        setText(
+          card,
+          'bytes-ha',
+          `${fmtBytes(s.ha_rx_bytes || 0)} ↑ / ${fmtBytes(s.ha_tx_bytes || 0)} ↓`
+        );
+        setText(card, 'throttle', s.throttle_seconds ? `${s.throttle_seconds}s` : 'off');
+        updateEntityList(card, s);
+      };
+
+      const updateTunnel = (card, s, age) => {
+        setText(card, 'connected', fmtDuration(age));
+        setText(card, 'path', s.target_path || '');
+        toggleRow(card, 'path', !!s.target_path);
+        setText(card, 'ha-msgs', `${s.messages_client_to_ha} msgs`);
+        setText(card, 'client-msgs', `${s.messages_ha_to_client} msgs`);
+        setText(
+          card,
+          'bytes',
+          `${fmtBytes(s.rx_bytes || 0)} ↑ / ${fmtBytes(s.tx_bytes || 0)} ↓`
+        );
+      };
+
+      // Each card has per-target rows (one per classify_target bucket).
+      // Rows arrive sorted server-side; we re-render the inner HTML when
+      // the row set or any row's last_seen changes.
+      const updateHttpClient = (card, s, now) => {
+        setText(card, 'reqs', `${s.request_count || 0}`);
+        setText(
+          card,
+          'bytes',
+          `${fmtBytes(s.rx_bytes || 0)} ↑ / ${fmtBytes(s.tx_bytes || 0)} ↓`
+        );
+        const tbody = card.querySelector('[data-field="rows"]');
+        if (!tbody) return;
+        const rows = s.rows || [];
+        // Hash includes last_seen + bytes so any change triggers a render.
+        const hash = rows.map(
+          (r) => `${r.target}|${r.count}|${r.rx_bytes}|${r.tx_bytes}|${r.last_seen}`
+        ).join(';');
+        if (tbody.dataset.hash === hash) return;
+        tbody.dataset.hash = hash;
+        if (!rows.length) {
+          tbody.innerHTML =
+            '<tr><td class="empty" colspan="3">No recent requests.</td></tr>';
+          return;
+        }
+        const cells = rows.map((r) => {
+          const ago = fmtDuration((now - new Date(r.last_seen).getTime()) / 1000);
+          const safeTarget = r.target.replace(/[<>&"]/g, (c) => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+          return `<tr>
+            <td><code>${safeTarget}</code></td>
+            <td class="k">${r.count}× · ${r.last_status}</td>
+            <td class="k">${fmtBytes(r.rx_bytes)}↑ ${fmtBytes(r.tx_bytes)}↓ · ${ago} ago</td>
+          </tr>`;
+        }).join('');
+        tbody.innerHTML = cells;
+      };
+
+      const render = (data) => {
+        const now = new Date(data.now).getTime();
+        const sessions = data.sessions || [];
+        document.getElementById('summary').textContent =
+          sessions.length === 1 ? '1 client connected' : `${sessions.length} clients connected`;
+
+        const container = document.getElementById('cards');
+        if (!sessions.length) {
+          container.innerHTML = '<div class="empty">No clients connected.</div>';
+          return;
+        }
+        // Clear the "no clients" placeholder on first render.
+        const first = container.firstElementChild;
+        if (first && first.classList.contains('empty')) container.innerHTML = '';
+
+        const seen = new Set();
+        for (const s of sessions) {
+          const id = cardId(s);
+          seen.add(id);
+          let card = container.querySelector(`[data-id="${CSS.escape(id)}"]`);
+          if (!card) {
+            let tpl;
+            if (s.kind === 'intercept') tpl = interceptTemplate(s);
+            else if (s.kind === 'http_client') tpl = httpClientTemplate(s);
+            else tpl = tunnelTemplate(s);
+            container.insertAdjacentHTML('beforeend', tpl);
+            card = container.lastElementChild;
+            // ``remote_addr`` is the only string in the template that
+            // originates outside our control (aiohttp's request.remote).
+            // Set it via textContent rather than HTML interpolation so a
+            // hostile peer header — even though aiohttp normalises this —
+            // cannot inject markup.
+            setText(card, 'remote', s.remote_addr);
+          }
+          const ageEnd = s.disconnected_at ? new Date(s.disconnected_at).getTime() : now;
+          const age = (ageEnd - new Date(s.connected_at).getTime()) / 1000;
+          if (s.kind === 'intercept') updateIntercept(card, s, age);
+          else if (s.kind === 'http_client') updateHttpClient(card, s, now);
+          else updateTunnel(card, s, age);
+          applyDisconnectState(card, s, now);
+        }
+        // Remove cards for sessions that disappeared between polls.
+        container.querySelectorAll('.card').forEach((c) => {
+          if (!seen.has(c.dataset.id)) c.remove();
+        });
+      };
+
+      const poll = async () => {
+        try {
+          const resp = await fetch('./api/sessions', { cache: 'no-store' });
+          render(await resp.json());
+        } catch (e) {
+          document.getElementById('summary').textContent = 'Disconnected from proxy.';
+        }
+      };
+      poll();
+      setInterval(poll, 2000);
+    </script>
+  </body>
+</html>

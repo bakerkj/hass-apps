@@ -1,0 +1,78 @@
+configuration:
+  homeassistant_url:
+    name: Home Assistant URL
+    description: >-
+      Base URL of the Home Assistant instance the proxy forwards to (e.g.
+      http://homeassistant:8123).
+  transparent:
+    name: Transparent mode
+    description: >-
+      Strip X-Forwarded-* headers so Home Assistant treats HTTP requests as
+      direct client connections (no trusted_proxies configuration needed).
+      Disable to forward standard proxy headers instead. Applies to HTTP
+      requests only; the WebSocket connection always reaches HA directly.
+  dashboard_url_path:
+    name: Dashboard URL path
+    description: >-
+      URL path of the dashboard each client's subscription starts on (e.g.
+      "lovelace-kiosk"). Leave blank for the default dashboard. The scope then
+      follows the client's navigation.
+  state_update_interval:
+    name: State update interval
+    description: >-
+      Batch state updates and flush them at most this often (duration string,
+      e.g. "2s", "500ms"), keeping only the latest state per entity. Leave blank
+      to send updates immediately.
+  extra_entities:
+    name: Extra entities
+    description: >-
+      Entity IDs always included in the scope, in addition to those detected on
+      the dashboard. Use for entities referenced by templates or custom cards.
+  include_entity_globs:
+    name: Include entity globs
+    description: >-
+      If set, only scoped entities matching at least one glob are kept (e.g.
+      "light.*").
+  exclude_entity_globs:
+    name: Exclude entity globs
+    description: >-
+      Scoped entities matching any of these globs are removed (e.g.
+      "sensor.*_battery").
+  passthrough_all:
+    name: Pass through all entities
+    description: >-
+      Disable filtering entirely and reverse proxy the WebSocket unchanged.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  customization_file:
+    name: Customization file
+    description: >-
+      Optional path (inside the HA /config volume) to a YAML file extending the
+      proxy's built-in scope knowledge with site-specific baseline entities,
+      per-card implicit-entity registries, per-card entity-key overrides, and
+      extra helper-integration platforms. Leave blank to use the shipped
+      defaults only.
+  show_client_paths:
+    name: Show client paths in status UI
+    description: >-
+      When enabled, the Ingress status page shows each connected client's
+      current URL path (which dashboard/view they are viewing). Disable to omit
+      path information from the status snapshot when sharing the UI with users
+      who shouldn't see per-client browsing activity.
+  registry_mode:
+    name: Registry tracking mode
+    description: >-
+      How entity- and device-registry updates are applied. "incremental" fetches
+      one entity per change event (falling back to a full list past the burst
+      threshold). "full" always refetches the entire list.
+  registry_refetch_interval:
+    name: Registry refetch interval
+    description: >-
+      Seconds between periodic full registry refreshes, used as a safety net
+      against dropped registry update events. Set to 0 to disable.
+  registry_burst_threshold:
+    name: Registry burst threshold
+    description: >-
+      In "incremental" mode, promote any burst of registry-update events larger
+      than this into a single full-list refetch.

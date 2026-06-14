@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   discover:
@@ -119,6 +118,11 @@ jobs:
     if: needs.discover.outputs.mode != 'skip'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    # Only the build job pushes to ghcr.io (on release mode); discover
+    # just emits a matrix and stays at workflow-level contents: read.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
