@@ -810,8 +810,11 @@ class Session:
         elif is_settings_signal(mtype):
             self._nav.heuristic_widen_to_all()
         if not self._translate_client_id_for_ha(msg):
-            # Inflight cap hit: the rejection error was already sent to the
-            # client; do not forward to HA.
+            # Unknown unsubscribe target: the client referenced a
+            # subscription id the proxy never allocated. The "not_found"
+            # rejection has already been sent back to the client; do not
+            # forward to HA. (The inflight-cap rejection path returns
+            # earlier in this function, never reaching this call.)
             return
         # Tag the inflight entry with the url so the client lovelace/config
         # response feeds scope resolution as well as being forwarded to
