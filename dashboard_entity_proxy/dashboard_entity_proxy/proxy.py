@@ -454,7 +454,11 @@ def _filtered_request_headers(
     """Build the upstream request header set: drop hop-by-hop headers, and
     in ``transparent`` mode also drop ``X-Forwarded-*`` / ``Forwarded`` so
     HA treats the proxy as a direct client (no ``trusted_proxies`` config
-    needed). Otherwise injects ``X-Forwarded-For`` with the real remote.
+    needed). In non-transparent mode, nginx's already-correct
+    ``X-Forwarded-For`` (built via ``$proxy_add_x_forwarded_for``) is
+    preserved by the loop; ``request.remote`` is always ``127.0.0.1`` here
+    because the Python proxy is bound on loopback only, so synthesizing
+    an XFF from it would clobber the real client's address.
 
     Returns a ``CIMultiDict`` so multi-valued headers (e.g. multiple
     ``Cache-Control`` directives) survive the filter; a plain ``dict``
@@ -468,8 +472,6 @@ def _filtered_request_headers(
         if transparent and (lower.startswith("x-forwarded-") or lower == "forwarded"):
             continue
         out.add(name, value)
-    if not transparent and request.remote:
-        out["X-Forwarded-For"] = request.remote
     return out
 
 

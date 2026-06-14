@@ -159,6 +159,26 @@ def test_filtered_request_headers_preserves_multiple_values() -> None:
     assert "X-Forwarded-For" not in out
 
 
+def test_filtered_request_headers_keeps_nginx_xff_in_non_transparent_mode() -> None:
+    """nginx already built ``X-Forwarded-For`` from the real client IP via
+    ``$proxy_add_x_forwarded_for`` before forwarding to the loopback Python
+    proxy. The proxy must NOT overwrite that with ``request.remote``
+    (which is always ``127.0.0.1`` because the Python proxy binds
+    loopback-only) — that would silently feed HA's ``trusted_proxies``
+    handling the wrong client address.
+    """
+    raw: CIMultiDict[str] = CIMultiDict()
+    raw.add("X-Forwarded-For", "203.0.113.42")
+    raw.add("X-Forwarded-Proto", "https")
+    request = SimpleNamespace(headers=CIMultiDictProxy(raw), remote="127.0.0.1")
+
+    out = proxy._filtered_request_headers(request, transparent=False)  # type: ignore[arg-type]
+
+    # The real client address survives unchanged.
+    assert out.get("X-Forwarded-For") == "203.0.113.42"
+    assert out.get("X-Forwarded-Proto") == "https"
+
+
 def test_tunnel_connection_status_counts() -> None:
     conn = proxy.TunnelConnection(
         remote_addr="1.2.3.4", target_path="/api/websocket", passthrough=True
@@ -288,7 +308,13 @@ async def test_reverse_http_strips_x_forwarded_in_transparent_mode() -> None:
         await ha_runner.cleanup()
 
 
-async def test_reverse_http_injects_x_forwarded_for_when_not_transparent() -> None:
+async def test_reverse_http_preserves_incoming_xff_when_not_transparent() -> None:
+    """In production the Python proxy sits behind nginx on loopback, so
+    ``request.remote`` is always ``127.0.0.1`` and the real client IP
+    arrives via nginx's ``X-Forwarded-For``. The proxy must preserve
+    nginx's value verbatim — synthesizing one from ``request.remote``
+    would clobber it with the loopback address.
+    """
     captured: dict[str, Any] = {}
     ha_runner, ha_url = await _start_app(await _fake_http_app(captured))
     proxy_runner, proxy_url = await _start_app(
@@ -296,9 +322,12 @@ async def test_reverse_http_injects_x_forwarded_for_when_not_transparent() -> No
     )
     try:
         async with aiohttp.ClientSession() as cs:
-            await cs.get(f"{proxy_url}/api/")
-        # The proxy adds the real remote (test client) under X-Forwarded-For.
-        assert "X-Forwarded-For" in captured["headers"]
+            await cs.get(
+                f"{proxy_url}/api/",
+                headers={"X-Forwarded-For": "203.0.113.42"},
+            )
+        # The upstream sees nginx's value unchanged, not a loopback synthesis.
+        assert captured["headers"].get("X-Forwarded-For") == "203.0.113.42"
     finally:
         await proxy_runner.cleanup()
         await ha_runner.cleanup()
