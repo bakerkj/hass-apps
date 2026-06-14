@@ -295,6 +295,15 @@ class Session:
         self._to_ha: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(OUTBOUND_BUFFER)
         self._done = asyncio.Event()
 
+        # Peak observed depth of the outbound-to-client queue this
+        # session. Surfaced via ``status()`` so the status UI / API can
+        # show how close a session is coming to the disconnect cap.
+        self._client_queue_high_water = 0
+        # Histogram of client-originated command types this session has
+        # opened. Lets the status UI attribute reconnect bursts to e.g.
+        # ``render_template`` rather than guessing.
+        self._opened_command_counts: dict[str, int] = {}
+
     def _on_scope_ready(self) -> None:
         """Called by ScopeResolver after a scope becomes ready (or after
         the watchdog widens). Bridges the scope subsystem to Session's
@@ -537,9 +546,26 @@ class Session:
             return
         try:
             queue.put_nowait(item)
+            if queue is self._to_client:
+                depth = queue.qsize()
+                if depth > self._client_queue_high_water:
+                    self._client_queue_high_water = depth
             return
         except asyncio.QueueFull:
-            self._log.warning("outbound queue full; disconnecting slow peer")
+            if queue is self._to_client:
+                self._log.warning(
+                    "outbound to-client queue full (depth=%d/%d, "
+                    "high_water=%d); disconnecting slow peer",
+                    queue.qsize(),
+                    OUTBOUND_BUFFER,
+                    self._client_queue_high_water,
+                )
+            else:
+                self._log.warning(
+                    "outbound to-HA queue full (depth=%d/%d); disconnecting",
+                    queue.qsize(),
+                    OUTBOUND_BUFFER,
+                )
             self._cleanup()
 
     # --- id allocation -----------------------------------------------------
@@ -943,6 +969,14 @@ class Session:
             # grace-period sweep entirely, never pop.
             if isinstance(mtype, str) and mtype in HA_SUBSCRIPTION_COMMANDS:
                 self._inflight_table.mark_known(new)
+            # Histogram of opened command types so the status UI can
+            # attribute reconnect bursts (e.g. a dashboard with hundreds
+            # of templated card properties opens hundreds of
+            # ``render_template`` subscriptions on first connect).
+            if isinstance(mtype, str):
+                self._opened_command_counts[mtype] = (
+                    self._opened_command_counts.get(mtype, 0) + 1
+                )
             msg["id"] = new
         if mtype == "unsubscribe_events":
             sub = msg.get("subscription")
@@ -1174,6 +1208,8 @@ class Session:
             "scope_count": len(ids),
             "mirror_entities": len(self._store),
             "queue_depth": self._to_client.qsize(),
+            "queue_high_water": self._client_queue_high_water,
+            "opened_command_counts": dict(self._opened_command_counts),
             "messages_sent": self._sent_to_client,
             # rx is client→proxy bytes (read by _pump_client); tx is
             # proxy→client bytes (queued by send_client/_bytes). These

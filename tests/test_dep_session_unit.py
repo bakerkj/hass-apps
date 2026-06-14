@@ -1972,6 +1972,44 @@ def test_status_scope_all_omits_sample():
     assert "scope_entities" not in snap
 
 
+def test_status_includes_queue_high_water_and_opened_command_counts():
+    """``status()`` surfaces ``queue_high_water`` (peak observed outbound
+    queue depth for the session) and ``opened_command_counts`` (histogram
+    of client command types this session has opened). These let the
+    status UI surface what's driving a session's load.
+    """
+    s = _make_session_for_status_shape()
+    # Drive a few translations through the id allocator so the histogram
+    # has interesting content.
+    for mtype in ["render_template", "render_template", "subscribe_events"]:
+        s._translate_client_id_for_ha({"id": 1, "type": mtype})
+
+    snap = s.status()
+    assert snap["queue_high_water"] == 0  # nothing enqueued yet
+    assert snap["opened_command_counts"] == {
+        "render_template": 2,
+        "subscribe_events": 1,
+    }
+
+
+def test_queue_high_water_tracks_outbound_to_client_peak():
+    """The ``_client_queue_high_water`` field tracks the max depth ever
+    observed for the outbound-to-client queue across the session, so
+    a burst that drains before the next status snapshot is still visible.
+    """
+    s = build_session_for_test()
+    # Bypass real WS plumbing by stubbing the bytes-counter so tests don't
+    # need a real connection.
+    for _ in range(5):
+        s.send_client("ping")
+    assert s._client_queue_high_water == 5
+    # Drain everything; the high-water mark must NOT regress.
+    while not s._to_client.empty():
+        s._to_client.get_nowait()
+    s.send_client("after-drain")
+    assert s._client_queue_high_water == 5
+
+
 def test_session_registry_snapshot_forwards_detail_to_session():
     """``SessionRegistry.snapshot(detail='full')`` must forward the kwarg
     to each live session's ``status()`` — otherwise the UI's full-detail
