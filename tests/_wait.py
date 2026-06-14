@@ -12,7 +12,7 @@ same deadline the old hard sleep would have walked past silently.
 from __future__ import annotations
 
 import time
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
 
@@ -44,3 +44,22 @@ def wait_until(
             )
         time.sleep(interval)
         last = probe()
+
+
+def wait_for_session_ready(chrome: Any, *, timeout: float = 6.0) -> None:
+    """Wait until the browser's ``hass.connection`` is live and
+    ``hass.states`` has been populated by the proxy's mirror snapshot.
+
+    Replaces a blanket ``time.sleep(N)`` "let the session settle" pause
+    at the top of integration tests that drive subscription routing
+    behaviour from the browser.
+    """
+    wait_until(
+        lambda: chrome.execute_script(
+            "const ha = document.querySelector('home-assistant');"
+            "return !!(ha && ha.hass && ha.hass.connection && "
+            "Object.keys(ha.hass.states || {}).length > 0);"
+        ),
+        lambda ready: ready,
+        timeout=timeout,
+    )

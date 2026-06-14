@@ -15,25 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from _wait import wait_until
+from _wait import wait_for_session_ready
 
 INTEGRATION = pytest.mark.integration
-
-
-def _wait_for_session_ready(chrome, *, timeout: float = 6.0) -> None:
-    """Wait until the browser's ``hass.connection`` is live and
-    ``hass.states`` has been populated by the proxy's mirror snapshot.
-    Replaces a blanket ``time.sleep(N)`` "let the session settle" pause.
-    """
-    wait_until(
-        lambda: chrome.execute_script(
-            "const ha = document.querySelector('home-assistant');"
-            "return !!(ha && ha.hass && ha.hass.connection && "
-            "Object.keys(ha.hass.states || {}).length > 0);"
-        ),
-        lambda ready: ready,
-        timeout=timeout,
-    )
 
 
 @INTEGRATION
@@ -52,7 +36,7 @@ def test_weather_subscribe_forecast_routes_through_proxy(browser, ha):
     ``execute_async_script``.
     """
     chrome = browser("/lovelace")
-    _wait_for_session_ready(chrome)
+    wait_for_session_ready(chrome)
 
     result = chrome.execute_async_script(
         """
@@ -99,7 +83,7 @@ def test_render_template_subscription_routes_through_proxy(browser, ha):
     callback must receive the rendered string.
     """
     chrome = browser("/lovelace")
-    _wait_for_session_ready(chrome)
+    wait_for_session_ready(chrome)
 
     result = chrome.execute_async_script(
         """
