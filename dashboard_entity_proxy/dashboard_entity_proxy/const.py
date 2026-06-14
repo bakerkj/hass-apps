@@ -140,8 +140,16 @@ HTTP_FORWARD_TIMEOUT_SOCK_READ = 30.0
 
 # asyncio.Queue depth for both client-bound and HA-bound message streams.
 # A slow client backs up here; queue-full disconnects the session as a
-# protection against unbounded memory growth.
-OUTBOUND_BUFFER = 1024
+# protection against unbounded memory growth. Real-world dashboards with
+# heavy custom-card use (button-card, card-mod templated styles, etc.)
+# open many hundreds of ``render_template`` subscriptions on first
+# connect; each opening fires an initial-result event, producing a burst
+# in the low thousands of frames within a few hundred ms. Observed peak
+# on a 12k-entity install was ~2500 items, so 16384 leaves comfortable
+# headroom even for larger installs or simultaneous reconnects. Memory
+# impact is bounded: each slot is a small WS frame tuple, so worst-case
+# peak is on the order of a few MB per session.
+OUTBOUND_BUFFER = 16384
 
 # Maximum seconds the session waits for its first scope to resolve before
 # falling back to "scope is the whole entity registry." Covers clients
