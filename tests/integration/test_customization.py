@@ -17,10 +17,9 @@ session-shared ``proxy_url``.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+from _wait import wait_until
 from dashboard_entity_proxy.customization import Customization
 
 INTEGRATION = pytest.mark.integration
@@ -80,37 +79,41 @@ def test_implicit_entities_from_customization_reach_browser(
         ],
     )
 
-    # 1) Without customization: implicit entity should NOT be in scope.
+    def _probe(chrome) -> dict[str, bool]:
+        return chrome.execute_script(
+            "const ha = document.querySelector('home-assistant');"
+            "return {has_c: 'input_boolean.int_test_c' in (ha?.hass?.states || {}),"
+            " has_a: 'input_boolean.int_test_a' in (ha?.hass?.states || {})};"
+        )
+
+    # 1) Without customization: the explicit entity arrives in scope but
+    #    the implicit one does NOT. Predicate must wait for BOTH the
+    #    initial-snapshot widen to narrow AND has_a to be present —
+    #    otherwise the wait exits during the widen window when both
+    #    has_a and has_c are True, and the assert below fires spuriously.
     plain_proxy = proxy_factory()
     chrome = browser(f"{plain_proxy}/{dashboard_url}/0")
-    time.sleep(8)
-    plain_state = chrome.execute_script(
-        "const ha = document.querySelector('home-assistant');"
-        "return {has_c: 'input_boolean.int_test_c' in (ha?.hass?.states || {}),"
-        " has_a: 'input_boolean.int_test_a' in (ha?.hass?.states || {})};"
-    )
-    assert plain_state["has_a"], (
-        f"explicit entity missing without customization: {plain_state}"
+    plain_state = wait_until(
+        lambda: _probe(chrome),
+        lambda s: s["has_a"] and not s["has_c"],
+        timeout=8,
     )
     assert not plain_state["has_c"], (
         f"implicit entity in scope WITHOUT customization — test premise wrong: "
         f"{plain_state}"
     )
 
-    # 2) With customization registering the implicit entity.
+    # 2) With customization registering the implicit entity: BOTH must
+    #    be in scope.
     cust = Customization(
         implicit_entities={"custom:fake-card": ("input_boolean.int_test_c",)}
     )
     custom_proxy = proxy_factory(customization=cust)
     chrome = browser(f"{custom_proxy}/{dashboard_url}/0")
-    time.sleep(8)
-    custom_state = chrome.execute_script(
-        "const ha = document.querySelector('home-assistant');"
-        "return {has_c: 'input_boolean.int_test_c' in (ha?.hass?.states || {}),"
-        " has_a: 'input_boolean.int_test_a' in (ha?.hass?.states || {})};"
-    )
-    assert custom_state["has_a"], (
-        f"explicit entity missing with customization: {custom_state}"
+    custom_state = wait_until(
+        lambda: _probe(chrome),
+        lambda s: s["has_a"] and s["has_c"],
+        timeout=8,
     )
     assert custom_state["has_c"], (
         f"implicit entity NOT in scope with customization — the "

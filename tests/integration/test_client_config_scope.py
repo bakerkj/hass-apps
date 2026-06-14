@@ -17,9 +17,9 @@ uses a real HA + real Chrome + real proxy to ensure the
 
 from __future__ import annotations
 
-import time
-
 import pytest
+
+from _wait import wait_until
 
 INTEGRATION = pytest.mark.integration
 
@@ -71,24 +71,35 @@ def test_client_lovelace_config_narrows_scope(browser, ha_ws):
     _create_test_dashboard(ha_ws, dashboard_url, ["input_boolean.int_test_a"])
 
     chrome = browser(f"/{dashboard_url}/0")
-    # Let frontend run subscribe_entities + lovelace/config + render.
-    time.sleep(8)
-
-    in_scope = chrome.execute_script(
-        """
-        const ha = document.querySelector('home-assistant');
-        if (!ha || !ha.hass) return {error: 'no home-assistant element'};
-        const probe = (eid) => eid in (ha.hass.states || {});
-        return {
-            in_a: probe('input_boolean.int_test_a'),
-            in_b: probe('input_boolean.int_test_b'),
-            in_c: probe('input_boolean.int_test_c'),
-            in_d: probe('input_boolean.int_test_d'),
-            total_states: Object.keys(ha.hass.states || {}).length,
-            baseline_sun: probe('sun.sun'),
-            baseline_zone: probe('zone.home'),
-        };
-        """
+    # Wait for the frontend to complete subscribe_entities +
+    # lovelace/config, then for the proxy to narrow scope so unwanted
+    # entities are no longer in hass.states. ``in_a`` arrives in the
+    # initial mirror snapshot before the proxy narrows; predicate has
+    # to wait specifically for the narrowing (b/c/d gone) too.
+    in_scope = wait_until(
+        lambda: chrome.execute_script(
+            """
+            const ha = document.querySelector('home-assistant');
+            if (!ha || !ha.hass) return {error: 'no home-assistant element'};
+            const probe = (eid) => eid in (ha.hass.states || {});
+            return {
+                in_a: probe('input_boolean.int_test_a'),
+                in_b: probe('input_boolean.int_test_b'),
+                in_c: probe('input_boolean.int_test_c'),
+                in_d: probe('input_boolean.int_test_d'),
+                total_states: Object.keys(ha.hass.states || {}).length,
+                baseline_sun: probe('sun.sun'),
+                baseline_zone: probe('zone.home'),
+            };
+            """
+        ),
+        lambda s: (
+            s.get("in_a")
+            and not s.get("in_b")
+            and not s.get("in_c")
+            and not s.get("in_d")
+        ),
+        timeout=8,
     )
 
     assert in_scope.get("in_a"), (

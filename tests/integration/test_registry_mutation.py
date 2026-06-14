@@ -17,6 +17,8 @@ import time
 
 import pytest
 
+from _wait import wait_until
+
 INTEGRATION = pytest.mark.integration
 
 
@@ -34,7 +36,16 @@ def test_registry_update_event_propagates_new_entity(browser, ha, ha_ws):
     missing from scope and the integration page wouldn't list it.
     """
     chrome = browser("/lovelace")
-    time.sleep(6)  # let the initial subscribe + registry list settle
+    # Let the initial subscribe + registry list settle: wait for the
+    # mirror snapshot to populate ``hass.states``.
+    wait_until(
+        lambda: chrome.execute_script(
+            "const ha = document.querySelector('home-assistant');"
+            "return Object.keys(ha?.hass?.states || {}).length;"
+        ),
+        lambda n: n > 0,
+        timeout=6,
+    )
 
     # Sanity: the entity should NOT exist yet.
     pre = ha_ws(
@@ -78,16 +89,17 @@ def test_registry_update_event_propagates_new_entity(browser, ha, ha_ws):
     chrome.execute_script(
         "history.pushState({}, '', '/config/integrations/integration/input_boolean');"
     )
-    # Give the proxy a moment to process the (browser_mod-style) nav.
-    # Without browser_mod the path-from-config heuristic kicks in via
-    # the next lovelace/config request; for this test the assertion is
-    # the entity's mere presence in the browser's hass.states after
-    # the registry refetch.
-    time.sleep(4)
-
-    has_new = chrome.execute_script(
-        "const ha = document.querySelector('home-assistant');"
-        "return 'input_boolean.int_runtime_added' in (ha?.hass?.states || {});"
+    # Wait for the proxy to process the (browser_mod-style) nav. Without
+    # browser_mod the path-from-config heuristic kicks in via the next
+    # lovelace/config request; the assertion is the entity's presence in
+    # the browser's hass.states after the registry refetch lands.
+    has_new = wait_until(
+        lambda: chrome.execute_script(
+            "const ha = document.querySelector('home-assistant');"
+            "return 'input_boolean.int_runtime_added' in (ha?.hass?.states || {});"
+        ),
+        lambda present: present,
+        timeout=4,
     )
     assert has_new, (
         "input_boolean.int_runtime_added not present in hass.states after "

@@ -12,6 +12,8 @@ import time
 
 import pytest
 
+from _wait import wait_until
+
 INTEGRATION = pytest.mark.integration
 
 
@@ -97,11 +99,14 @@ def test_navigate_to_calendar_loads_calendar_entities(browser, ha, ha_ws, proxy_
     # Create a non-calendar dashboard.
     _create_dashboard(ha_ws, "int-no-calendar", ["input_boolean.int_test_a"])
 
-    # Open the narrow dashboard. Wait for the proxy to settle scope.
+    # Open the narrow dashboard. Wait for the proxy to settle scope so
+    # ALWAYS_IN_SCOPE_DOMAINS adds calendar.int_test_cal to hass.states.
     chrome = browser("/int-no-calendar/0")
-    time.sleep(7)
-
-    cal_before = _list_calendar_entities(chrome)
+    cal_before = wait_until(
+        lambda: _list_calendar_entities(chrome),
+        lambda cal: "calendar.int_test_cal" in cal,
+        timeout=7,
+    )
     print("\n=== before /calendar navigate ===")
     print(f"calendar.* in hass.states: {cal_before}")
 
@@ -121,15 +126,13 @@ def test_navigate_to_calendar_loads_calendar_entities(browser, ha, ha_ws, proxy_
         });
         """
     )
-    time.sleep(7)
-
-    cal_after = _list_calendar_entities(chrome)
+    cal_after = wait_until(
+        lambda: _list_calendar_entities(chrome),
+        lambda cal: bool(cal),
+        timeout=7,
+    )
     print("\n=== after /calendar navigate ===")
     print(f"calendar.* in hass.states: {cal_after}")
-
-    assert cal_after, (
-        f"after navigating to /calendar, expected calendar.* in hass.states; got {cal_after}"
-    )
 
 
 @INTEGRATION
@@ -146,13 +149,10 @@ def test_calendar_entities_in_scope_without_navigation(browser, ha, ha_ws):
     _create_dashboard(ha_ws, "int-no-cal-2", ["input_boolean.int_test_b"])
 
     chrome = browser("/int-no-cal-2/0")
-    time.sleep(7)
-
-    cal = _list_calendar_entities(chrome)
+    cal = wait_until(
+        lambda: _list_calendar_entities(chrome),
+        lambda cal: "calendar.int_test_cal2" in cal,
+        timeout=7,
+    )
     print("\n=== narrow dashboard, no /calendar nav ===")
     print(f"calendar.* in hass.states: {cal}")
-
-    assert "calendar.int_test_cal2" in cal, (
-        f"expected calendar.int_test_cal2 in hass.states on a narrow "
-        f"dashboard via ALWAYS_IN_SCOPE_DOMAINS; got {cal}"
-    )

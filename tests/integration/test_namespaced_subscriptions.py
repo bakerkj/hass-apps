@@ -13,9 +13,9 @@ back to the client.
 
 from __future__ import annotations
 
-import time
-
 import pytest
+
+from _wait import wait_for_session_ready
 
 INTEGRATION = pytest.mark.integration
 
@@ -36,7 +36,7 @@ def test_weather_subscribe_forecast_routes_through_proxy(browser, ha):
     ``execute_async_script``.
     """
     chrome = browser("/lovelace")
-    time.sleep(6)
+    wait_for_session_ready(chrome)
 
     result = chrome.execute_async_script(
         """
@@ -83,7 +83,7 @@ def test_render_template_subscription_routes_through_proxy(browser, ha):
     callback must receive the rendered string.
     """
     chrome = browser("/lovelace")
-    time.sleep(6)
+    wait_for_session_ready(chrome)
 
     result = chrome.execute_async_script(
         """

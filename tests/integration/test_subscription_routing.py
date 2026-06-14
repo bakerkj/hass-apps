@@ -15,9 +15,9 @@ subscription after the first message.
 
 from __future__ import annotations
 
-import time
-
 import pytest
+
+from _wait import wait_for_session_ready
 
 INTEGRATION = pytest.mark.integration
 
@@ -33,8 +33,8 @@ def test_subscribe_events_state_changed_routes_through_proxy(browser, ha):
     subsequent events keep their id translated back to the client.
     """
     chrome = browser("/lovelace")
-    # Give the frontend time to complete auth + initial subscribe_entities.
-    time.sleep(6)
+    # Wait for the frontend to complete auth + initial subscribe_entities.
+    wait_for_session_ready(chrome)
 
     # Drive the subscription from the browser, trigger a state change
     # from the same browser via REST, and collect events.
@@ -101,7 +101,7 @@ def test_browser_logs_no_unknown_subscription_warning(browser, ha):
     that case. After the fix, no such message should appear.
     """
     chrome = browser("/lovelace")
-    time.sleep(8)
+    wait_for_session_ready(chrome, timeout=8)
     # Also exercise subscribe_events explicitly so any routing bug
     # surfaces in console output rather than just being latent.
     chrome.execute_async_script(
