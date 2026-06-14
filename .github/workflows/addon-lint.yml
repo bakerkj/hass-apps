@@ -21,8 +21,8 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
-          # See addon-build-smoke.yml for the same rationale.  Branch name
-          # shape comes from src/util/branch-name.ts:79 in googleapis/release-please.
+          # See addon-build.yml for the same rationale. Branch name shape
+          # comes from src/util/branch-name.ts:79 in googleapis/release-please.
           rp_prefix="release-please--branches--main--components--"
           target_addon=""
           case "$HEAD_REF" in
