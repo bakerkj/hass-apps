@@ -1,0 +1,237 @@
+# nginx config template for the dashboard_entity_proxy addon.
+#
+# This file is NOT used as-is. The init-nginx-conf cont-init oneshot
+# substitutes __HA_HOST__ / __HA_PORT__ / __XFWD_BLOCK__ at boot from
+# /data/options.json and writes the result to /etc/nginx/nginx.conf
+# before nginx-longrun starts.
+#
+# Two upstreams: ``proxy_backend`` is the in-container Python proxy on
+# loopback 8125; ``ha_backend`` is the configured Home Assistant URL.
+# A map dispatches on $http_upgrade so WebSocket upgrades go to the
+# Python proxy (which intercepts /api/websocket and tunnels everything
+# else for status-UI tracking) and plain HTTP goes directly to HA. The
+# Python code has no HTTP-specific logic — every plain request just
+# forwarded bytes — so the hop was pure overhead.
+#
+# The status UI (port 8098, exposed only via Supervisor ingress) is
+# served directly by the Python process and does NOT go through nginx.
+
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /dev/stderr warn;
+
+# Load dynamic modules shipped by ``nginx-mod-http-brotli`` and
+# ``nginx-mod-http-zstd``. Each Alpine package drops a ``load_module``
+# stub into /etc/nginx/modules/; this include picks them up.
+include /etc/nginx/modules/*.conf;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  # Resource limits and HTTP semantics.
+  # 1g accommodates HA snapshot/backup uploads which can exceed the
+  # nginx 100m default and previously returned 413 to the UI.
+  client_max_body_size 1g;
+  proxy_request_buffering off;
+  server_tokens off;
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  # Custom access-log format consumed by the Python http_traffic tailer.
+  # Quoting both the request line and Referer with double quotes lets the
+  # parser tell field boundaries apart even when paths contain spaces.
+  # $bytes_sent and $request_length feed the status-UI rx/tx columns.
+  log_format dep_traffic '$remote_addr "$request_method $request_uri" '
+                         '$status $bytes_sent $request_length '
+                         '$request_time "$http_referer"';
+  # Two destinations, two formats:
+  #   - /dev/stderr (``combined`` format) → surfaces every HTTP request in
+  #     ``ha apps logs`` alongside the Python proxy's own log lines in the
+  #     standard nginx access-log format that HA's log viewer and external
+  #     log parsers expect.
+  #   - /dev/shm/dep-access.log (``dep_traffic`` format) → tmpfs file the
+  #     Python http_traffic tailer reads to populate the status-UI
+  #     HTTP-traffic pane. /dev/shm is wiped on container restart; between
+  #     restarts the tailer auto-truncates this file once it crosses
+  #     HTTP_ACCESS_LOG_MAX_BYTES (see const.py) so it never grows
+  #     unbounded.
+  access_log /dev/stderr combined;
+  access_log /dev/shm/dep-access.log dep_traffic;
+
+  # Per-source-IP concurrent-connection cap, enforced on the HTTP
+  # location only (WebSocket upgrades are exempted — a single dashboard
+  # tab can legitimately hold one long-lived WS plus several parallel
+  # HTTP asset requests). 10m of zone memory tracks ~160k addresses.
+  limit_conn_zone $binary_remote_addr zone=addr:10m;
+
+  # On-the-fly compression for upstream responses that arrive
+  # uncompressed. nginx checks ``Content-Encoding`` first and skips
+  # already-compressed responses, so this layers on top of HA's own
+  # brotli/gzip without re-encoding. The WebSocket location runs with
+  # ``proxy_buffering off`` for streaming; small bodies on either
+  # location fall under ``*_min_length`` and pass through uncompressed.
+  brotli on;
+  brotli_comp_level 4;
+  brotli_min_length 1024;
+  # application/wasm is deliberately omitted from all *_types — wasm
+  # payloads are typically already compressed at serve-time and
+  # re-encoding them just burns CPU per request.
+  brotli_types
+    application/javascript
+    application/json
+    application/xml
+    application/manifest+json
+    image/svg+xml
+    text/css
+    text/javascript
+    text/plain
+    text/xml;
+
+  zstd on;
+  zstd_comp_level 3;
+  zstd_min_length 1024;
+  zstd_types
+    application/javascript
+    application/json
+    application/xml
+    application/manifest+json
+    image/svg+xml
+    text/css
+    text/javascript
+    text/plain
+    text/xml;
+
+  gzip on;
+  gzip_comp_level 5;
+  gzip_min_length 1024;
+  gzip_vary on;
+  gzip_proxied any;
+  gzip_types
+    application/javascript
+    application/json
+    application/xml
+    application/manifest+json
+    image/svg+xml
+    text/css
+    text/javascript
+    text/plain
+    text/xml;
+
+  # WebSocket upgrade plumbing: set Connection: upgrade only for
+  # actual ``Upgrade: websocket`` requests, Connection: close
+  # otherwise. Standard nginx WebSocket pattern.
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+  }
+
+  # On the WS path, the Python proxy is downstream of nginx and only
+  # sees nginx's loopback IP (127.0.0.1) on the WS peer connection — it
+  # cannot tell which browser made the request. Pass the real client IP
+  # through dedicated headers ONLY on WS upgrades; the HTTP path keeps
+  # the existing transparent-vs-non-transparent behavior driven by the
+  # ``__XFWD_BLOCK__`` substitution (so HA's view doesn't change).
+  # nginx omits a header whose value resolves to an empty string, so on
+  # non-WS requests these directives are no-ops.
+  map $http_upgrade $dep_ws_real_ip {
+    default   "";
+    websocket $remote_addr;
+  }
+  map $http_upgrade $dep_ws_xff {
+    default   "";
+    websocket $proxy_add_x_forwarded_for;
+  }
+
+  # Backend selector: WebSocket upgrades go to the Python proxy
+  # (intercept /api/websocket + tunnel-with-tracking for everything
+  # else); plain HTTP goes direct to HA.
+  map $http_upgrade $dep_backend {
+    default   ha_backend;
+    websocket proxy_backend;
+  }
+
+  # Host header for the upstream. The Python proxy is hop-by-hop tolerant
+  # (strips Host on relay), but HA rejects requests whose Host doesn't
+  # resolve to itself — without this override HA returns 400 for every
+  # asset request when ha_backend != $host.
+  map $http_upgrade $dep_host {
+    default   "__HA_HOST__:__HA_PORT__";
+    websocket $host;
+  }
+
+  upstream proxy_backend {
+    server 127.0.0.1:8125;
+    keepalive 32;
+  }
+  upstream ha_backend {
+    server __HA_HOST__:__HA_PORT__;
+    keepalive 32;
+  }
+
+  server {
+    listen 8126 default_server;
+    listen [::]:8126 default_server;
+
+    # WebSocket endpoint — kept on long timeouts with buffering off so
+    # the upgrade survives 24h idle (HA ingress default) and frames
+    # stream chunk-by-chunk. The dispatch map still chooses the actual
+    # backend based on $http_upgrade.
+    location /api/websocket {
+      proxy_pass http://$dep_backend;
+      proxy_http_version 1.1;
+
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+
+      proxy_set_header Host $dep_host;
+      # Real client IP on the WS path so the Python proxy's status-UI
+      # shows the browser's IP instead of nginx's loopback. Empty on
+      # non-WS requests (map default) so the header is omitted there.
+      proxy_set_header X-Real-IP $dep_ws_real_ip;
+      proxy_set_header X-Forwarded-For $dep_ws_xff;
+__XFWD_BLOCK__
+
+      proxy_buffering off;
+      proxy_read_timeout 86400s;
+      proxy_send_timeout 86400s;
+      proxy_connect_timeout 10s;
+    }
+
+    # All other (plain HTTP) traffic — normal buffered semantics, a
+    # 60s read timeout so slow-loris clients can't pin a worker for
+    # 24h, and a per-source-IP concurrent-connection cap.
+    location / {
+      limit_conn addr 50;
+
+      proxy_pass http://$dep_backend;
+      proxy_http_version 1.1;
+
+      # WebSocket upgrade headers stay set as a no-op for plain HTTP;
+      # they cost nothing and keep behaviour correct for the rare case
+      # of a non-/api/websocket upgrade landing here.
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+
+      # Pass identity through. For the proxy_backend path, the Python
+      # proxy decides what to forward to HA per its ``transparent``
+      # option. For the ha_backend path, X-Forwarded-* handling is
+      # generated by the init script — when ``transparent: true`` the
+      # block below is empty so HA sees the request as if it came from
+      # nginx directly (matching pre-split behaviour for HTTP).
+      proxy_set_header Host $dep_host;
+      # Real client IP on the WS path so the Python proxy's status-UI
+      # shows the browser's IP instead of nginx's loopback. Empty on
+      # non-WS requests (map default) so the header is omitted there.
+      proxy_set_header X-Real-IP $dep_ws_real_ip;
+      proxy_set_header X-Forwarded-For $dep_ws_xff;
+__XFWD_BLOCK__
+
+      proxy_buffering on;
+      proxy_read_timeout 60s;
+      proxy_send_timeout 60s;
+      proxy_connect_timeout 10s;
+    }
+  }
+}

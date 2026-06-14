@@ -81,8 +81,13 @@ jobs:
       - run: ffmpeg -version && ffprobe -version
       # Collect coverage here too (no --no-cov): these are the only tests that
       # exercise the real ffmpeg/ffprobe code paths, so they meaningfully add
-      # to the combined total reported by the `coverage` job.
-      - run: uv run pytest tests/ -m integration -v --junit-xml=junit.xml
+      # to the combined total reported by the `coverage` job. The HA-docker
+      # integration tests live in tests/integration/ and run in a separate
+      # job that brings up docker + Chrome — they're excluded here so this
+      # job stays narrow.
+      - run:
+          uv run pytest tests/ -m integration -v --ignore=tests/integration
+          --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
         with:
@@ -98,10 +103,104 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  integration-tests-ha:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Mirror the two pins in tests/integration/conftest.py. Renovate
+      # tracks each via the comments so a bump opens a PR on both
+      # workflow and conftest together.
+      # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
+      HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.6.2"
+      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
+      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: integration-tests-ha
+      # Cache the HA image (~1.5 GB) so we don't re-pull every run.
+      # Saved to a tarball so actions/cache can store and restore it;
+      # the cache key includes the image tag so a Renovate bump
+      # busts the cache automatically.
+      - name: Cache HA image
+        id: ha-image-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/ha-image.tar
+          key: ha-image-${{ env.HA_IMAGE }}
+      - name: Pull HA image (cache miss)
+        if: steps.ha-image-cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull "$HA_IMAGE"
+          docker save "$HA_IMAGE" > ~/ha-image.tar
+      - name: Load HA image (cache hit)
+        if: steps.ha-image-cache.outputs.cache-hit == 'true'
+        run: docker load < ~/ha-image.tar
+      # Cache the addon's BUILD_FROM base image (~50-150 MB). The
+      # integration suite's ``addon_image`` fixture runs
+      # ``docker buildx build`` against the local source tree; pulling
+      # this base on every job adds tens of seconds of network latency.
+      - name: Cache addon base image
+        id: addon-base-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/addon-base.tar
+          key: addon-base-${{ env.ADDON_BASE_IMAGE }}
+      - name: Pull addon base image (cache miss)
+        if: steps.addon-base-cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull "$ADDON_BASE_IMAGE"
+          docker save "$ADDON_BASE_IMAGE" > ~/addon-base.tar
+      - name: Load addon base image (cache hit)
+        if: steps.addon-base-cache.outputs.cache-hit == 'true'
+        run: docker load < ~/addon-base.tar
+      # Pre-build the addon image with a GHA-backed buildkit cache so
+      # the apk-install layer (~10-30 s of Alpine repo traffic) is
+      # reused across CI runs. ``DEP_PROXY_IMAGE`` tells conftest's
+      # ``addon_image`` fixture to use this prebuilt tag instead of
+      # invoking its own ``docker buildx build``.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard_entity_proxy
+          load: true
+          tags: dep_int_test:ci
+          build-args: |
+            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
+            BUILD_VERSION=int-test
+          cache-from: type=gha,scope=dep-int
+          cache-to: type=gha,scope=dep-int,mode=max
+      # Selenium auto-downloads the matching driver; we just need
+      # ``google-chrome`` on PATH (already preinstalled on
+      # ubuntu-24.04 runner images).
+      - name: Verify Chrome present
+        run: google-chrome --version
+      - run:
+          uv run pytest tests/integration/ -m integration -v
+          --junit-xml=junit.xml
+        env:
+          DEP_PROXY_IMAGE: dep_int_test:ci
+      - uses: EnricoMi/publish-unit-test-result-action@v2
+        if: ${{ !cancelled() }}
+        with:
+          check_name: "HA integration test results"
+          files: junit.xml
+      - run: mv .coverage .coverage.integration_ha
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-integration-ha
+          path: .coverage.integration_ha
+          include-hidden-files: true
+          if-no-files-found: error
+
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [tests, integration-tests]
+    needs: [tests, integration-tests, integration-tests-ha]
     # Report whatever coverage was produced even if a test job failed; the
     # failing job already reds the build.
     if: ${{ !cancelled() }}

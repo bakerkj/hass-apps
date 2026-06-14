@@ -15,11 +15,21 @@ dev = [
     "pytest-cov>=6.1.1",
     "types-paho-mqtt>=1.6.0",
     "types-PyYAML>=6.0",
+    "aiohttp>=3.13.5",
+    "pytest-asyncio>=1.4.0",
+    "humanfriendly>=10.0",
+    "voluptuous==0.15.2",
+    # Integration tests: drive a real headless Chrome through the proxy +
+    # a HA docker container. Required only when running ``tests/integration``.
+    "selenium>=4.0",
+    "websockets>=12.0",
+    "pyjwt>=2.0",
 ]
 
 [tool.mypy]
 mypy_path = [
     "container_info_mqtt",
+    "dashboard_entity_proxy",
     "ffmpeg_snapshotter",
     "frigate_compressor",
     "haos_configurator",
@@ -31,22 +41,31 @@ mypy_path = [
 check_untyped_defs = true
 warn_unused_ignores = true
 
+# humanfriendly ships without a py.typed marker; treat it as untyped
+# rather than failing the type check.
+[[tool.mypy.overrides]]
+module = "humanfriendly"
+ignore_missing_imports = true
+
 
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 pythonpath = [
     "container_info_mqtt",
+    "dashboard_entity_proxy",
     "ffmpeg_snapshotter",
     "frigate_compressor",
     "haos_configurator",
     "intel_gpu_top_mqtt",
     "system_resource_tuner",
+    "tests",
     "turbostat_mqtt",
 ]
 # No --cov-fail-under here: the unit and integration jobs each collect only
 # part of the picture (integration exercises the real ffmpeg/ffprobe paths).
 # The threshold is enforced once on the combined total in the `coverage` CI job.
-addopts = "--cov=container_info_mqtt --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt"
+addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
     "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
 ]

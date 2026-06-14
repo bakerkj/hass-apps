@@ -27,6 +27,6 @@ jobs:
             mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
             mypy-${{ runner.os }}-
       - run:
-          uv run mypy container_info_mqtt ffmpeg_snapshotter frigate_compressor
-          haos_configurator intel_gpu_top_mqtt system_resource_tuner
-          turbostat_mqtt
+          uv run mypy container_info_mqtt dashboard_entity_proxy
+          ffmpeg_snapshotter frigate_compressor haos_configurator
+          intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt

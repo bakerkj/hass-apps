@@ -1,0 +1,298 @@
+# Example customization file for the Dashboard Entity Proxy.
+#
+# Copy this to ``/config/dashboard_entity_proxy.yaml`` (or any other path
+# inside the HA ``/config`` volume) and point the add-on at it via the
+# ``customization_file`` option.
+#
+# Every section is OPTIONAL and ADDITIVE: values listed here extend the
+# add-on's built-in scope knowledge. You never need to repeat shipped
+# defaults.
+#
+# Behaviour:
+#   - The ``customization_file`` option pointing at a missing path is a
+#     FATAL config error (typos are caught loudly instead of silently
+#     ignored).
+#   - An empty file or one containing only ``version: 1`` is valid and
+#     means "use only built-in defaults".
+#   - Unknown top-level keys, unknown sub-keys, or wrong value types are
+#     fatal; the error message points at the offending location.
+
+# --------------------------------------------------------------------
+# Schema version
+# --------------------------------------------------------------------
+# Required. Only version 1 is currently supported. Bumped when the
+# file format changes in a non-backward-compatible way.
+version: 1
+
+# --------------------------------------------------------------------
+# baseline.entities
+# --------------------------------------------------------------------
+# Entity ids that must appear in EVERY scope: every dashboard, every
+# settings page, every domain page. The built-in baseline
+# (``FRONTEND_BASELINE`` in ``const.py``) already includes
+# ``zone.home`` and ``sun.sun``. HA's auto-strategy dashboards assume
+# ``zone.home`` exists, and weather-themed cards
+# (``weather-chart-card``, ``clock-weather-card``) hardcode ``sun.sun``
+# while the HA frontend reads it via ``hass.states`` at render time.
+# Use this section for additional entities your dashboards or popups
+# rely on but that don't appear in any card's YAML.
+#
+# Subject to the user-level ``exclude_entity_globs`` add-on option: an
+# explicit ``exclude_entity_globs: ["zone.*"]`` would drop both
+# ``zone.home`` and anything ``zone.*`` you add here.
+#
+# Scope: GLOBAL. For an entity that's only needed by one dashboard or
+# card, prefer ``cards.<type>.implicit_entities`` below (or the
+# ``extra_entities`` add-on option if it's referenced by a template).
+baseline:
+  entities: []
+    # Examples (uncomment and adapt):
+    #
+    # - zone.work
+    #     # Frontend-only reference, no card YAML names it.
+    # - sensor.proxy_status_indicator
+    #     # Read by a browser_mod popup that has no card YAML.
+
+# --------------------------------------------------------------------
+# cards
+# --------------------------------------------------------------------
+# Per-card-type overrides. Each top-level key under ``cards:`` is a
+# card ``type:`` value VERBATIM, including the ``custom:`` prefix for
+# HACS cards.
+#
+# Two kinds of overrides are recognised per card:
+#
+#   implicit_entities
+#     Entity ids the card's renderer subscribes to at runtime even
+#     though they don't appear anywhere in the card's YAML. The
+#     walker can't see them, so without this entry the proxy will
+#     filter them out and the card won't update.
+#
+#   entity_keys
+#     Tells the proxy that this card type uses certain dict keys to
+#     hold entity references, beyond the built-in keys the walker
+#     already recognises (``entity``, ``entities``, ``target``,
+#     ``data.entity_id``, …).
+#
+#     Two sub-lists, ``singles`` and ``lists``. The walker treats
+#     them differently. To choose, look at how the card's YAML uses
+#     the key and match against the three patterns below.
+#
+#     ─── Pattern 1 ─────────────────────────────────────── singles
+#     The value is a single entity id (or a flat list of ids).
+#
+#       What the card's YAML looks like:
+#           type: custom:my-thermostat-card
+#           heat_entity: climate.living_room
+#           cool_entity: climate.bedroom
+#           related_lights:
+#             - light.lamp_a
+#             - light.lamp_b
+#
+#       Your customization entry:
+#           "custom:my-thermostat-card":
+#             entity_keys:
+#               singles:
+#                 - heat_entity
+#                 - cool_entity
+#                 - related_lights
+#
+#     ─── Pattern 2 ─────────────────────────────────────── singles
+#     The value is a dict, and each sub-key holds one entity id
+#     (the "split-entity" shape used by power-flow-style cards).
+#
+#       What the card's YAML looks like:
+#           type: custom:power-flow-card-plus
+#           entity:
+#             battery: sensor.battery_power
+#             grid:    sensor.grid_power
+#             solar:   sensor.solar_power
+#
+#       Your customization entry:
+#           "custom:power-flow-card-plus":
+#             entity_keys:
+#               singles:
+#                 - battery
+#                 - grid
+#                 - solar
+#
+#     ─── Pattern 3 ───────────────────────────────────────── lists
+#     The value is a list where each item is a small block
+#     containing an ``entity:`` line (often with ``name:``,
+#     ``icon:``, …).
+#
+#       Card YAML:
+#           type: custom:my-entity-row-card
+#           rows:
+#             - entity: sensor.temperature
+#               name:   Outside temp
+#               icon:   mdi:thermometer
+#             - entity: sensor.humidity
+#               name:   Humidity
+#
+#       Customization entry:
+#           "custom:my-entity-row-card":
+#             entity_keys:
+#               lists:
+#                 - rows
+#
+#     ─── Pattern 4 ─────────────────────────────── lists + singles
+#     Pattern 3 + the entity id inside each block lives under a key
+#     name the walker doesn't auto-recognise.
+#
+#     The walker already understands these inner key names without
+#     any customization: ``entity``, ``entity_id``, ``camera_image``,
+#     ``camera_view``, ``image_entity``, ``person_entity``, plus any
+#     key ending in ``_entity`` / ``_sensor`` or starting with
+#     ``sensor_``. If your card's inner key is one of those, just
+#     use Pattern 3.
+#
+#     If the inner key is something else (like ``target_id``,
+#     ``bound_to``, ``subject``), declare that inner key name under
+#     ``singles`` for the same card. The walker will then recognise
+#     it inside each list item.
+#
+#       Card YAML:
+#           type: custom:my-targets-card
+#           targets:
+#             - target_id: light.lamp_a
+#               weight:    0.5
+#             - target_id: light.lamp_b
+#               weight:    1.0
+#
+#       Customization entry:
+#           "custom:my-targets-card":
+#             entity_keys:
+#               lists:
+#                 - targets
+#               singles:
+#                 - target_id
+#
+#     A given key name may appear in ``singles`` OR ``lists``, never
+#     both (loader raises on overlap). All shipped defaults in
+#     ``builtin_cards.yaml`` use ``singles``; Patterns 3 and 4 are
+#     uncommon outside entity-row-style cards.
+#
+#     ─── Glob patterns ──────────────────────────────────
+#     An entry containing ``*``, ``?``, or ``[abc]`` is treated as an
+#     anchored fnmatch pattern instead of a literal key name. Useful for
+#     cards with numbered or dynamic slot keys:
+#
+#         "custom:numbered-slots-card":
+#           entity_keys:
+#             singles:
+#               - "slot_*"          # matches slot_alpha, slot_1, ...
+#               - "entity_?"        # matches entity_1, entity_a (one char)
+#               - "[abc]_entity"    # matches a_entity, b_entity, c_entity
+#
+#     Plain key names without metacharacters are still O(1) exact-match
+#     lookups; the pattern path runs only when the literal lookup misses.
+
+# Scope: each override applies INSIDE the card's own YAML subtree only.
+# It does NOT inherit to a nested child card with its own ``type:``.
+#
+# Shipped defaults: the add-on already includes per-card defaults for
+# several popular HACS cards (``custom:power-flow-card``,
+# ``custom:power-flow-card-plus``, ``custom:energy-flow-card-plus``,
+# ``custom:light-entity-card``, ``custom:button-card``). Entries here
+# ADD TO those defaults; they never replace them, so you only ever
+# need to list YOUR additions.
+
+cards:
+  # --- Example A: card reads an entity its YAML never mentions ---
+  #
+  # ``custom:example-event-log-card`` doesn't reference its sensor in
+  # YAML; the renderer reads ``sensor.example_event_log`` at runtime.
+  # Without an ``implicit_entities`` entry the proxy would filter it
+  # out and the card would stay blank.
+  "custom:example-event-log-card":
+    implicit_entities:
+      - sensor.example_event_log
+
+  # --- Example B: extending the defaults shipped for a known card ---
+  #
+  # The add-on already ships defaults for
+  # ``custom:power-flow-card-plus`` (the standard sub-keys
+  # ``battery``, ``grid``, ``solar``, etc., under ``entity:``). If a
+  # forked version adds another sub-key (say, ``ev_charger:`` with a
+  # single entity id under it), declare just that extra one here. The
+  # shipped sub-keys stay active.
+  #
+  # "custom:power-flow-card-plus":
+  #   entity_keys:
+  #     singles:
+  #       - ev_charger
+
+  # --- Example C: combining implicit_entities with entity_keys ---
+  #
+  # A card that both (a) reads a status sensor not named in its YAML,
+  # AND (b) uses a non-standard ``rows:`` key whose items are blocks
+  # containing ``entity:`` (the Pattern 3 shape above).
+  #
+  # "custom:my-multistat-card":
+  #   implicit_entities:
+  #     - sensor.multistat_status
+  #   entity_keys:
+  #     lists:
+  #       - rows
+
+# --------------------------------------------------------------------
+# helpers.extra_platforms
+# --------------------------------------------------------------------
+# Integration domains whose entities should be included when a client
+# opens the ``/config/helpers`` settings page. Add a domain here if
+# you've installed an integration (HACS or custom) that ships
+# helper-style entities; without it, those entities won't appear on
+# the Helpers page.
+#
+# Why is this section specific to the Helpers page?
+#
+# The proxy filters every page — it only sends each client the
+# entities relevant to whatever page they're on. For most settings
+# pages, HA's entity registry already tells the proxy which entities
+# belong where:
+#
+#   Devices page       → registry links each entity to its device
+#   Integrations page  → registry links each entity to its integration
+#   Areas page         → registry links each entity to its area
+#
+# So those pages get scoped automatically with no customization.
+#
+# The Helpers page is different because "is this a helper?" is not
+# stored anywhere in HA's database. It's a UI category, not a data
+# attribute. HA decides what to show on ``/config/helpers`` by
+# looking at each entity's integration DOMAIN: if it comes from
+# ``input_boolean``, ``input_number``, ``schedule``, ``template``,
+# etc., HA treats it as a helper. The proxy needs to know that same
+# list.
+#
+# Built-in helper platforms the proxy already recognises (don't
+# repeat these):
+#
+#   input_boolean, input_button, input_number, input_select,
+#   input_text, input_datetime, counter, timer, schedule,
+#   template, group, derivative, threshold, min_max, utility_meter,
+#   trend, history_stats, integration, statistics, tod, random,
+#   switch_as_x, generic_thermostat, generic_hygrostat,
+#   mold_indicator, filter, bayesian
+#
+# If you've installed something like the ``variable`` HACS
+# integration that ships helper-style entities, the proxy doesn't
+# know ``variable.*`` is a helper domain by default. List it here
+# and those entities show up when a client opens the Helpers page.
+#
+# This section only affects the Helpers page. To always include a
+# specific helper entity in EVERY scope (not just /config/helpers),
+# use ``baseline.entities`` above. To include a helper entity that
+# a card references directly, the regular card walker handles it
+# automatically.
+
+helpers:
+  extra_platforms: []
+    # Examples (uncomment and adapt):
+    #
+    # - variable
+    #     # rogro82/hass-variables or similar HACS variable integration.
+    # - my_custom_helper_integration
+    #     # A bespoke integration whose entities should show up on
+    #     # /config/helpers alongside the built-in helpers.
