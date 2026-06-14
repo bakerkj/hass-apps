@@ -552,13 +552,20 @@ class Session:
                     self._client_queue_high_water = depth
             return
         except asyncio.QueueFull:
-            self._log.warning(
-                "outbound queue full (depth=%d/%d, high_water=%d); "
-                "disconnecting slow peer",
-                queue.qsize(),
-                OUTBOUND_BUFFER,
-                self._client_queue_high_water,
-            )
+            if queue is self._to_client:
+                self._log.warning(
+                    "outbound to-client queue full (depth=%d/%d, "
+                    "high_water=%d); disconnecting slow peer",
+                    queue.qsize(),
+                    OUTBOUND_BUFFER,
+                    self._client_queue_high_water,
+                )
+            else:
+                self._log.warning(
+                    "outbound to-HA queue full (depth=%d/%d); disconnecting",
+                    queue.qsize(),
+                    OUTBOUND_BUFFER,
+                )
             self._cleanup()
 
     # --- id allocation -----------------------------------------------------
