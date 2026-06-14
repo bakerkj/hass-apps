@@ -12,9 +12,9 @@ the current view.
 
 from __future__ import annotations
 
-import time
-
 import pytest
+
+from _wait import wait_until
 
 INTEGRATION = pytest.mark.integration
 
@@ -79,15 +79,19 @@ def test_navigation_narrows_then_renarrows(browser, ha_ws):
     _create_dashboard(ha_ws, "int-nav-b", ["input_boolean.int_test_b"])
 
     chrome = browser("/int-nav-a/0")
-    time.sleep(7)
-    s = _scope_probe(chrome)
-    assert s["a"] and not s["b"], f"after A load, expected only a: {s}"
+    wait_until(
+        lambda: _scope_probe(chrome),
+        lambda s: s["a"] and not s["b"],
+        timeout=7,
+    )
 
     # Navigate to B without dropping the WS connection. ``location.href``
     # change drives HA's frontend through its router, which sends a new
     # ``lovelace/config`` for url_path=int-nav-b — the proxy must pick
     # that up and renarrow scope.
     chrome.execute_script("location.href = '/int-nav-b/0';")
-    time.sleep(7)
-    s = _scope_probe(chrome)
-    assert s["b"] and not s["a"], f"after navigating A→B, expected only b: {s}"
+    wait_until(
+        lambda: _scope_probe(chrome),
+        lambda s: s["b"] and not s["a"],
+        timeout=7,
+    )
