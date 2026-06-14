@@ -48,7 +48,7 @@ jobs:
 
           changed=$(git diff --name-only "$base" HEAD)
           echo "changed files:"
-          echo "$changed" | sed 's/^/  /'
+          echo "$changed" | awk '{print "  " $0}'
 
           # If the workflow file itself changed, scope is "everything" --
           # workflow changes can affect any addon's build, so we re-verify
