@@ -87,13 +87,15 @@ def test_implicit_entities_from_customization_reach_browser(
         )
 
     # 1) Without customization: the explicit entity arrives in scope but
-    #    the implicit one does NOT. Wait for the explicit entity, then
-    #    snapshot to assert the implicit absence.
+    #    the implicit one does NOT. Predicate must wait for BOTH the
+    #    initial-snapshot widen to narrow AND has_a to be present —
+    #    otherwise the wait exits during the widen window when both
+    #    has_a and has_c are True, and the assert below fires spuriously.
     plain_proxy = proxy_factory()
     chrome = browser(f"{plain_proxy}/{dashboard_url}/0")
     plain_state = wait_until(
         lambda: _probe(chrome),
-        lambda s: s["has_a"],
+        lambda s: s["has_a"] and not s["has_c"],
         timeout=8,
     )
     assert not plain_state["has_c"], (
