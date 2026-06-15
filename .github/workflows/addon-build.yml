@@ -153,7 +153,9 @@ jobs:
   build:
     name: Build ${{ matrix.addon }} (${{ matrix.arch }})
     needs: discover
-    if: needs.discover.outputs.mode != 'skip'
+    if:
+      needs.discover.outputs.mode != 'skip' && needs.discover.outputs.matrix !=
+      '{"include":[]}'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # Only the build job pushes to ghcr.io (on release mode); discover
