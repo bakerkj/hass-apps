@@ -214,7 +214,18 @@ def load(path: str) -> Customization:
     ``ValueError`` with a message that includes the offending path.
     """
     with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        try:
+            raw = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            # Malformed YAML (bad indentation, duplicate keys, unclosed
+            # brackets, etc.) raises a direct ``Exception`` subclass that
+            # neither ``OSError`` nor ``ValueError`` catches. Re-raise as
+            # ``ValueError`` so callers can handle "this file is broken"
+            # uniformly with the schema-validation branch below. The
+            # original exception's diagnostic is preserved via __cause__
+            # but not formatted into the message string (yaml parser
+            # output can echo file fragments into the Supervisor log).
+            raise ValueError(f"{path}: YAML parse error") from exc
     if raw is None:
         return Customization()
     if not isinstance(raw, dict):
