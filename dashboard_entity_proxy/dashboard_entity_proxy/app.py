@@ -75,20 +75,35 @@ def main() -> int:
     if cfg.customization_file:
         try:
             cust = customization.load(cfg.customization_file)
+        except FileNotFoundError:
+            # A missing file is a soft error: the addon ships with a
+            # default ``customization_file`` path so fresh installs that
+            # never created the YAML still get a working proxy. Log and
+            # carry on with the empty Customization (no customization
+            # applied) rather than refusing to start.
+            log.error(
+                "customization file %s does not exist; continuing with no "
+                "customization applied",
+                cfg.customization_file,
+            )
         except (OSError, ValueError) as exc:
+            # Any other failure (permission denied, parse error, schema
+            # violation) is still fatal — those indicate user-set values
+            # that should be fixed before the addon runs.
             log.error(
                 "failed to load customization from %s: %s",
                 cfg.customization_file,
                 exc,
             )
             return 1
-        log.info(
-            "loaded customization from %s: %d baseline, %d card(s), %d helper(s)",
-            cfg.customization_file,
-            len(cust.baseline_entities),
-            len(cust.implicit_entities),
-            len(cust.extra_helper_platforms),
-        )
+        else:
+            log.info(
+                "loaded customization from %s: %d baseline, %d card(s), %d helper(s)",
+                cfg.customization_file,
+                len(cust.baseline_entities),
+                len(cust.implicit_entities),
+                len(cust.extra_helper_platforms),
+            )
 
     try:
         asyncio.run(_serve(cfg, cust, log))

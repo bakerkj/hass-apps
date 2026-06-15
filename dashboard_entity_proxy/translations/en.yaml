@@ -48,11 +48,13 @@ configuration:
   customization_file:
     name: Customization file
     description: >-
-      Optional path (inside the HA /config volume) to a YAML file extending the
-      proxy's built-in scope knowledge with site-specific baseline entities,
-      per-card implicit-entity registries, per-card entity-key overrides, and
-      extra helper-integration platforms. Leave blank to use the shipped
-      defaults only.
+      Path (inside an HA-exposed volume such as /config) to a YAML file
+      extending the proxy's built-in scope knowledge with site-specific baseline
+      entities, per-card implicit-entity registries, per-card entity-key
+      overrides, and extra helper-integration platforms. Defaults to
+      /config/dashboard_entity_proxy.yaml; if that file does not exist the addon
+      starts with no customization applied (a log message notes the missing
+      file). Leave blank to disable entirely.
   show_client_paths:
     name: Show client paths in status UI
     description: >-
