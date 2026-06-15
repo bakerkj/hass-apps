@@ -178,6 +178,21 @@ def test_missing_version_is_error(tmp_path: Path) -> None:
         load(path)
 
 
+def test_malformed_yaml_raises_value_error(tmp_path: Path) -> None:
+    """``yaml.YAMLError`` (bad indentation, duplicate keys, unclosed
+    brackets) is a direct ``Exception`` subclass — it does NOT inherit
+    from ``OSError`` or ``ValueError``. ``load()`` must wrap it as
+    ``ValueError`` so the app-level error handler's
+    ``except (OSError, ValueError)`` arm catches it uniformly instead
+    of letting the bare exception escape as an unhandled traceback.
+    """
+    # Unclosed bracket → yaml.scanner.ScannerError (subclass of
+    # yaml.YAMLError) — escapes safe_load if not handled.
+    path = _write(tmp_path, "version: 1\nbaseline:\n  entities: [zone.home, sun.sun\n")
+    with pytest.raises(ValueError, match="YAML parse error"):
+        load(path)
+
+
 def test_unsupported_version_is_error(tmp_path: Path) -> None:
     path = _write(tmp_path, "version: 99\n")
     with pytest.raises(ValueError, match="validation failed"):

@@ -34,7 +34,7 @@
     "exclude_entity_globs": [],
     "passthrough_all": false,
     "log_level": "INFO",
-    "customization_file": "",
+    "customization_file": "/config/dashboard_entity_proxy.yaml",
     "show_client_paths": true,
     "registry_mode": "incremental",
     "registry_refetch_interval": 60,

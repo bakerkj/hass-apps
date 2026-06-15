@@ -1,17 +1,18 @@
 # Example customization file for the Dashboard Entity Proxy.
 #
-# Copy this to ``/config/dashboard_entity_proxy.yaml`` (or any other path
-# inside the HA ``/config`` volume) and point the add-on at it via the
-# ``customization_file`` option.
+# Copy this to ``/config/dashboard_entity_proxy.yaml`` — the default
+# ``customization_file`` path — or to any other path inside an HA-exposed
+# volume, then set the ``customization_file`` option to that path.
 #
 # Every section is OPTIONAL and ADDITIVE: values listed here extend the
 # add-on's built-in scope knowledge. You never need to repeat shipped
 # defaults.
 #
 # Behaviour:
-#   - The ``customization_file`` option pointing at a missing path is a
-#     FATAL config error (typos are caught loudly instead of silently
-#     ignored).
+#   - If the configured ``customization_file`` path does not exist, the
+#     add-on starts with only built-in defaults applied and logs an
+#     error line naming the missing path. This makes the default path
+#     safe even on fresh installs that haven't created the file yet.
 #   - An empty file or one containing only ``version: 1`` is valid and
 #     means "use only built-in defaults".
 #   - Unknown top-level keys, unknown sub-keys, or wrong value types are

@@ -214,7 +214,12 @@ def load(path: str) -> Customization:
     ``ValueError`` with a message that includes the offending path.
     """
     with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        try:
+            raw = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            # YAMLError subclasses neither OSError nor ValueError; wrap
+            # so the app-level ``(OSError, ValueError)`` arm catches it.
+            raise ValueError(f"{path}: YAML parse error") from exc
     if raw is None:
         return Customization()
     if not isinstance(raw, dict):
