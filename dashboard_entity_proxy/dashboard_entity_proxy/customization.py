@@ -217,14 +217,8 @@ def load(path: str) -> Customization:
         try:
             raw = yaml.safe_load(f)
         except yaml.YAMLError as exc:
-            # Malformed YAML (bad indentation, duplicate keys, unclosed
-            # brackets, etc.) raises a direct ``Exception`` subclass that
-            # neither ``OSError`` nor ``ValueError`` catches. Re-raise as
-            # ``ValueError`` so callers can handle "this file is broken"
-            # uniformly with the schema-validation branch below. The
-            # original exception's diagnostic is preserved via __cause__
-            # but not formatted into the message string (yaml parser
-            # output can echo file fragments into the Supervisor log).
+            # YAMLError subclasses neither OSError nor ValueError; wrap
+            # so the app-level ``(OSError, ValueError)`` arm catches it.
             raise ValueError(f"{path}: YAML parse error") from exc
     if raw is None:
         return Customization()
