@@ -16,6 +16,8 @@ jobs:
       mode: ${{ steps.matrix.outputs.mode }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Build matrix
         id: matrix
@@ -24,8 +26,11 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          WORKFLOW_PATH: .github/workflows/addon-build.yml
         run: |
-          # Three modes drive a single matrix:
+          # Four modes drive a single matrix:
           #
           #   release : tag push shaped <addon>-v<X>.<Y>.<Z>
           #             → one addon × its arches, push=true, version=parsed
@@ -35,10 +40,16 @@ jobs:
           #                     → one addon × its arches, push=false, version=test
           #                     Branch shape is fixed at src/util/branch-name.ts:79
           #                     in googleapis/release-please; the diff on those
-          #                     branches is by construction one-addon-only, so
-          #                     building all 8 would be wasted work.
+          #                     branches is by construction one-addon-only.
           #
-          #   smoke-all : everything else (regular PR, push to main, etc.)
+          #   smoke-changed : regular PR / push — diff against the base commit and
+          #                   build only addons whose directories were touched.
+          #                   If the workflow file itself changed, fall through to
+          #                   smoke-all (workflow changes can affect any build).
+          #                   → changed addons × their arches, push=false
+          #
+          #   smoke-all : the workflow file changed (any branch) — build everything
+          #               as a safety net.
           #               → all addons × their arches, push=false, version=test
           #
           #   skip : tag push not matching the release tag shape — build job is no-op.
@@ -77,7 +88,28 @@ jobs:
                 echo "release-please component branch -> scoping to: $target_addon"
                 ;;
               *)
-                mode="smoke-all"
+                # Resolve the base commit to diff against, then decide
+                # smoke-changed vs smoke-all based on what touched.
+                if [ "$EVENT" = "pull_request" ]; then
+                  base="$PR_BASE_SHA"
+                elif [ -n "$PUSH_BEFORE_SHA" ] \
+                    && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+                    && git cat-file -e "$PUSH_BEFORE_SHA" 2>/dev/null; then
+                  base="$PUSH_BEFORE_SHA"
+                else
+                  base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+                fi
+                echo "base for diff: $base"
+                changed=$(git diff --name-only "$base" HEAD)
+                echo "changed files:"
+                echo "$changed" | awk '{print "  " $0}'
+
+                if echo "$changed" | grep -qx "$WORKFLOW_PATH"; then
+                  echo "workflow file changed -> smoke-all"
+                  mode="smoke-all"
+                else
+                  mode="smoke-changed"
+                fi
                 ;;
             esac
           fi
@@ -86,7 +118,13 @@ jobs:
           first=true
           for cfg in */config.json; do
             addon=$(dirname "$cfg")
+            # release / smoke-component: pin to target_addon.
             if [ -n "$target_addon" ] && [ "$addon" != "$target_addon" ]; then
+              continue
+            fi
+            # smoke-changed: include only addons whose dir was touched.
+            if [ "$mode" = "smoke-changed" ] \
+                && ! echo "$changed" | grep -q "^${addon}/"; then
               continue
             fi
             arches=$(python3 -c "import json; print(' '.join(json.load(open('$cfg'))['arch']))")
@@ -115,7 +153,9 @@ jobs:
   build:
     name: Build ${{ matrix.addon }} (${{ matrix.arch }})
     needs: discover
-    if: needs.discover.outputs.mode != 'skip'
+    if:
+      needs.discover.outputs.mode != 'skip' && needs.discover.outputs.matrix !=
+      '{"include":[]}'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # Only the build job pushes to ghcr.io (on release mode); discover
