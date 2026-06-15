@@ -13,25 +13,64 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      mode: ${{ steps.matrix.outputs.mode }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Build addon list
         id: matrix
         env:
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          WORKFLOW_PATH: .github/workflows/addon-lint.yml
         run: |
-          # See addon-build.yml for the same rationale. Branch name shape
-          # comes from src/util/branch-name.ts:79 in googleapis/release-please.
-          rp_prefix="release-please--branches--main--components--"
+          # Three modes:
+          #
+          #   scoped       PR on release-please component branch — lint only
+          #                the target addon (branch shape from src/util/
+          #                branch-name.ts:79 in googleapis/release-please).
+          #
+          #   lint-changed PR / push — diff against the base commit and lint
+          #                only addons whose directories were touched. If
+          #                the workflow file itself changed, fall through to
+          #                lint-all (linter config / matrix changes can
+          #                affect any addon's lint outcome).
+          #
+          #   lint-all     workflow file changed (safety net).
+          mode=""
           target_addon=""
+          rp_prefix="release-please--branches--main--components--"
           case "$HEAD_REF" in
             "$rp_prefix"*)
               target_addon="${HEAD_REF#"$rp_prefix"}"
-              echo "release-please component branch detected -> scoping to: $target_addon"
+              mode="scoped"
+              echo "release-please component branch -> scoping to: $target_addon"
               ;;
             *)
-              echo "non-release-please branch -> linting full matrix"
+              if [ "$EVENT" = "pull_request" ]; then
+                base="$PR_BASE_SHA"
+              elif [ -n "$PUSH_BEFORE_SHA" ] \
+                  && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+                  && git cat-file -e "$PUSH_BEFORE_SHA" 2>/dev/null; then
+                base="$PUSH_BEFORE_SHA"
+              else
+                base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+              fi
+              echo "base for diff: $base"
+              changed=$(git diff --name-only "$base" HEAD)
+              echo "changed files:"
+              echo "$changed" | awk '{print "  " $0}'
+
+              if echo "$changed" | grep -qx "$WORKFLOW_PATH"; then
+                echo "workflow file changed -> lint-all"
+                mode="lint-all"
+              else
+                mode="lint-changed"
+              fi
               ;;
           esac
 
@@ -42,6 +81,10 @@ jobs:
             if [ -n "$target_addon" ] && [ "$addon" != "$target_addon" ]; then
               continue
             fi
+            if [ "$mode" = "lint-changed" ] \
+                && ! echo "$changed" | grep -q "^${addon}/"; then
+              continue
+            fi
             if [ "$first" = true ]; then
               first=false
             else
@@ -50,12 +93,15 @@ jobs:
             matrix+="{\"addon\":\"$addon\"}"
           done
           matrix+=']}'
+          echo "mode: $mode"
           echo "matrix: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
   addon-linter:
     name: Lint ${{ matrix.addon }}
     needs: discover
+    if: needs.discover.outputs.matrix != '{"include":[]}'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
@@ -77,7 +123,11 @@ jobs:
     steps:
       - name: Check matrix results
         run: |
-          if [[ "${{ needs.addon-linter.result }}" != "success" ]]; then
-            echo "addon-linter matrix failed"
+          # ``skipped`` is a clean pass: lint-changed mode with no addon
+          # dirs touched produces an empty matrix and the matrix job is
+          # correctly skipped — there is nothing to lint.
+          result="${{ needs.addon-linter.result }}"
+          if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+            echo "addon-linter matrix failed: $result"
             exit 1
           fi
