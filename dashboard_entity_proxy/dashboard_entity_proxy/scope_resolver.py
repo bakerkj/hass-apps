@@ -387,7 +387,9 @@ class ScopeResolver:
         self._dashboard_cache.set(url_path, entry)
         self.resolve_current_view()
 
-    def scope_from_config(self, msg: dict[str, Any]) -> ScopeSet | None:
+    def scope_from_config(
+        self, msg: dict[str, Any], url_path: str = ""
+    ) -> ScopeSet | None:
         """Build a ``ScopeSet`` from a ``lovelace/config`` response.
 
         Returns ``None`` when the response is a permission denial; the
@@ -397,18 +399,28 @@ class ScopeResolver:
         and not-found / parse-failed dashboards all fall back to "all
         entities", since an empty scope would leave the frontend with
         no state.
+
+        ``url_path`` is included in fallback / failure warnings so an
+        operator can tell which dashboard widened scope to "all
+        entities" — the empty string renders as ``''`` (default
+        dashboard) in the log line.
         """
+        path_repr = repr(url_path)
         if not msg.get("success"):
             err = msg.get("error") or {}
             code = err.get("code") if isinstance(err, dict) else None
             code_str = code if isinstance(code, str) else ""
             if code_str in _CONFIG_DENY_CODES:
                 self._log.warning(
-                    "lovelace/config denied (code=%r): keeping scope", code_str
+                    "lovelace/config denied for %s (code=%r): keeping scope",
+                    path_repr,
+                    code_str,
                 )
                 return None
             self._log.warning(
-                "lovelace/config failed (code=%r); serving all entities", code_str
+                "lovelace/config failed for %s (code=%r); serving all entities",
+                path_repr,
+                code_str,
             )
             return ScopeSet(all=True)
         result = msg.get("result")
@@ -419,7 +431,8 @@ class ScopeResolver:
         extract = dashboard.extract_scope(result, self._filters.customization)
         if extract.empty():
             self._log.warning(
-                "dashboard parser returned no entities; serving all entities"
+                "dashboard parser returned no entities for %s; serving all entities",
+                path_repr,
             )
             return ScopeSet(all=True)
         scoped = dashboard.apply_filters(
