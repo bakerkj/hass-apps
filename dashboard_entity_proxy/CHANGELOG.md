@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.0...dashboard_entity_proxy-v0.1.1) (2026-06-16)
+
+
+### Features
+
+* **dashboard_entity_proxy:** gate access logging on log_level=DEBUG ([#226](https://github.com/bakerkj/hass-apps/issues/226)) ([6b7aeeb](https://github.com/bakerkj/hass-apps/commit/6b7aeebc88354c1a1b98bb667a36ceb8827a4837))
+
+
+### Styles
+
+* **dashboard_entity_proxy:** emphasise hostname over IP in status UI ([#224](https://github.com/bakerkj/hass-apps/issues/224)) ([1cd630c](https://github.com/bakerkj/hass-apps/commit/1cd630c0e1a454939e091cbba4d48862340f992b))
+
 ## [0.1.0](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.0.3...dashboard_entity_proxy-v0.1.0) (2026-06-16)
 
 
