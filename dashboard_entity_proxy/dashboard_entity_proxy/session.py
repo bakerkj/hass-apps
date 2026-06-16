@@ -686,7 +686,7 @@ class Session:
             case ConfigFetch(url_path=url):
                 self._inflight_table.pop(mid)
                 self._scope.cache_and_reapply(
-                    url, mid, self._scope.scope_from_config(msg)
+                    url, mid, self._scope.scope_from_config(msg, url)
                 )
             case ClientReq(client_id=cid):
                 self._inflight_table.classify_inbound(
@@ -697,7 +697,7 @@ class Session:
                 self._forward_to_client(cid, msg)
                 self._inflight_table.pop(mid)
                 self._scope.cache_and_reapply(
-                    url, mid, self._scope.scope_from_config(msg)
+                    url, mid, self._scope.scope_from_config(msg, url)
                 )
             case ClientUnsubscribe(client_id=cid, ha_sub_id=sub_id):
                 self._forward_to_client(cid, msg)
@@ -1188,12 +1188,13 @@ class Session:
         connection metadata, the current view, current scope, queue depth,
         and throttle config.
 
-        Default shape (``detail="summary"``) carries ``scope_count`` and a
-        capped ``scope_sample`` (up to 50 ids) instead of the full
-        ``scope_entities`` list. On installs with thousands of entities and
-        multiple sessions polling every 2s the full list dominates the JSON
-        payload. Pass ``detail="full"`` for the legacy shape with the
-        complete ``scope_entities`` list.
+        ``scope_sample`` carries the full scoped entity list (every id
+        the session is currently serving), not a cap; on a normal install
+        that's a few-dozen entities per dashboard, and even on large
+        installs the marginal JSON cost stays small next to the rest of
+        the snapshot. ``detail="full"`` additionally emits the same list
+        under the legacy ``scope_entities`` key for clients that still
+        request it.
         """
         scope_all = self._scope.ready and self._scope.set is None
         ids = self._scope.ids if self._scope.ids is not None else []
@@ -1226,7 +1227,7 @@ class Session:
             **self._inflight_table.status(),
         }
         if not scope_all:
-            out["scope_sample"] = list(ids[:50])
+            out["scope_sample"] = list(ids)
         if detail == "full":
             out["scope_entities"] = list(ids)
         return out
