@@ -308,6 +308,20 @@ class Session:
         # opened. Lets the status UI attribute reconnect bursts to e.g.
         # ``render_template`` rather than guessing.
         self._opened_command_counts: dict[str, int] = {}
+        # ``(view-label, scope_all, scope_count)`` of the last scope state
+        # we logged at INFO. Skip re-logging identical transitions so a
+        # busy resolver loop doesn't fire a line per ``_mark_ready_and_apply``;
+        # navigation between dashboards changes the tuple and re-fires.
+        self._last_scope_logged: tuple[str, bool, int] | None = None
+
+    def _client_label(self) -> str:
+        """Return ``hostname (ip)`` when reverse DNS has resolved, else
+        bare ``ip``. Recomputed on every log site so a line emitted before
+        the lookup completes still prints the IP, and lines emitted after
+        pick up the hostname.
+        """
+        host = hostname_lookup.cached_hostname(self._remote)
+        return f"{host} ({self._remote})" if host else self._remote
 
     def _on_scope_ready(self) -> None:
         """Called by ScopeResolver after a scope becomes ready (or after
@@ -322,6 +336,25 @@ class Session:
         """
         if self._phase in (Phase.CONNECTING, Phase.STARTUP):
             self._phase = Phase.READY
+        # Log scope transitions at INFO so an operator can trace a
+        # session's lifetime without flipping log_level=DEBUG. Covers
+        # both the first-time settle ("scope ready: N entities on
+        # 'lighting-test'") and subsequent navigations between
+        # dashboards / views. Dedup on the (view, scope_all, count)
+        # tuple keeps a tight resolver loop from spamming.
+        view_label = self._nav.current_view.label()
+        scope_all = self._scope.set is None
+        scope_count = len(self._scope.ids or [])
+        state = (view_label, scope_all, scope_count)
+        if state != self._last_scope_logged:
+            self._last_scope_logged = state
+            scope_desc = "all entities" if scope_all else f"{scope_count} entities"
+            self._log.info(
+                "%s: scope ready: %s on %s",
+                self._client_label(),
+                scope_desc,
+                view_label,
+            )
         self._maybe_serve_pending()
 
     # --- lifecycle ---------------------------------------------------------
@@ -335,6 +368,11 @@ class Session:
         ``SessionRegistry`` so the status UI sees it, and de-registers + closes
         both sockets on exit.
         """
+        # Connection event. ``aiohttp.access`` only logs ``/api/websocket``
+        # at disconnect (response-end time), so without this line nothing
+        # at INFO marks the start of a session — a kiosk that hangs in
+        # ``CONNECTING`` would be silently missing from the log.
+        self._log.info("client connected from %s", self._client_label())
         if self._registry is not None:
             self._registry.add(self)
         writer_ha = asyncio.create_task(
@@ -381,6 +419,28 @@ class Session:
         try:
             await self._done.wait()
         finally:
+            duration = (datetime.now(timezone.utc) - self._connected_at).total_seconds()
+            # Snapshot which side closed first BEFORE the cleanup logic
+            # below explicitly closes both. ``ws_*.closed`` reflects the
+            # peer's actual disconnect at this point. If both are open
+            # the trigger was an internal ``_fatal``/``_cleanup`` call;
+            # report it as "proxy" so the cause isn't misattributed.
+            ha_closed = self.ws_ha.closed
+            client_closed = self.ws_client.closed
+            if ha_closed and not client_closed:
+                peer = "ha"
+            elif client_closed and not ha_closed:
+                peer = "client"
+            elif ha_closed and client_closed:
+                peer = "both"
+            else:
+                peer = "proxy"
+            self._log.info(
+                "client disconnected from %s after %.1fs (closed by: %s)",
+                self._client_label(),
+                duration,
+                peer,
+            )
             if self._registry is not None:
                 self._registry.remove(self)
             self._registry_store.cancel_debouncers()
