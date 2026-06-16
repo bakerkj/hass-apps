@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.0](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.0.3...dashboard_entity_proxy-v0.1.0) (2026-06-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **dashboard_entity_proxy:** anyone who created a customization file at the previous default ``/config/dashboard_entity_proxy.yaml`` needs to move it. From HA's own filesystem view nothing moves — only the path the addon option now defaults to changes — but the option must be updated if it was left at the old default.
+
+### Bug Fixes
+
+* **dashboard_entity_proxy:** migrate map from config to homeassistant_config ([#222](https://github.com/bakerkj/hass-apps/issues/222)) ([03dfbe3](https://github.com/bakerkj/hass-apps/commit/03dfbe3f2cc345e4b3ccbbe6d0a8a3d6cfc03108))
+
 ## [0.0.3](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.0.2...dashboard_entity_proxy-v0.0.3) (2026-06-16)
 
 
