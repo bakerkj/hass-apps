@@ -229,7 +229,12 @@ class Session:
             self._scope.resolve_current_view()
 
         self._nav = NavigationManager(
-            initial_view=View(ViewKind.DASHBOARD),
+            # Match the startup contract in ``_mark_session_ready``: the
+            # session starts in ``ViewKind.ALL`` and narrows once the
+            # client issues its own ``lovelace/config``. ``DASHBOARD`` here
+            # with an empty key would be a silent landmine if any future
+            # async yield landed between construction and ``_on_auth_ok``.
+            initial_view=View(ViewKind.ALL),
             log=self._log,
             dashboard_cache=self._dashboard_cache,
             inject_config_fetch=self._inject_config_fetch,
