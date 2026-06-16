@@ -116,16 +116,16 @@ def test_missing_file(tmp_path):
 @pytest.mark.parametrize(
     "customization_file",
     [
-        "/config/foo.yaml",
-        "/config/sub/dir/foo.yaml",
+        "/homeassistant/foo.yaml",
+        "/homeassistant/sub/dir/foo.yaml",
         "/share/foo.yaml",
     ],
 )
 def test_customization_file_allowed_prefixes(tmp_path, customization_file):
-    """Paths under the read-only Supervisor mounts (/config, /share) load
-    without complaint. The validator does not stat the file itself — the
-    YAML is opened later in app startup — so a non-existent name under an
-    allowed prefix still passes config validation.
+    """Paths under the read-only Supervisor mounts (/homeassistant, /share)
+    load without complaint. The validator does not stat the file itself —
+    the YAML is opened later in app startup — so a non-existent name under
+    an allowed prefix still passes config validation.
     """
     cfg = config.load(
         _write(tmp_path, json.dumps({"customization_file": customization_file}))
@@ -149,7 +149,10 @@ def test_customization_file_empty_string_accepted(tmp_path):
         "/ssl/privkey.pem",
         # ``..`` traversal must be normalised away before the prefix check;
         # this resolves to ``/etc/passwd`` and is rejected.
-        "/config/../etc/passwd",
+        "/homeassistant/../etc/passwd",
+        # The deprecated ``/config`` mount path is no longer in the
+        # allowed-prefix list after the switch to ``homeassistant_config``.
+        "/config/foo.yaml",
         # Relative paths — cwd at validation time is arbitrary, so anything
         # outside the allowed roots must be rejected on principle.
         "etc/passwd",
@@ -177,5 +180,7 @@ def test_customization_file_oserror_becomes_friendly_value_error(tmp_path, monke
     monkeypatch.setattr(Path, "resolve", _boom)
     with pytest.raises(ValueError, match="customization_file"):
         config.load(
-            _write(tmp_path, json.dumps({"customization_file": "/config/x.yaml"}))
+            _write(
+                tmp_path, json.dumps({"customization_file": "/homeassistant/x.yaml"})
+            )
         )

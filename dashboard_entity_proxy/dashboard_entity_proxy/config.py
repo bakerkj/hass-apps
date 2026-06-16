@@ -37,7 +37,7 @@ from .const import DEFAULT_HA_URL, ENTITY_RE
 # read arbitrary container paths (``/etc/passwd``, ``/data/options.json``,
 # mounted SSL keys). Paths are resolved before comparison so ``..`` and
 # symlink traversals are normalised away.
-_ALLOWED_CUSTOMIZATION_PREFIXES = (Path("/config"), Path("/share"))
+_ALLOWED_CUSTOMIZATION_PREFIXES = (Path("/homeassistant"), Path("/share"))
 
 DEFAULT_LOG_LEVEL = "INFO"
 VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -201,7 +201,7 @@ def _validate(cfg: Config) -> None:
 def _validate_customization_path(raw: str) -> None:
     """Reject ``customization_file`` values that escape the read-only
     Supervisor mounts. ``Path.resolve`` canonicalises symlinks and ``..``
-    segments so a traversal like ``/config/../etc/passwd`` collapses to
+    segments so a traversal like ``/homeassistant/../etc/passwd`` collapses to
     ``/etc/passwd`` before the prefix check. The error message names the
     allowed roots but does NOT echo the rejected path beyond a repr — the
     file contents themselves are never read here, so nothing privileged
