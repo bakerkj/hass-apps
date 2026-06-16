@@ -281,7 +281,6 @@ def _start_addon_container(target_url: str, image: str) -> tuple[str, str, list[
             {
                 "homeassistant_url": target_url,
                 "transparent": True,
-                "dashboard_url_path": "",
                 "state_update_interval": "",
                 "extra_entities": [],
                 "include_entity_globs": [],

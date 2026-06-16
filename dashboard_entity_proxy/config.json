@@ -27,7 +27,6 @@
   "options": {
     "homeassistant_url": "http://homeassistant:8123",
     "transparent": true,
-    "dashboard_url_path": "",
     "state_update_interval": "",
     "extra_entities": [],
     "include_entity_globs": [],
@@ -43,7 +42,6 @@
   "schema": {
     "homeassistant_url": "str",
     "transparent": "bool",
-    "dashboard_url_path": "str?",
     "state_update_interval": "str?",
     "extra_entities": [
       "str"

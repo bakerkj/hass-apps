@@ -188,7 +188,6 @@ class Session:
         hostname_lookup.prime(remote)
         self._log = log
         self._registry = opts.registry
-        self._dashboard_url_path = opts.dashboard_url_path
         self.throttle = opts.throttle
         self._filters = ScopeFilters(
             extra=opts.extra_entities,
@@ -1096,11 +1095,17 @@ class Session:
         # those entities rather than widening to all. A failed fetch is
         # not fatal; ``ScopeResolver._energy_scope`` falls back to ALL.
         self._send_ha_command(EnergyPrefs(), "energy/get_prefs")
-        self._nav.current_view = View(ViewKind.DASHBOARD, self._dashboard_url_path)
-        self._nav.current_path = (
-            f"/{self._dashboard_url_path}" if self._dashboard_url_path else ""
-        )
-        self._inject_config_fetch(self._dashboard_url_path)
+        # Initial view is ``ALL`` (= serve every entity) — every modern HA
+        # client issues its own ``lovelace/config`` for whichever dashboard
+        # it's landing on within the first few hundred milliseconds, and
+        # the ``ClientConfig`` dispatch then promotes us to a properly
+        # scoped DASHBOARD view. Pre-fetching here is worse than waiting:
+        # HA's ``lovelace/config`` with no ``url_path`` returns the empty
+        # original Overview (``lovelace.lovelace``) regardless of which
+        # dashboard the user has set as their UI default, and the parser
+        # would just widen back to ALL anyway.
+        self._nav.current_view = View(ViewKind.ALL)
+        self._nav.current_path = ""
 
     # --- serving -----------------------------------------------------------
 

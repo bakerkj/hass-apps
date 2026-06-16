@@ -98,11 +98,9 @@ def main() -> int:
     )
     log = logging.getLogger("dashboard_entity_proxy")
     log.info(
-        "dashboard-entity-proxy v%s starting; ha=%s dashboard=%r "
-        "throttle=%ss passthrough_all=%s",
+        "dashboard-entity-proxy v%s starting; ha=%s throttle=%ss passthrough_all=%s",
         __version__,
         cfg.homeassistant_url,
-        cfg.dashboard_url_path,
         cfg.state_update_interval,
         cfg.passthrough_all,
     )
@@ -166,7 +164,6 @@ async def _serve(
             target_url=cfg.homeassistant_url,
             transparent=cfg.transparent,
             passthrough_all=cfg.passthrough_all,
-            dashboard_url_path=cfg.dashboard_url_path,
             throttle=cfg.state_update_interval,
             extra_entities=cfg.extra_entities,
             include_globs=cfg.include_entity_globs,

@@ -62,7 +62,6 @@ class Config:
 
     homeassistant_url: str = DEFAULT_HA_URL
     transparent: bool = True
-    dashboard_url_path: str = ""
     # state_update_interval in seconds; 0 means "send updates immediately".
     state_update_interval: float = 0.0
     extra_entities: list[str] = field(default_factory=list)
@@ -95,7 +94,6 @@ def load(path: str) -> Config:
         cfg.homeassistant_url = str(opts["homeassistant_url"])
     if "transparent" in opts:
         cfg.transparent = bool(opts["transparent"])
-    cfg.dashboard_url_path = str(opts.get("dashboard_url_path") or "")
     cfg.extra_entities = [str(e) for e in (opts.get("extra_entities") or [])]
     cfg.include_entity_globs = [
         str(g) for g in (opts.get("include_entity_globs") or [])

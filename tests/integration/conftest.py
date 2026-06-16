@@ -390,7 +390,6 @@ def proxy_url(addon_image: str, ha: dict[str, str]) -> Iterator[str]:
             {
                 "homeassistant_url": f"http://127.0.0.1:{ha_parts.port}",
                 "transparent": True,
-                "dashboard_url_path": "",
                 "state_update_interval": "",
                 "extra_entities": [],
                 "include_entity_globs": [],

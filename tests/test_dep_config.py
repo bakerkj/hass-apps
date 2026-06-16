@@ -19,7 +19,6 @@ def test_defaults(tmp_path):
     cfg = config.load(_write(tmp_path, "{}"))
     assert cfg.homeassistant_url == DEFAULT_HA_URL
     assert cfg.transparent is True
-    assert cfg.dashboard_url_path == ""
     assert cfg.state_update_interval == 0.0
     assert cfg.passthrough_all is False
     assert cfg.log_level == "INFO"
@@ -33,7 +32,6 @@ def test_overrides(tmp_path):
                 {
                     "homeassistant_url": "https://ha.example:8123",
                     "transparent": False,
-                    "dashboard_url_path": "my-dashboard",
                     "state_update_interval": "2s",
                     "extra_entities": ["sensor.x"],
                     "include_entity_globs": ["light.*"],
@@ -46,7 +44,6 @@ def test_overrides(tmp_path):
     )
     assert cfg.homeassistant_url == "https://ha.example:8123"
     assert cfg.transparent is False
-    assert cfg.dashboard_url_path == "my-dashboard"
     assert cfg.state_update_interval == 2.0
     assert cfg.extra_entities == ["sensor.x"]
     assert cfg.include_entity_globs == ["light.*"]
