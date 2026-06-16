@@ -1,8 +1,9 @@
 # Example customization file for the Dashboard Entity Proxy.
 #
-# Copy this to ``/config/dashboard_entity_proxy.yaml`` — the default
-# ``customization_file`` path — or to any other path inside an HA-exposed
-# volume, then set the ``customization_file`` option to that path.
+# Copy this to ``/homeassistant/dashboard_entity_proxy.yaml`` — the default
+# ``customization_file`` path — or to any other path inside the
+# ``/homeassistant`` volume, then set the ``customization_file`` option to
+# that path.
 #
 # Every section is OPTIONAL and ADDITIVE: values listed here extend the
 # add-on's built-in scope knowledge. You never need to repeat shipped
