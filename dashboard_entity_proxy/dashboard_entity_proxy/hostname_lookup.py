@@ -87,7 +87,7 @@ async def _resolve(ip: str) -> None:
                 timeout=_RESOLVE_TIMEOUT,
             )
         except (asyncio.TimeoutError, socket.gaierror, OSError) as exc:
-            log.debug("reverse DNS lookup failed for %s: %r", ip, exc)
+            log.debug("%s reverse DNS lookup failed: %r", ip, exc)
             _cache[ip] = (time.monotonic(), "")
             return
         short = host.split(".", 1)[0] if host else ""

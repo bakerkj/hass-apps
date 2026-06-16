@@ -30,8 +30,9 @@ import asyncio
 import itertools
 import logging
 import time
+from collections.abc import MutableMapping
 from datetime import datetime, timezone
-from typing import Any, Callable, assert_never
+from typing import Any, Callable, assert_never, cast
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -128,6 +129,27 @@ def filter_event(
 # on the entry type so mypy verifies exhaustiveness.
 
 
+class _SessionLogAdapter(logging.LoggerAdapter):
+    """Prefix every per-session log line with ``ip (hostname)`` so an
+    operator scanning the addon log can attribute each line to a
+    specific client without flipping to DEBUG. Hostname is pulled
+    lazily on every log call, so lines emitted before reverse DNS
+    resolves still print just the IP, and later lines pick up the
+    hostname once it lands.
+    """
+
+    def __init__(self, base: logging.Logger, remote: str) -> None:
+        super().__init__(base, {})
+        self._remote = remote
+
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> tuple[Any, MutableMapping[str, Any]]:
+        host = hostname_lookup.cached_hostname(self._remote)
+        label = f"{self._remote} ({host})" if host else self._remote
+        return f"{label} {msg}", kwargs
+
+
 class Session:
     """Mediates one client connection and its paired Home Assistant connection.
 
@@ -186,7 +208,17 @@ class Session:
         self.ws_ha = ws_ha
         self._remote = remote
         hostname_lookup.prime(remote)
-        self._log = log
+        # Wrap the base logger so every per-session line is prefixed
+        # with ``ip (hostname)`` automatically — covers the lifecycle
+        # lines AND existing warnings like
+        # ``dashboard parser returned no entities for ...``.
+        # ``LoggerAdapter`` quacks like a ``Logger`` for the
+        # ``info/warning/error/debug`` surface every downstream caller
+        # uses; the ``cast`` keeps mypy happy without forcing every
+        # downstream function signature to widen to a union.
+        self._log: logging.Logger = cast(
+            logging.Logger, _SessionLogAdapter(log, remote)
+        )
         self._registry = opts.registry
         self.throttle = opts.throttle
         self._filters = ScopeFilters(
@@ -314,15 +346,6 @@ class Session:
         # navigation between dashboards changes the tuple and re-fires.
         self._last_scope_logged: tuple[str, bool, int] | None = None
 
-    def _client_label(self) -> str:
-        """Return ``hostname (ip)`` when reverse DNS has resolved, else
-        bare ``ip``. Recomputed on every log site so a line emitted before
-        the lookup completes still prints the IP, and lines emitted after
-        pick up the hostname.
-        """
-        host = hostname_lookup.cached_hostname(self._remote)
-        return f"{host} ({self._remote})" if host else self._remote
-
     def _on_scope_ready(self) -> None:
         """Called by ScopeResolver after a scope becomes ready (or after
         the watchdog widens). Bridges the scope subsystem to Session's
@@ -349,12 +372,11 @@ class Session:
         if state != self._last_scope_logged:
             self._last_scope_logged = state
             scope_desc = "all entities" if scope_all else f"{scope_count} entities"
-            self._log.info(
-                "%s: scope ready: %s on %s",
-                self._client_label(),
-                scope_desc,
-                view_label,
-            )
+            # Lead with the path so an operator can scan the path
+            # column across navigation events for a session. Falls back
+            # to ``/`` for the default-dashboard / pre-navigation state.
+            path = self._nav.current_path or "/"
+            self._log.info("%s scope ready: %s", path, scope_desc)
         self._maybe_serve_pending()
 
     # --- lifecycle ---------------------------------------------------------
@@ -372,7 +394,7 @@ class Session:
         # at disconnect (response-end time), so without this line nothing
         # at INFO marks the start of a session — a kiosk that hangs in
         # ``CONNECTING`` would be silently missing from the log.
-        self._log.info("client connected from %s", self._client_label())
+        self._log.info("client connected")
         if self._registry is not None:
             self._registry.add(self)
         writer_ha = asyncio.create_task(
@@ -436,8 +458,7 @@ class Session:
             else:
                 peer = "proxy"
             self._log.info(
-                "client disconnected from %s after %.1fs (closed by: %s)",
-                self._client_label(),
+                "client disconnected after %.1fs (closed by: %s)",
                 duration,
                 peer,
             )
