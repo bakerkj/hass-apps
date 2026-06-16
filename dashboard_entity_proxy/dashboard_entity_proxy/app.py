@@ -158,6 +158,13 @@ async def _serve(
         )
     )
 
+    # aiohttp.access logs every request at INFO. The status-UI panel
+    # polls /api/sessions every 2s, which buries any real signal — only
+    # attach the access logger when the user opts in via log_level=DEBUG.
+    access_log_logger = (
+        logging.getLogger("aiohttp.access") if cfg.log_level == "DEBUG" else None
+    )
+
     runners = []
     for app, host, port, name in (
         # Proxy app is loopback-only; nginx talks to it on 127.0.0.1.
@@ -171,7 +178,7 @@ async def _serve(
         # also reworking how Supervisor reaches the UI.
         (status_app, "0.0.0.0", INGRESS_PORT, "status"),  # noqa: S104
     ):
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=access_log_logger)
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()

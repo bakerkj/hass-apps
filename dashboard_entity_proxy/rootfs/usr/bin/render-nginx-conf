@@ -6,11 +6,15 @@
 # oneshot before nginx-longrun starts.
 #
 # Substitutions:
-#   __HA_HOST__      — host portion of homeassistant_url
-#   __HA_PORT__      — port portion (defaults to 8123 when absent)
-#   __XFWD_BLOCK__   — proxy_set_header X-Forwarded-* lines, or empty
-#                      when transparent: true (matching the Python
-#                      proxy's transparent mode behaviour for HTTP)
+#   __HA_HOST__              — host portion of homeassistant_url
+#   __HA_PORT__              — port portion (defaults to 8123 when absent)
+#   __XFWD_BLOCK__           — proxy_set_header X-Forwarded-* lines, or
+#                              empty when transparent: true (matching
+#                              the Python proxy's transparent mode
+#                              behaviour for HTTP)
+#   __STDERR_ACCESS_LOG__    — ``access_log /dev/stderr combined;`` when
+#                              log_level=DEBUG, otherwise
+#                              ``access_log off;``
 #
 # Reads options.json with jq directly rather than bashio::config: the
 # Supervisor API roundtrip bashio tries first fails to fall back
@@ -27,6 +31,7 @@ readonly OPTS=/data/options.json
 
 ha_url=$(jq -r '.homeassistant_url // "http://homeassistant:8123"' "$OPTS")
 transparent=$(jq -r '.transparent // true' "$OPTS")
+log_level=$(jq -r '.log_level // "INFO"' "$OPTS" | tr '[:lower:]' '[:upper:]')
 
 # Validate scheme. Reject anything that isn't a plain http(s) URL before
 # parsing — keeps malformed/injected values (newlines, ``};``, etc.) from
@@ -75,12 +80,21 @@ EOF
 )
 fi
 
-echo "nginx config: ha_backend=${ha_host}:${ha_port} transparent=${transparent}"
+# Gate the stderr access_log on log_level=DEBUG so the status UI's 2s
+# poll doesn't bury other entries in the addon log at INFO/WARNING.
+if [[ "$log_level" == "DEBUG" ]]; then
+  stderr_access_log='access_log /dev/stderr combined;'
+else
+  stderr_access_log='access_log off;'
+fi
+
+echo "nginx config: ha_backend=${ha_host}:${ha_port} transparent=${transparent} log_level=${log_level}"
 
 # Two-step substitution: simple placeholders via sed first, then the
 # multi-line block via Python (sed's newline gymnastics aren't worth it).
 sed -e "s|__HA_HOST__|${ha_host}|g" \
     -e "s|__HA_PORT__|${ha_port}|g" \
+    -e "s|__STDERR_ACCESS_LOG__|${stderr_access_log}|g" \
     "$TMPL" > "${OUT}.in"
 
 XFWD_BLOCK="$xfwd_block" python3 -c '
