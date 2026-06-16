@@ -94,7 +94,14 @@ def main() -> int:
 
     logging.basicConfig(
         level=getattr(logging, cfg.log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        # Compact format: ``HH:MM:SS [L] message`` where ``L`` is the
+        # single-letter level (``%(levelname).1s`` truncates I/W/E/D).
+        # The date is captured by the supervisor log timestamp anyway,
+        # and dropping the ``%(name)s`` column lets per-session lines
+        # (which ``_SessionLogAdapter`` prefixes with ``ip (hostname)``)
+        # stay readable inside the addon log viewer's narrow column.
+        format="%(asctime)s [%(levelname).1s] %(message)s",
+        datefmt="%H:%M:%S",
     )
     log = logging.getLogger("dashboard_entity_proxy")
     log.info(

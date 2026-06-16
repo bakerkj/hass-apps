@@ -557,8 +557,7 @@ def test_scope_from_config_fallback_for_parseable_but_empty_dashboard(caplog):
         )
     assert out.all is True
     assert any(
-        "dashboard parser returned no entities" in r.message
-        and "'my-dash'" in r.message
+        "dashboard parser returned no entities" in r.message and "/my-dash" in r.message
         for r in caplog.records
     )
 
@@ -1398,7 +1397,7 @@ def test_scope_from_config_unauthorized_does_not_widen(caplog):
     assert any(
         "lovelace/config denied" in r.message
         and "unauthorized" in r.message
-        and "'locked'" in r.message
+        and "/locked" in r.message
         for r in caplog.records
     )
 
@@ -1431,7 +1430,7 @@ def test_scope_from_config_not_found_widens_with_warning(caplog):
     assert out is not None and out.all is True
     assert any(
         "lovelace/config failed" in r.message
-        and "'kitchen-tablet'" in r.message
+        and "/kitchen-tablet" in r.message
         and "not_found" in r.message
         for r in caplog.records
     )

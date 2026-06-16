@@ -30,8 +30,9 @@ import asyncio
 import itertools
 import logging
 import time
+from collections.abc import MutableMapping
 from datetime import datetime, timezone
-from typing import Any, Callable, assert_never
+from typing import Any, Callable, assert_never, cast
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -128,6 +129,27 @@ def filter_event(
 # on the entry type so mypy verifies exhaustiveness.
 
 
+class _SessionLogAdapter(logging.LoggerAdapter):
+    """Prefix every per-session log line with ``ip (hostname)`` so an
+    operator scanning the addon log can attribute each line to a
+    specific client without flipping to DEBUG. Hostname is pulled
+    lazily on every log call, so lines emitted before reverse DNS
+    resolves still print just the IP, and later lines pick up the
+    hostname once it lands.
+    """
+
+    def __init__(self, base: logging.Logger, remote: str) -> None:
+        super().__init__(base, {})
+        self._remote = remote
+
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> tuple[Any, MutableMapping[str, Any]]:
+        host = hostname_lookup.cached_hostname(self._remote)
+        label = f"{self._remote} ({host})" if host else self._remote
+        return f"{label} {msg}", kwargs
+
+
 class Session:
     """Mediates one client connection and its paired Home Assistant connection.
 
@@ -186,7 +208,17 @@ class Session:
         self.ws_ha = ws_ha
         self._remote = remote
         hostname_lookup.prime(remote)
-        self._log = log
+        # Wrap the base logger so every per-session line is prefixed
+        # with ``ip (hostname)`` automatically — covers the lifecycle
+        # lines AND existing warnings like
+        # ``dashboard parser returned no entities for ...``.
+        # ``LoggerAdapter`` quacks like a ``Logger`` for the
+        # ``info/warning/error/debug`` surface every downstream caller
+        # uses; the ``cast`` keeps mypy happy without forcing every
+        # downstream function signature to widen to a union.
+        self._log: logging.Logger = cast(
+            logging.Logger, _SessionLogAdapter(log, remote)
+        )
         self._registry = opts.registry
         self.throttle = opts.throttle
         self._filters = ScopeFilters(
@@ -308,6 +340,16 @@ class Session:
         # opened. Lets the status UI attribute reconnect bursts to e.g.
         # ``render_template`` rather than guessing.
         self._opened_command_counts: dict[str, int] = {}
+        # ``(view-label, scope_all, scope_count)`` of the last scope state
+        # we logged at INFO. Skip re-logging identical transitions so a
+        # busy resolver loop doesn't fire a line per ``_mark_ready_and_apply``;
+        # navigation between dashboards changes the tuple and re-fires.
+        self._last_scope_logged: tuple[str, bool, int] | None = None
+        # Set by the first pump to exit in ``_pump_ws``'s finally —
+        # ``"ha"`` (upstream dropped), ``"client"`` (peer dropped), or
+        # left as ``"proxy"`` when an internal ``_fatal``/``_cleanup``
+        # fires the teardown ahead of either pump exiting.
+        self._disconnect_by = "proxy"
 
     def _on_scope_ready(self) -> None:
         """Called by ScopeResolver after a scope becomes ready (or after
@@ -322,6 +364,24 @@ class Session:
         """
         if self._phase in (Phase.CONNECTING, Phase.STARTUP):
             self._phase = Phase.READY
+        # Log scope transitions at INFO so an operator can trace a
+        # session's lifetime without flipping log_level=DEBUG. Covers
+        # both the first-time settle ("scope ready: N entities on
+        # 'lighting-test'") and subsequent navigations between
+        # dashboards / views. Dedup on the (view, scope_all, count)
+        # tuple keeps a tight resolver loop from spamming.
+        view_label = self._nav.current_view.label()
+        scope_all = self._scope.set is None
+        scope_count = len(self._scope.ids or [])
+        state = (view_label, scope_all, scope_count)
+        if state != self._last_scope_logged:
+            self._last_scope_logged = state
+            scope_desc = "all entities" if scope_all else f"{scope_count} entities"
+            # Lead with the path so an operator can scan the path
+            # column across navigation events for a session. Falls back
+            # to ``/`` for the default-dashboard / pre-navigation state.
+            path = self._nav.current_path or "/"
+            self._log.info("%s scope ready: %s", path, scope_desc)
         self._maybe_serve_pending()
 
     # --- lifecycle ---------------------------------------------------------
@@ -335,6 +395,11 @@ class Session:
         ``SessionRegistry`` so the status UI sees it, and de-registers + closes
         both sockets on exit.
         """
+        # Connection event. ``aiohttp.access`` only logs ``/api/websocket``
+        # at disconnect (response-end time), so without this line nothing
+        # at INFO marks the start of a session — a kiosk that hangs in
+        # ``CONNECTING`` would be silently missing from the log.
+        self._log.info("client connected")
         if self._registry is not None:
             self._registry.add(self)
         writer_ha = asyncio.create_task(
@@ -381,6 +446,17 @@ class Session:
         try:
             await self._done.wait()
         finally:
+            duration = (datetime.now(timezone.utc) - self._connected_at).total_seconds()
+            # ``_disconnect_by`` is set by the first pump to exit (see
+            # ``_pump_ws``); ``ws.closed`` is unreliable here because it
+            # only flips on a clean CLOSE handshake. Falls back to
+            # ``"proxy"`` when an internal ``_fatal``/``_cleanup`` fired
+            # the teardown ahead of either pump.
+            self._log.info(
+                "client disconnected after %.1fs (closed by: %s)",
+                duration,
+                self._disconnect_by,
+            )
             if self._registry is not None:
                 self._registry.remove(self)
             self._registry_store.cancel_debouncers()
@@ -475,6 +551,16 @@ class Session:
         except Exception as exc:  # noqa: BLE001 - bug in a handler, not a disconnect
             self._log.warning("%s pump exception: %r", name, exc, exc_info=True)
         finally:
+            # Record which side hung up FIRST. ``ws.closed`` only flips
+            # to True after a clean CLOSE handshake — network-level
+            # drops (TCP RST, browser tab close, kiosk power cycle)
+            # exit through ``_EXPECTED_DISCONNECT_EXC`` and leave
+            # ``ws.closed = False``. Capturing the pump name here is
+            # the only reliable signal for the disconnect log; the
+            # ``not _done.is_set()`` guard lets the first pump to
+            # exit win the attribution.
+            if not self._done.is_set():
+                self._disconnect_by = name
             self._cleanup()
 
     async def _pump_ha(self) -> None:

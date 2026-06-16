@@ -275,7 +275,7 @@ async def _intercept(
     try:
         ws_ha = await client.ws_connect(
             ws_base + request.path_qs,
-            headers=_ws_dial_headers(request, opts.transparent),
+            headers=_ws_dial_headers(request, opts.transparent, ws_base),
             heartbeat=HEARTBEAT,
             max_msg_size=WS_MAX_MSG_SIZE,
         )
@@ -301,25 +301,59 @@ async def _tunnel_ws(
     ws_base: str,
     opts: Options,
     log: logging.Logger,
-) -> web.WebSocketResponse:
+) -> web.StreamResponse:
     """Forward a non-API WebSocket (or ``/api/websocket`` in passthrough
     mode) byte-for-byte between client and HA. Runs two pump tasks until
     either side closes, then tears both connections down. Registers a
     ``TunnelConnection`` with the SessionRegistry so the status UI lists
     it alongside intercepted sessions.
+
+    WebSocket subprotocol negotiation is end-to-end (RFC 6455 §1.9): the
+    client's ``Sec-WebSocket-Protocol`` proposal must reach the upstream,
+    and the upstream's pick must come back to the client unchanged. The
+    dial happens BEFORE accepting the client upgrade so the chosen
+    subprotocol can be threaded back into ``WebSocketResponse``. Without
+    this, addons whose UI requires a specific subprotocol (ESPHome
+    Builder's ``/events`` is the motivating example) close the WS
+    immediately after the empty handshake and the client reconnects in
+    a tight loop.
     """
-    ws_client = web.WebSocketResponse(heartbeat=HEARTBEAT, max_msg_size=WS_MAX_MSG_SIZE)
-    await ws_client.prepare(request)
+    # Parse the client's proposed subprotocols. Empty tuple means "no
+    # protocol requested", which is the common case for HA's own paths.
+    proposed_protos = tuple(
+        p.strip()
+        for p in request.headers.get("Sec-WebSocket-Protocol", "").split(",")
+        if p.strip()
+    )
     try:
         ws_ha = await client.ws_connect(
             ws_base + request.path_qs,
-            headers=_ws_dial_headers(request, opts.transparent),
+            headers=_ws_dial_headers(request, opts.transparent, ws_base),
+            protocols=proposed_protos,
             max_msg_size=WS_MAX_MSG_SIZE,
         )
     except (aiohttp.ClientError, OSError) as exc:
         log.error("dial HA websocket (tunnel) failed: %s", exc)
-        await ws_client.close()
-        return ws_client
+        return web.Response(status=502, text="Bad Gateway")
+
+    # Echo the upstream's chosen subprotocol back to the client. If
+    # upstream picked nothing (or the client offered none), pass an
+    # empty tuple so ``WebSocketResponse`` simply omits the header.
+    server_protocols = (ws_ha.protocol,) if ws_ha.protocol else ()
+    ws_client = web.WebSocketResponse(
+        heartbeat=HEARTBEAT,
+        max_msg_size=WS_MAX_MSG_SIZE,
+        protocols=server_protocols,
+    )
+    try:
+        await ws_client.prepare(request)
+    except Exception:
+        # The client TCP can drop in the window between the dial
+        # succeeding and the upgrade response being written; leaving
+        # ``ws_ha`` open would leak it. Under the ESPHome reconnect-loop
+        # this can accumulate enough leaked upstreams to hit HA's WS cap.
+        await ws_ha.close()
+        raise
 
     conn = TunnelConnection(
         remote_addr=_client_addr(request),
@@ -514,18 +548,40 @@ _WS_HOP_BY_HOP = frozenset(
 )
 
 
-def _ws_dial_headers(request: web.Request, transparent: bool) -> CIMultiDict[str]:
+def _ws_dial_headers(
+    request: web.Request, transparent: bool, ws_base: str | None = None
+) -> CIMultiDict[str]:
     """Build the upstream header set for a WebSocket dial. Mirrors the
     HTTP-path policy in ``_filtered_request_headers`` (drop hop-by-hop,
     handle ``X-Forwarded-*`` per ``transparent``) and additionally strips
     the WS-handshake headers aiohttp regenerates on ``ws_connect``.
     Everything else — Cookie, Authorization, User-Agent, custom headers
     — is forwarded so middleware/forks that depend on them keep working.
+
+    When ``ws_base`` is given, the ``Origin`` header is rewritten to
+    match the upstream host. Tornado's ``WebSocketHandler.check_origin``
+    (used by ESPHome Dashboard's ``/events`` and other WS endpoints by
+    default) rejects upgrades whose ``Origin`` doesn't match ``Host``;
+    the browser's original ``Origin`` names the proxy host, not the
+    upstream HA host, so without this rewrite the upstream accepts the
+    upgrade and immediately closes — producing a tight reconnect loop.
+    Caller passes ``ws_base`` only on tunnel dials; ``None`` keeps the
+    historical pass-through behaviour for unit tests / other callers.
     """
     out = _filtered_request_headers(request, transparent)
     for name in {n for n in out if n.lower() in _WS_HOP_BY_HOP}:
         while name in out:
             del out[name]
+    if ws_base is not None and any(n.lower() == "origin" for n in out):
+        # Rewrite to ``http(s)://<upstream-host>``. ``ws://`` → ``http://``
+        # and ``wss://`` → ``https://`` matches what a real browser would
+        # have sent if it were addressing the upstream directly.
+        parts = urlsplit(ws_base)
+        scheme = "https" if parts.scheme == "wss" else "http"
+        upstream_origin = f"{scheme}://{parts.netloc}"
+        for name in [n for n in out if n.lower() == "origin"]:
+            del out[name]
+        out["Origin"] = upstream_origin
     return out
 
 
