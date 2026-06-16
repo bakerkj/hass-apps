@@ -74,6 +74,15 @@
         margin: 0 0 8px;
         word-break: break-all;
       }
+      /* Short hostname (first DNS label) shown to the left of the IP.
+         Empty span when reverse DNS hasn't resolved or returned nothing. */
+      .hostname {
+        color: var(--muted);
+        font-weight: normal;
+      }
+      .hostname:not(:empty)::after {
+        content: ' · ';
+      }
       .row {
         display: flex;
         justify-content: space-between;
@@ -209,7 +218,7 @@
       const interceptTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
           <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
           <div class="row"><span class="k">View</span><span class="v"><code data-field="view"></code></span></div>
@@ -227,7 +236,7 @@
       const tunnelTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
           <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
           <div class="row"><span class="k">→ HA</span><span class="v" data-field="ha-msgs"></span></div>
@@ -242,7 +251,7 @@
       const httpClientTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Requests</span><span class="v" data-field="reqs"></span></div>
           <div class="row"><span class="k">rx / tx</span><span class="v" data-field="bytes"></span></div>
           <table class="http-rows" data-field="rows"></table>
@@ -413,13 +422,14 @@
             else tpl = tunnelTemplate(s);
             container.insertAdjacentHTML('beforeend', tpl);
             card = container.lastElementChild;
-            // ``remote_addr`` is the only string in the template that
-            // originates outside our control (aiohttp's request.remote).
-            // Set it via textContent rather than HTML interpolation so a
-            // hostile peer header — even though aiohttp normalises this —
-            // cannot inject markup.
+            // ``remote_addr`` and ``hostname`` originate outside our
+            // control (request peer / reverse-DNS response). Set via
+            // textContent so neither can inject markup.
             setText(card, 'remote', s.remote_addr);
           }
+          // hostname can flip from "" → resolved after a poll or two, so
+          // update it every render rather than only on first paint.
+          setText(card, 'hostname', s.hostname || '');
           const ageEnd = s.disconnected_at ? new Date(s.disconnected_at).getTime() : now;
           const age = (ageEnd - new Date(s.connected_at).getTime()) / 1000;
           if (s.kind === 'intercept') updateIntercept(card, s, age);

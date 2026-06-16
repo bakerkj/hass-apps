@@ -36,7 +36,7 @@ from typing import Any, Callable, assert_never
 import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import wire
+from . import hostname_lookup, wire
 from ._msg_utils import subscription_frame
 from ._periodic import PeriodicTask
 from ._ws_writer import WsWriter
@@ -185,6 +185,7 @@ class Session:
         self.ws_client = ws_client
         self.ws_ha = ws_ha
         self._remote = remote
+        hostname_lookup.prime(remote)
         self._log = log
         self._registry = opts.registry
         self._dashboard_url_path = opts.dashboard_url_path
@@ -1196,9 +1197,11 @@ class Session:
         """
         scope_all = self._scope.ready and self._scope.set is None
         ids = self._scope.ids if self._scope.ids is not None else []
+        hostname_lookup.prime(self._remote)
         out: dict[str, Any] = {
             "kind": "intercept",
             "remote_addr": self._remote,
+            "hostname": hostname_lookup.cached_hostname(self._remote),
             "connected_at": self._connected_at.isoformat(),
             "phase": self._phase.value,
             "current_view": self._nav.current_view.label(),

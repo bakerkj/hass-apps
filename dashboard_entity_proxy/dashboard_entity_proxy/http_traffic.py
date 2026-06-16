@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from . import hostname_lookup
 from .const import DEFAULT_DISCONNECT_RETENTION_SECONDS, HTTP_ACCESS_LOG_MAX_BYTES
 
 log = logging.getLogger(__name__)
@@ -120,6 +121,7 @@ class _HttpClient:
         self, source: str, retention_seconds: float, kind: str = "http_client"
     ) -> None:
         self.source = source
+        hostname_lookup.prime(source)
         self._retention = retention_seconds
         self._rows: dict[str, _HttpRow] = {}
         # Fixed at construction so SessionRegistry sort order is stable
@@ -187,9 +189,11 @@ class _HttpClient:
         )
         if detail != "full":
             rows = rows[:50]
+        hostname_lookup.prime(self.source)
         return {
             "kind": self._kind,
             "remote_addr": self.source,
+            "hostname": hostname_lookup.cached_hostname(self.source),
             "connected_at": self._connected_at.isoformat(),
             "last_seen": last_seen.isoformat(),
             "row_count": len(self._rows),
