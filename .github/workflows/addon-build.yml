@@ -3,6 +3,12 @@ name: addon-build
 on:
   pull_request:
   push:
+    branches: [main]
+    # Preserve the release path: release-please pushes tags shaped
+    # ``<addon>-v<X>.<Y>.<Z>`` and the discover step keys off them to
+    # enter ``release`` mode. Without an explicit tag filter, restricting
+    # ``branches`` to main would silently drop tag-triggered builds.
+    tags: ["*-v*"]
 
 permissions:
   contents: read
