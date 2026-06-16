@@ -158,17 +158,27 @@ async def _serve(
         )
     )
 
-    # aiohttp.access logs every request at INFO. The status-UI panel
-    # polls /api/sessions every 2s, which buries any real signal — only
-    # attach the access logger when the user opts in via log_level=DEBUG.
-    access_log_logger = (
+    # The status app serves only ``index.html`` plus the ``/api/sessions``
+    # poll endpoint the panel hits every 2 s. Its ``aiohttp.access`` log
+    # is therefore ~100% poll noise, with no other useful signal — drop
+    # the access logger unless the user opts in via log_level=DEBUG.
+    # The proxy app's access log stays on at every level: nginx routes
+    # the WebSocket upgrade there, and one line per browser session is
+    # genuine signal, not noise.
+    status_access_log = (
         logging.getLogger("aiohttp.access") if cfg.log_level == "DEBUG" else None
     )
 
     runners = []
-    for app, host, port, name in (
+    for app, host, port, name, access_log_arg in (
         # Proxy app is loopback-only; nginx talks to it on 127.0.0.1.
-        (proxy_app, "127.0.0.1", PROXY_BIND_PORT, "proxy"),
+        (
+            proxy_app,
+            "127.0.0.1",
+            PROXY_BIND_PORT,
+            "proxy",
+            logging.getLogger("aiohttp.access"),
+        ),
         # Status app binds on every interface so Supervisor's ingress
         # proxy (which reaches the addon over the hassio docker bridge,
         # NOT the container's loopback) can hit it. ``ports:`` in
@@ -176,9 +186,9 @@ async def _serve(
         # paths are: Supervisor ingress (auth-gated by HA) and other
         # containers on the same bridge. Don't tighten this without
         # also reworking how Supervisor reaches the UI.
-        (status_app, "0.0.0.0", INGRESS_PORT, "status"),  # noqa: S104
+        (status_app, "0.0.0.0", INGRESS_PORT, "status", status_access_log),  # noqa: S104
     ):
-        runner = web.AppRunner(app, access_log=access_log_logger)
+        runner = web.AppRunner(app, access_log=access_log_arg)
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()

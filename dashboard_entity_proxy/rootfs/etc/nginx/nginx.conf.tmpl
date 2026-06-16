@@ -46,15 +46,27 @@ http {
   log_format dep_traffic '$remote_addr "$request_method $request_uri" '
                          '$status $bytes_sent $request_length '
                          '$request_time "$http_referer"';
+  # Status-UI poll suppression. ``$dep_access_loggable`` is 0 for the
+  # status-UI's 2 s ``/api/sessions`` poll (both the direct path and the
+  # form seen through Supervisor ingress, ``/api/hassio_ingress/<token>/
+  # api/sessions``) and 1 for everything else. The render script
+  # substitutes ``__STDERR_ACCESS_LOG__`` to either an unconditional
+  # access_log (DEBUG) or one gated by ``if=$dep_access_loggable``,
+  # so real HTTP traffic stays visible at INFO while the poll noise
+  # drops out.
+  map $request_uri $dep_access_loggable {
+    default                                            1;
+    ~^/api/sessions(\?.*)?$                            0;
+    ~^/api/hassio_ingress/[^/]+/api/sessions(\?.*)?$   0;
+  }
+
   # Two destinations, two formats:
   #   - /dev/stderr (``combined`` format) → surfaces every HTTP request
-  #     in the addon log. Gated on log_level=DEBUG: the status-UI panel
-  #     polls every 2 s, which would otherwise drown out any real signal
-  #     in the standard log view. The render script substitutes either
-  #     the live ``access_log`` directive or ``access_log off;`` for the
-  #     stderr destination.
-  #   - /dev/shm/dep-access.log (``dep_traffic`` format) → tmpfs file the
-  #     Python http_traffic tailer reads to populate the status-UI
+  #     in the addon log, minus the status-UI's own poll (see the map
+  #     directive above). Flip log_level=DEBUG to include the poll
+  #     too.
+  #   - /dev/shm/dep-access.log (``dep_traffic`` format) → tmpfs file
+  #     the Python http_traffic tailer reads to populate the status-UI
   #     HTTP-traffic pane. Always on, regardless of log_level. /dev/shm
   #     is wiped on container restart; between restarts the tailer
   #     auto-truncates this file once it crosses HTTP_ACCESS_LOG_MAX_BYTES

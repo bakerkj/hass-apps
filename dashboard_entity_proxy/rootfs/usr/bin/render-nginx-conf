@@ -12,9 +12,13 @@
 #                              empty when transparent: true (matching
 #                              the Python proxy's transparent mode
 #                              behaviour for HTTP)
-#   __STDERR_ACCESS_LOG__    — ``access_log /dev/stderr combined;`` when
-#                              log_level=DEBUG, otherwise
-#                              ``access_log off;``
+#   __STDERR_ACCESS_LOG__    — at log_level=DEBUG, unconditional
+#                              ``access_log /dev/stderr combined;``; at
+#                              any other level the same directive gated
+#                              by ``if=$dep_access_loggable`` (see the
+#                              ``map`` block in the template) so the
+#                              status-UI's /api/sessions poll drops out
+#                              while other traffic still appears.
 #
 # Reads options.json with jq directly rather than bashio::config: the
 # Supervisor API roundtrip bashio tries first fails to fall back
@@ -80,12 +84,14 @@ EOF
 )
 fi
 
-# Gate the stderr access_log on log_level=DEBUG so the status UI's 2s
-# poll doesn't bury other entries in the addon log at INFO/WARNING.
+# Gate the status-UI's own /api/sessions poll out of the stderr
+# access log unless log_level=DEBUG. Other HTTP requests still log
+# at every level — the ``map $dep_access_loggable`` block in the
+# template flips to 0 only for the poll URI shapes.
 if [[ "$log_level" == "DEBUG" ]]; then
   stderr_access_log='access_log /dev/stderr combined;'
 else
-  stderr_access_log='access_log off;'
+  stderr_access_log='access_log /dev/stderr combined if=$dep_access_loggable;'
 fi
 
 echo "nginx config: ha_backend=${ha_host}:${ha_port} transparent=${transparent} log_level=${log_level}"
