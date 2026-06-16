@@ -99,16 +99,37 @@ async def test_failed_lookup_caches_empty(
 
 
 @pytest.mark.asyncio
-async def test_ptr_returning_ip_treated_as_no_hostname(
+async def test_cancelled_resolve_clears_in_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``getnameinfo`` echoes the IP back when there's no PTR record;
-    that's "no hostname", not a literal hostname of "192.168.1.99".
+    """A lookup task cancelled mid-flight (event-loop teardown) must
+    still clear the ``_in_flight`` slot, otherwise the IP would be
+    permanently wedged and ``prime()`` would never re-resolve it.
     """
-    _patch_lookup(monkeypatch, {})  # default behaviour: echo IP
-    hostname_lookup.prime("192.168.1.99")
-    await _drain()
-    assert hostname_lookup.cached_hostname("192.168.1.99") == ""
+    started = asyncio.Event()
+
+    async def hanging_getnameinfo(
+        sockaddr: tuple[Any, ...], _flags: int
+    ) -> tuple[str, str]:
+        started.set()
+        await asyncio.Event().wait()  # never completes
+        raise AssertionError("unreachable")
+
+    loop = asyncio.get_event_loop()
+    monkeypatch.setattr(loop, "getnameinfo", hanging_getnameinfo)
+
+    hostname_lookup.prime("10.5.5.5")
+    await started.wait()
+    assert "10.5.5.5" in hostname_lookup._in_flight
+
+    # Cancel the in-flight resolve task — same shape as event-loop
+    # teardown cancelling pending tasks during shutdown.
+    [task] = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "10.5.5.5" not in hostname_lookup._in_flight
 
 
 @pytest.mark.asyncio

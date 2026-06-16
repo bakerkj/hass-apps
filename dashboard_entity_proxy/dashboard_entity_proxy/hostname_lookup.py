@@ -75,19 +75,29 @@ def prime(ip: str) -> None:
 async def _resolve(ip: str) -> None:
     loop = asyncio.get_running_loop()
     try:
-        host, _ = await asyncio.wait_for(
-            loop.getnameinfo((ip, 0), 0), timeout=_RESOLVE_TIMEOUT
-        )
-    except (asyncio.TimeoutError, socket.gaierror, OSError) as exc:
-        log.debug("reverse DNS lookup failed for %s: %r", ip, exc)
-        _cache[ip] = (time.monotonic(), "")
+        try:
+            # ``NI_NAMEREQD`` makes a missing PTR raise ``gaierror``
+            # instead of echoing the IP back — the gaierror path below
+            # is the single "no usable hostname" branch. The alternative
+            # (string-compare the result against the input) is fragile
+            # for IPv6, where the resolver may canonicalise the address
+            # to a different textual form than we passed in.
+            host, _ = await asyncio.wait_for(
+                loop.getnameinfo((ip, 0), socket.NI_NAMEREQD),
+                timeout=_RESOLVE_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, socket.gaierror, OSError) as exc:
+            log.debug("reverse DNS lookup failed for %s: %r", ip, exc)
+            _cache[ip] = (time.monotonic(), "")
+            return
+        short = host.split(".", 1)[0] if host else ""
+        _cache[ip] = (time.monotonic(), short)
+    finally:
+        # Runs on success, failure, and ``CancelledError`` (loop
+        # teardown). Without this, a cancelled lookup would leave the
+        # IP wedged in ``_in_flight`` and silently block every future
+        # ``prime()`` for it.
         _in_flight.discard(ip)
-        return
-    # ``getnameinfo`` without NI_NAMEREQD returns the IP verbatim when
-    # there's no PTR record; treat that as "no hostname".
-    short = host.split(".", 1)[0] if host and host != ip else ""
-    _cache[ip] = (time.monotonic(), short)
-    _in_flight.discard(ip)
 
 
 def _reset_for_tests() -> None:
