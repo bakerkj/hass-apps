@@ -55,10 +55,10 @@ def create_app(
         """Return the current session-registry snapshot as JSON, with path
         fields redacted when ``show_client_paths`` is off.
 
-        ``?detail=full`` requests the full ``scope_entities`` list per
-        session. The default shape carries only ``scope_count`` and a
-        ``scope_sample`` (up to 50 entity ids) so the polling JSON stays
-        small on installs with thousands of entities and several sessions.
+        The default shape carries the full scoped entity list under
+        ``scope_sample``; ``?detail=full`` additionally emits the same
+        list under the legacy ``scope_entities`` key for clients that
+        still request it.
         """
         detail = "full" if request.query.get("detail") == "full" else "summary"
         snap = registry.snapshot(detail=detail)

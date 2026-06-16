@@ -542,13 +542,25 @@ def test_scope_from_config_fallback_for_strategy_dashboard():
     assert out.all is True
 
 
-def test_scope_from_config_fallback_for_parseable_but_empty_dashboard():
+def test_scope_from_config_fallback_for_parseable_but_empty_dashboard(caplog):
     """A dashboard that yields zero entities from the walker (no cards
     reference anything, no patterns) widens to all rather than serving
-    a blank snapshot."""
+    a blank snapshot. The warning identifies the dashboard by its
+    ``url_path`` so an operator can investigate which dashboard widened.
+    """
+    import logging
+
     s = _make_session_for_scope_from_config()
-    out = s._scope.scope_from_config({"success": True, "result": {"views": [{}]}})
+    with caplog.at_level(logging.WARNING, logger=s._log.name):
+        out = s._scope.scope_from_config(
+            {"success": True, "result": {"views": [{}]}}, url_path="my-dash"
+        )
     assert out.all is True
+    assert any(
+        "dashboard parser returned no entities" in r.message
+        and "'my-dash'" in r.message
+        for r in caplog.records
+    )
 
 
 def test_scope_from_config_returns_extracted_entities():
@@ -1188,7 +1200,7 @@ def test_lovelace_updated_out_of_order_responses_apply_latest_only():
         s._dashboard_cache.scopes[url] = entry
 
     s._scope.cache_and_reapply = _capture  # type: ignore[method-assign]
-    s._scope.scope_from_config = lambda msg: ScopeSet(  # type: ignore[method-assign]
+    s._scope.scope_from_config = lambda msg, url_path="": ScopeSet(  # type: ignore[method-assign]
         ids=msg["result"]["views"][0]["badges"]
     )
 
@@ -1379,11 +1391,14 @@ def test_scope_from_config_unauthorized_does_not_widen(caplog):
             {
                 "success": False,
                 "error": {"code": "unauthorized", "message": "denied"},
-            }
+            },
+            url_path="locked",
         )
     assert out is None
     assert any(
-        "lovelace/config denied" in r.message and "unauthorized" in r.message
+        "lovelace/config denied" in r.message
+        and "unauthorized" in r.message
+        and "'locked'" in r.message
         for r in caplog.records
     )
 
@@ -1410,10 +1425,16 @@ def test_scope_from_config_not_found_widens_with_warning(caplog):
             {
                 "success": False,
                 "error": {"code": "not_found", "message": "no such dashboard"},
-            }
+            },
+            url_path="kitchen-tablet",
         )
     assert out is not None and out.all is True
-    assert any("serving all entities" in r.message for r in caplog.records)
+    assert any(
+        "lovelace/config failed" in r.message
+        and "'kitchen-tablet'" in r.message
+        and "not_found" in r.message
+        for r in caplog.records
+    )
 
 
 def test_resolve_scope_does_not_overwrite_cache_on_denial():
@@ -1925,11 +1946,11 @@ def _make_session_for_status_shape():
     return s
 
 
-def test_status_default_summary_omits_full_scope_entities():
-    """The default ``status()`` shape carries ``scope_count`` and
-    ``scope_sample`` but NOT the full ``scope_entities`` list — that's the
-    whole point of the change (avoid ballooning the per-poll JSON on large
-    installs).
+def test_status_default_summary_carries_full_scope_sample():
+    """The default ``status()`` shape carries ``scope_count`` and the
+    full ``scope_sample`` list, but not the legacy ``scope_entities``
+    duplicate. Capping was removed so the Ingress UI can show every
+    entity a session is serving without needing ``?detail=full``.
     """
     s = _make_session_for_status_shape()
     ids = [f"light.{i}" for i in range(120)]
@@ -1939,9 +1960,7 @@ def test_status_default_summary_omits_full_scope_entities():
     snap = s.status()
     assert snap["scope_count"] == 120
     assert "scope_entities" not in snap
-    # Sample is capped at 50 ids.
-    assert len(snap["scope_sample"]) == 50
-    assert snap["scope_sample"] == ids[:50]
+    assert snap["scope_sample"] == ids
 
 
 def test_status_detail_full_includes_scope_entities():
