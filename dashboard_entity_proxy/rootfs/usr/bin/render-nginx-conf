@@ -13,12 +13,14 @@
 #                              the Python proxy's transparent mode
 #                              behaviour for HTTP)
 #   __STDERR_ACCESS_LOG__    — ``access_log /dev/stderr combined;`` at
-#                              log_level=DEBUG, ``access_log off;``
-#                              otherwise. nginx is DEBUG-only because
-#                              the Python apps already emit a richer
-#                              access log via ``_RealIPAccessLogger`` at
-#                              INFO (real upstream IP, post-ingress-strip
-#                              URI).
+#                              log_level=DEBUG (everything), gated by
+#                              ``if=$nginx_loggable`` otherwise (see
+#                              the ``map`` in the template). At INFO
+#                              the map skips URIs already covered by
+#                              the Python apps' aiohttp.access logger
+#                              and the status-UI poll, while plain HTTP
+#                              traffic (nginx → HA direct, no Python in
+#                              the path) still appears.
 #
 # Reads options.json with jq directly rather than bashio::config: the
 # Supervisor API roundtrip bashio tries first fails to fall back
@@ -84,12 +86,14 @@ EOF
 )
 fi
 
-# nginx's stderr access log is DEBUG-only; Python's apps emit the
-# canonical INFO access log via ``_RealIPAccessLogger``.
+# At INFO, gate the stderr access_log with $nginx_loggable so URIs
+# covered by the Python aiohttp.access logger (and the /api/sessions
+# poll) drop out; plain HTTP requests (nginx → HA direct) still log.
+# At DEBUG, log unconditionally so every request is visible.
 if [[ "$log_level" == "DEBUG" ]]; then
   stderr_access_log='access_log /dev/stderr combined;'
 else
-  stderr_access_log='access_log off;'
+  stderr_access_log='access_log /dev/stderr combined if=$nginx_loggable;'
 fi
 
 echo "nginx config: ha_backend=${ha_host}:${ha_port} transparent=${transparent} log_level=${log_level}"

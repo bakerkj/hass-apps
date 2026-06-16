@@ -46,13 +46,27 @@ http {
   log_format dep_traffic '$remote_addr "$request_method $request_uri" '
                          '$status $bytes_sent $request_length '
                          '$request_time "$http_referer"';
+  # Skip nginx's access log only for URIs that another logger already
+  # owns. Plain HTTP requests go straight to HA (no Python in the path)
+  # so nginx is the only place they'd ever appear — those still log
+  # at INFO. ``$nginx_loggable`` is 0 for:
+  #   * ``/api/websocket`` → handled by the Python proxy app, which
+  #     emits one INFO line per upgrade via ``_RealIPAccessLogger``.
+  #   * Any URI ending in ``/api/sessions`` → pure poll noise. Both
+  #     direct (``/api/sessions``) and Supervisor-ingress
+  #     (``/api/hassio_ingress/<token>/api/sessions``) shapes covered.
+  map $request_uri $nginx_loggable {
+    default                                            1;
+    ~^/api/websocket                                   0;
+    ~^/api/sessions(\?.*)?$                            0;
+    ~^/api/hassio_ingress/[^/]+/api/sessions(\?.*)?$   0;
+  }
+
   # Two destinations, two formats:
-  #   - /dev/stderr (``combined`` format) → DEBUG-only. The Python apps
-  #     emit a richer INFO-level access log via ``_RealIPAccessLogger``
-  #     (real upstream IP, post-ingress-strip URI), so nginx's combined
-  #     line is redundant at INFO. The render script substitutes either
-  #     ``access_log /dev/stderr combined;`` (DEBUG) or ``access_log off;``
-  #     for this destination.
+  #   - /dev/stderr (``combined`` format) → at INFO, gated by
+  #     ``if=$nginx_loggable`` so the dedup map above takes effect; at
+  #     DEBUG, unconditional so every request is visible. Render script
+  #     substitutes the right directive for the current log_level.
   #   - /dev/shm/dep-access.log (``dep_traffic`` format) → tmpfs file
   #     the Python http_traffic tailer reads to populate the status-UI
   #     HTTP-traffic pane. Always on, regardless of log_level. /dev/shm
