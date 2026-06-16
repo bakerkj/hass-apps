@@ -19,7 +19,7 @@ import aiohttp
 from aiohttp import WSMsgType, web
 from multidict import CIMultiDict
 
-from . import hostname_lookup
+from . import hostname_lookup, http_traffic
 from .const import (
     HA_WS_PATH,
     HEARTBEAT,
@@ -141,6 +141,16 @@ class TunnelConnection:
         the UI can render the two differently.
         """
         hostname_lookup.prime(self._remote)
+        # Lazy resolution: the ingress-token → addon-slug map is
+        # populated by the http_traffic tailer, which can lag a few
+        # hundred ms behind tunnel construction. Look up each time we
+        # render a snapshot until we get a hit, then cache.
+        if not self._addon_slug:
+            from . import http_traffic
+
+            late = http_traffic.addon_slug_for_path(self._target)
+            if late:
+                self._addon_slug = late
         return {
             "kind": "passthrough" if self._passthrough else "tunnel",
             "remote_addr": self._remote,
@@ -355,14 +365,20 @@ async def _tunnel_ws(
         await ws_ha.close()
         raise
 
+    # Resolve the addon slug: WebSocket upgrades typically arrive
+    # without a ``Referer`` (iframe content sets ``referrerpolicy=
+    # no-referrer``), so fall back to the token → slug map the
+    # ``http_traffic`` tracker built up from earlier panel-Referer
+    # HTTP traffic in the same ingress session.
+    addon_slug = TunnelConnection.decode_addon_slug(
+        request.headers.get("Referer", "")
+    ) or http_traffic.addon_slug_for_path(request.path_qs)
     conn = TunnelConnection(
         remote_addr=_client_addr(request),
         target_path=request.path_qs,
         passthrough=(request.path == HA_WS_PATH),
         subprotocol=ws_ha.protocol or "",
-        addon_slug=TunnelConnection.decode_addon_slug(
-            request.headers.get("Referer", "")
-        ),
+        addon_slug=addon_slug,
     )
     if opts.registry is not None:
         opts.registry.add(conn)

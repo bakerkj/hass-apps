@@ -15,8 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from dashboard_entity_proxy import http_traffic
 from dashboard_entity_proxy.http_traffic import (
     HttpTrafficTracker,
+    addon_slug_for_path,
     classify_target,
     parse_line,
     tail_access_log,
@@ -324,3 +326,57 @@ async def test_tail_reads_lines_written_after_truncate(tmp_path: Path):
     assert "2.2.2.2" in sources, (
         f"post-truncate line not picked up; saw sources {sources}"
     )
+
+
+# ---- ingress token → addon slug map --------------------------------------
+
+
+def _reset_ingress_map() -> None:
+    http_traffic._INGRESS_TOKEN_TO_SLUG.clear()
+
+
+def test_addon_slug_for_path_unpopulated_returns_empty() -> None:
+    _reset_ingress_map()
+    assert addon_slug_for_path("/api/hassio_ingress/anytoken/events") == ""
+
+
+def test_ingress_panel_referer_populates_token_map() -> None:
+    """An HTTP request to ``/api/hassio_ingress/<token>/...`` whose
+    ``Referer`` carries the addon's panel slug records that
+    token → slug pairing so a later WS tunnel on the same token can
+    resolve the addon name even when its own Referer is missing.
+    """
+    _reset_ingress_map()
+    reg = _FakeRegistry()
+    tracker = HttpTrafficTracker(reg)
+    tracker.record(
+        source="192.168.1.10",
+        method="GET",
+        uri="/api/hassio_ingress/YlIagToksvj/static/main.js",
+        status=200,
+        bytes_sent=100,
+        request_length=10,
+        referer="http://hass.example.com:8126/8455f921_esphome_dist_server",
+    )
+    assert addon_slug_for_path("/api/hassio_ingress/YlIagToksvj/events") == (
+        "esphome_dist_server"
+    )
+    # Unrelated tokens still miss.
+    assert addon_slug_for_path("/api/hassio_ingress/different/events") == ""
+
+
+def test_ingress_map_ignores_non_panel_referer() -> None:
+    """Iframe-content navigation produces an ingress URL whose Referer
+    is another ingress URL — those must NOT pollute the map.
+    """
+    _reset_ingress_map()
+    reg = _FakeRegistry()
+    tracker = HttpTrafficTracker(reg)
+    tracker.record(
+        source="192.168.1.10",
+        method="GET",
+        uri="/api/hassio_ingress/token-a/asset.png",
+        status=200,
+        referer="http://hass:8126/api/hassio_ingress/token-a/",
+    )
+    assert addon_slug_for_path("/api/hassio_ingress/token-a/events") == ""
