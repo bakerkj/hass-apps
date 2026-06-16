@@ -435,6 +435,55 @@ async def test_tunnel_ws_handles_dial_failure() -> None:
         await proxy_runner.cleanup()
 
 
+async def test_tunnel_ws_closes_upstream_on_prepare_failure() -> None:
+    """If ``ws_client.prepare()`` raises after the upstream dial has
+    succeeded (e.g. the client's TCP connection drops in the window
+    between dial and accept), ``ws_ha`` must be closed — leaving it
+    open would leak upstream WS sessions under reconnect-loop load.
+    """
+    upstream_closed = False
+
+    class _FakeWS:
+        protocol: str | None = None
+
+        async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+            nonlocal upstream_closed
+            upstream_closed = True
+
+        def __aiter__(self) -> Any:
+            return self
+
+        async def __anext__(self) -> Any:
+            raise StopAsyncIteration
+
+    async def fake_ws_connect(_url: str, **_kwargs: Any) -> _FakeWS:
+        return _FakeWS()
+
+    proxy_app = proxy.create_app(_opts("http://127.0.0.1:1"))
+    proxy_runner, proxy_url = await _start_app(proxy_app)
+    real_client = proxy_app[proxy.CLIENT_KEY]
+    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
+        ws_connect=fake_ws_connect, close=real_client.close
+    )
+    # Make ``WebSocketResponse.prepare`` raise to simulate the client
+    # dropping its TCP connection in the dial→accept window.
+    from unittest.mock import patch
+
+    try:
+        with patch.object(
+            web.WebSocketResponse,
+            "prepare",
+            side_effect=RuntimeError("client dropped"),
+        ):
+            async with aiohttp.ClientSession() as cs:
+                with pytest.raises(Exception):
+                    await cs.ws_connect(proxy_url + "/custom/ws")
+    finally:
+        await proxy_runner.cleanup()
+
+    assert upstream_closed, "ws_ha.close() must be called when prepare() raises"
+
+
 # ---- passthrough_all dispatch ---------------------------------------------
 
 

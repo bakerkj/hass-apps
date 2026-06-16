@@ -283,7 +283,15 @@ async def _tunnel_ws(
         max_msg_size=WS_MAX_MSG_SIZE,
         protocols=server_protocols,
     )
-    await ws_client.prepare(request)
+    try:
+        await ws_client.prepare(request)
+    except Exception:
+        # The client TCP can drop in the window between the dial
+        # succeeding and the upgrade response being written; leaving
+        # ``ws_ha`` open would leak it. Under the ESPHome reconnect-loop
+        # this can accumulate enough leaked upstreams to hit HA's WS cap.
+        await ws_ha.close()
+        raise
 
     conn = TunnelConnection(
         remote_addr=_client_addr(request),
