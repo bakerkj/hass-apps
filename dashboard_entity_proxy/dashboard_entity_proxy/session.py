@@ -345,6 +345,11 @@ class Session:
         # busy resolver loop doesn't fire a line per ``_mark_ready_and_apply``;
         # navigation between dashboards changes the tuple and re-fires.
         self._last_scope_logged: tuple[str, bool, int] | None = None
+        # Set by the first pump to exit in ``_pump_ws``'s finally —
+        # ``"ha"`` (upstream dropped), ``"client"`` (peer dropped), or
+        # left as ``"proxy"`` when an internal ``_fatal``/``_cleanup``
+        # fires the teardown ahead of either pump exiting.
+        self._disconnect_by = "proxy"
 
     def _on_scope_ready(self) -> None:
         """Called by ScopeResolver after a scope becomes ready (or after
@@ -442,25 +447,15 @@ class Session:
             await self._done.wait()
         finally:
             duration = (datetime.now(timezone.utc) - self._connected_at).total_seconds()
-            # Snapshot which side closed first BEFORE the cleanup logic
-            # below explicitly closes both. ``ws_*.closed`` reflects the
-            # peer's actual disconnect at this point. If both are open
-            # the trigger was an internal ``_fatal``/``_cleanup`` call;
-            # report it as "proxy" so the cause isn't misattributed.
-            ha_closed = self.ws_ha.closed
-            client_closed = self.ws_client.closed
-            if ha_closed and not client_closed:
-                peer = "ha"
-            elif client_closed and not ha_closed:
-                peer = "client"
-            elif ha_closed and client_closed:
-                peer = "both"
-            else:
-                peer = "proxy"
+            # ``_disconnect_by`` is set by the first pump to exit (see
+            # ``_pump_ws``); ``ws.closed`` is unreliable here because it
+            # only flips on a clean CLOSE handshake. Falls back to
+            # ``"proxy"`` when an internal ``_fatal``/``_cleanup`` fired
+            # the teardown ahead of either pump.
             self._log.info(
                 "client disconnected after %.1fs (closed by: %s)",
                 duration,
-                peer,
+                self._disconnect_by,
             )
             if self._registry is not None:
                 self._registry.remove(self)
@@ -556,6 +551,16 @@ class Session:
         except Exception as exc:  # noqa: BLE001 - bug in a handler, not a disconnect
             self._log.warning("%s pump exception: %r", name, exc, exc_info=True)
         finally:
+            # Record which side hung up FIRST. ``ws.closed`` only flips
+            # to True after a clean CLOSE handshake — network-level
+            # drops (TCP RST, browser tab close, kiosk power cycle)
+            # exit through ``_EXPECTED_DISCONNECT_EXC`` and leave
+            # ``ws.closed = False``. Capturing the pump name here is
+            # the only reliable signal for the disconnect log; the
+            # ``not _done.is_set()`` guard lets the first pump to
+            # exit win the attribution.
+            if not self._done.is_set():
+                self._disconnect_by = name
             self._cleanup()
 
     async def _pump_ha(self) -> None:
