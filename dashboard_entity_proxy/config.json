@@ -3,7 +3,7 @@
   "slug": "dashboard_entity_proxy",
   "description": "Filters Home Assistant WebSocket entity subscriptions per dashboard so slow devices only process the updates they display.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "image": "ghcr.io/bakerkj/{arch}-dashboard_entity_proxy",
   "arch": [
     "amd64",

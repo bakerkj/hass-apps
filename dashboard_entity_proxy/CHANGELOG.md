@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.2](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.1...dashboard_entity_proxy-v0.1.2) (2026-06-16)
+
+
+### Features
+
+* **dashboard_entity_proxy:** drop dashboard_url_path; client seeds scope ([#229](https://github.com/bakerkj/hass-apps/issues/229)) ([067db33](https://github.com/bakerkj/hass-apps/commit/067db333d1ea3315e78899cd5f83dd3af38e985b))
+* **dashboard_entity_proxy:** name dashboard in scope fallback warnings; uncap status sample ([#227](https://github.com/bakerkj/hass-apps/issues/227)) ([32bd553](https://github.com/bakerkj/hass-apps/commit/32bd553081d7ee246a89425c25845303ab53038a))
+* **dashboard_entity_proxy:** per-session connect, scope-ready, disconnect logs ([#230](https://github.com/bakerkj/hass-apps/issues/230)) ([a38d399](https://github.com/bakerkj/hass-apps/commit/a38d399fc5bd1e94f32a295f805129dd0a9b5d09))
+* **dashboard_entity_proxy:** richer tunnel cards in the status UI ([#232](https://github.com/bakerkj/hass-apps/issues/232)) ([3bc677c](https://github.com/bakerkj/hass-apps/commit/3bc677cab4a16bbf328c8adb9635d5b48e9a29f2))
+
+
+### Bug Fixes
+
+* **dashboard_entity_proxy:** WS tunnel Origin rewrite for upstream check_origin ([#231](https://github.com/bakerkj/hass-apps/issues/231)) ([bf5cc5e](https://github.com/bakerkj/hass-apps/commit/bf5cc5ef8aeea527a83a968da183af8e6b56fd21))
+
 ## [0.1.1](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.0...dashboard_entity_proxy-v0.1.1) (2026-06-16)
 
 
