@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
@@ -18,7 +19,7 @@ import aiohttp
 from aiohttp import WSMsgType, web
 from multidict import CIMultiDict
 
-from . import hostname_lookup
+from . import hostname_lookup, http_traffic
 from .const import (
     HA_WS_PATH,
     HEARTBEAT,
@@ -54,21 +55,50 @@ def _client_addr(request: web.Request) -> str:
     return request.remote or ""
 
 
+# HA addon panel paths look like ``/<8hexhash>_<addon-name>``. The hash
+# is per-install; the slug after the underscore is the addon's stable
+# identifier (e.g. ``esphome_dist_server``). Used to decode the opaque
+# ingress token in tunnel target paths into something human-readable.
+_PANEL_REFERER_RE = re.compile(r"/[a-f0-9]{8}_([A-Za-z0-9_-]+)(?:/|$)")
+
+
 class TunnelConnection:
     """A raw WebSocket pass-through, tracked in the status UI so users can see
     every connection the proxy is handling — not just intercepted ones.
     """
 
-    def __init__(self, remote_addr: str, target_path: str, passthrough: bool):
+    def __init__(
+        self,
+        remote_addr: str,
+        target_path: str,
+        passthrough: bool,
+        *,
+        subprotocol: str = "",
+        addon_slug: str = "",
+    ):
         """``passthrough`` is True when the tunnelled WebSocket is on the
         HA WS path but the addon is configured to forward it unchanged
         (passthrough_all mode); otherwise it's some non-API WS path the
         proxy is tunnelling.
+
+        ``subprotocol`` is the upstream-chosen ``Sec-WebSocket-Protocol``
+        (empty if none was negotiated). ``addon_slug`` is the
+        human-readable name of the addon serving the ingress endpoint,
+        decoded from the ``Referer`` of the upgrade request (empty for
+        non-ingress tunnels like Frigate's direct ``/api/frigate/...``).
         """
         self._remote = remote_addr
         self._target = target_path
         self._passthrough = passthrough
+        self._subprotocol = subprotocol
+        self._addon_slug = addon_slug
         self._connected_at = datetime.now(timezone.utc)
+        self._last_msg_at: datetime | None = None
+        # Set by ``_tunnel_ws`` once both pumps return and the close
+        # meta is known. Surfaced in the snapshot so the disconnect
+        # cause is visible during the 60-second retention window.
+        self._close_code: int | None = None
+        self._close_reason: str = ""
         hostname_lookup.prime(remote_addr)
         self.msgs_client_to_ha = 0
         self.msgs_ha_to_client = 0
@@ -78,18 +108,61 @@ class TunnelConnection:
         self.bytes_client_to_ha = 0
         self.bytes_ha_to_client = 0
 
+    def mark_frame(self) -> None:
+        """Record that a frame just flowed in either direction. The
+        snapshot surfaces this as ``last_msg_at`` so an operator can
+        spot tunnels that established cleanly but then went silent
+        (the symptom mode of the pre-Origin-rewrite ESPHome bug).
+        """
+        self._last_msg_at = datetime.now(timezone.utc)
+
+    def mark_closed(self, code: int, reason: str) -> None:
+        """Record the close code / reason captured by ``_tunnel_ws`` so
+        the disconnect cause shows up in the retained card.
+        """
+        self._close_code = code
+        self._close_reason = reason
+
+    @staticmethod
+    def decode_addon_slug(referer: str) -> str:
+        """Pull the addon slug out of a panel-style ``Referer`` URL:
+        ``http://host:8126/8455f921_esphome_dist_server`` →
+        ``esphome_dist_server``. Returns empty string for any URL that
+        doesn't match the panel shape (Frigate's WS, lovelace, etc.).
+        """
+        if not referer:
+            return ""
+        m = _PANEL_REFERER_RE.search(referer)
+        return m.group(1) if m else ""
+
     def status(self) -> dict[str, Any]:
         """Snapshot dict consumed by ``SessionRegistry`` / the Ingress
         status UI. Distinct ``kind`` value from intercepted ``Session``s so
         the UI can render the two differently.
         """
         hostname_lookup.prime(self._remote)
+        # Lazy resolution: the ingress-token → addon-slug map is
+        # populated by the http_traffic tailer, which can lag a few
+        # hundred ms behind tunnel construction. Look up each time we
+        # render a snapshot until we get a hit, then cache. Guard on
+        # the path prefix so non-ingress tunnels (Frigate WS, plain
+        # ``/api/websocket`` passthrough) don't rerun a guaranteed-miss
+        # lookup on every 2-second poll.
+        if not self._addon_slug and self._target.startswith("/api/hassio_ingress/"):
+            late = http_traffic.addon_slug_for_path(self._target)
+            if late:
+                self._addon_slug = late
         return {
             "kind": "passthrough" if self._passthrough else "tunnel",
             "remote_addr": self._remote,
             "hostname": hostname_lookup.cached_hostname(self._remote),
             "connected_at": self._connected_at.isoformat(),
             "target_path": self._target,
+            "addon_slug": self._addon_slug,
+            "subprotocol": self._subprotocol,
+            "last_msg_at": self._last_msg_at.isoformat() if self._last_msg_at else None,
+            "close_code": self._close_code,
+            "close_reason": self._close_reason,
             "messages_client_to_ha": self.msgs_client_to_ha,
             "messages_ha_to_client": self.msgs_ha_to_client,
             "rx_bytes": self.bytes_client_to_ha,
@@ -293,10 +366,20 @@ async def _tunnel_ws(
         await ws_ha.close()
         raise
 
+    # Resolve the addon slug: WebSocket upgrades typically arrive
+    # without a ``Referer`` (iframe content sets ``referrerpolicy=
+    # no-referrer``), so fall back to the token → slug map the
+    # ``http_traffic`` tracker built up from earlier panel-Referer
+    # HTTP traffic in the same ingress session.
+    addon_slug = TunnelConnection.decode_addon_slug(
+        request.headers.get("Referer", "")
+    ) or http_traffic.addon_slug_for_path(request.path_qs)
     conn = TunnelConnection(
         remote_addr=_client_addr(request),
         target_path=request.path_qs,
         passthrough=(request.path == HA_WS_PATH),
+        subprotocol=ws_ha.protocol or "",
+        addon_slug=addon_slug,
     )
     if opts.registry is not None:
         opts.registry.add(conn)
@@ -304,10 +387,12 @@ async def _tunnel_ws(
     def _account_c_to_h(n: int) -> None:
         conn.msgs_client_to_ha += 1
         conn.bytes_client_to_ha += n
+        conn.mark_frame()
 
     def _account_h_to_c(n: int) -> None:
         conn.msgs_ha_to_client += 1
         conn.bytes_ha_to_client += n
+        conn.mark_frame()
 
     c_to_h = asyncio.create_task(_pump_tunnel(ws_client, ws_ha, _account_c_to_h))
     h_to_c = asyncio.create_task(_pump_tunnel(ws_ha, ws_client, _account_h_to_c))
@@ -323,19 +408,28 @@ async def _tunnel_ws(
             with contextlib.suppress(asyncio.CancelledError):
                 await t
     finally:
-        if opts.registry is not None:
-            opts.registry.remove(conn)
         # Each pump's task result is its captured close meta (or None for
         # a clean CLOSED without an explicit CLOSE frame). Cancelled
         # tasks report no close meta. Forward each side's observed close
         # code/reason to its peer so both halves of the tunnel see the
-        # same disconnect cause.
+        # same disconnect cause; also surface it on the snapshot so the
+        # retained card shows why the tunnel closed.
         close_from_client = _close_meta_from_task(c_to_h)
         close_from_ha = _close_meta_from_task(h_to_c)
         ha_code, ha_reason = close_from_ha if close_from_ha is not None else (1000, "")
         client_code, client_reason = (
             close_from_client if close_from_client is not None else (1000, "")
         )
+        # Pick whichever side actually carried a close frame. ``ha`` wins
+        # by default since the upstream is the more common authoritative
+        # source of disconnect causes; only fall back to the client side
+        # when ``ha`` was a synthetic 1000.
+        if close_from_ha is not None:
+            conn.mark_closed(ha_code, ha_reason)
+        elif close_from_client is not None:
+            conn.mark_closed(client_code, client_reason)
+        if opts.registry is not None:
+            opts.registry.remove(conn)
         await ws_client.close(code=ha_code, message=ha_reason.encode("utf-8"))
         await ws_ha.close(code=client_code, message=client_reason.encode("utf-8"))
     return ws_client

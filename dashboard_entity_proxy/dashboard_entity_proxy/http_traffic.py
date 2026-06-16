@@ -54,6 +54,69 @@ _LOG_RE = re.compile(
 _PANEL_RE = re.compile(r"^/([a-f0-9]{8}_[A-Za-z0-9_-]+)(?:/|$)")
 
 
+def _strip_install_hash(panel_slug: str) -> str:
+    """``ccab4aaf_esphome_dist_server`` → ``esphome_dist_server``. The
+    8-hex prefix is per-install and meaningless to operators; strip it
+    so HTTP-client and tunnel cards display the same human-readable
+    addon name.
+    """
+    if "_" in panel_slug:
+        return panel_slug.split("_", 1)[1]
+    return panel_slug
+
+
+# Ingress path is ``/api/hassio_ingress/<opaque-token>/...``. The token
+# is per-addon-session and can be mapped to the addon's slug by
+# observing the panel-style Referer on the first iframe-content
+# request: browsers send ``Referer: /<8hex>_<slug>`` on requests
+# initiated from inside the addon's panel iframe. WebSocket upgrades
+# (e.g. ESPHome's ``/events``) typically arrive without ``Referer``
+# at all, so the only reliable signal is the HTTP traffic seen
+# earlier in the same ingress session — captured here and looked up
+# at tunnel-construction time via ``addon_slug_for_path``.
+_INGRESS_TOKEN_RE = re.compile(r"^/api/hassio_ingress/([^/]+)")
+
+# Maps ingress token → addon slug (with the 8-hex prefix stripped, so
+# ``ccab4aaf_frigate-fa`` becomes ``frigate-fa``). Populated by the
+# nginx access-log tailer and read by ``proxy.TunnelConnection``.
+# Bounded at ``_INGRESS_TOKEN_MAP_MAX`` entries; oldest insertion is
+# evicted on overflow — dicts preserve insertion order since 3.7, so
+# popping the first key gives FIFO without an explicit OrderedDict.
+_INGRESS_TOKEN_TO_SLUG: dict[str, str] = {}
+_INGRESS_TOKEN_MAP_MAX = 256
+
+
+def _remember_ingress_panel(uri: str, referer: str) -> None:
+    """If ``uri`` is an ingress URL and ``referer`` carries a panel
+    slug, remember the token → slug mapping. No-op for anything else.
+    """
+    if not referer:
+        return
+    tm = _INGRESS_TOKEN_RE.match(uri)
+    if tm is None:
+        return
+    referer_path = urlparse(referer).path
+    pm = _PANEL_RE.match(referer_path)
+    if pm is None:
+        return
+    slug = _strip_install_hash(pm.group(1))
+    token = tm.group(1)
+    _INGRESS_TOKEN_TO_SLUG[token] = slug
+    if len(_INGRESS_TOKEN_TO_SLUG) > _INGRESS_TOKEN_MAP_MAX:
+        _INGRESS_TOKEN_TO_SLUG.pop(next(iter(_INGRESS_TOKEN_TO_SLUG)))
+
+
+def addon_slug_for_path(target_path: str) -> str:
+    """Reverse lookup: given a tunnel target path like
+    ``/api/hassio_ingress/<token>/events``, return the addon slug if
+    we've observed a panel Referer for that token, else empty string.
+    """
+    m = _INGRESS_TOKEN_RE.match(target_path)
+    if m is None:
+        return ""
+    return _INGRESS_TOKEN_TO_SLUG.get(m.group(1), "")
+
+
 def classify_target(uri: str, referer: str = "") -> str:
     """Bucket a URI (with optional Referer hint) into a short human label.
 
@@ -68,11 +131,11 @@ def classify_target(uri: str, referer: str = "") -> str:
         referer_path = urlparse(referer).path if referer else ""
         m = _PANEL_RE.match(referer_path)
         if m:
-            return f"addon: {m.group(1)}"
+            return f"addon: {_strip_install_hash(m.group(1))}"
         return "addon-ingress"
     m = _PANEL_RE.match(uri)
     if m:
-        return f"addon: {m.group(1)}"
+        return f"addon: {_strip_install_hash(m.group(1))}"
     if uri.startswith("/api/"):
         return "ha-rest"
     if uri.startswith("/static/") or uri.startswith("/frontend_latest/"):
@@ -246,7 +309,12 @@ class HttpTrafficTracker:
         """Fold one nginx access-log entry into the per-(source, target)
         aggregate. A previously-unseen source IP gets a fresh
         :class:`_HttpClient` registered with the SessionRegistry.
+
+        Side-effect: feeds the ingress-token → addon-slug map so the
+        WS-tunnel cards can show which addon is on the other end of an
+        otherwise-opaque ``/api/hassio_ingress/<token>/...`` URL.
         """
+        _remember_ingress_panel(uri, referer)
         client = self._clients.get(source)
         if client is None:
             client = _HttpClient(source, self._retention)
