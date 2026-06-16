@@ -241,11 +241,15 @@
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
           <h2><span data-field="hostname" class="hostname"></span><span data-field="remote" class="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <div class="row" data-row="addon" style="display:none"><span class="k">Addon</span><span class="v"><code data-field="addon"></code></span></div>
           <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
+          <div class="row" data-row="last-msg" style="display:none"><span class="k">Last frame</span><span class="v" data-field="last-msg"></span></div>
           <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
+          <div class="row" data-row="subprotocol" style="display:none"><span class="k">Subprotocol</span><span class="v"><code data-field="subprotocol"></code></span></div>
           <div class="row"><span class="k">→ HA</span><span class="v" data-field="ha-msgs"></span></div>
           <div class="row"><span class="k">→ client</span><span class="v" data-field="client-msgs"></span></div>
           <div class="row"><span class="k">rx / tx</span><span class="v" data-field="bytes"></span></div>
+          <div class="row" data-row="close" style="display:none"><span class="k">Closed</span><span class="v" data-field="close"></span></div>
         </div>`;
       };
 
@@ -350,10 +354,21 @@
         updateEntityList(card, s);
       };
 
-      const updateTunnel = (card, s, age) => {
+      const updateTunnel = (card, s, age, now) => {
+        setText(card, 'addon', s.addon_slug || '');
+        toggleRow(card, 'addon', !!s.addon_slug);
         setText(card, 'connected', fmtDuration(age));
         setText(card, 'path', s.target_path || '');
         toggleRow(card, 'path', !!s.target_path);
+        setText(card, 'subprotocol', s.subprotocol || '');
+        toggleRow(card, 'subprotocol', !!s.subprotocol);
+        if (s.last_msg_at) {
+          const ageMs = now - new Date(s.last_msg_at).getTime();
+          setText(card, 'last-msg', `${fmtDuration(ageMs / 1000)} ago`);
+          toggleRow(card, 'last-msg', true);
+        } else {
+          toggleRow(card, 'last-msg', false);
+        }
         setText(card, 'ha-msgs', `${s.messages_client_to_ha} msgs`);
         setText(card, 'client-msgs', `${s.messages_ha_to_client} msgs`);
         setText(
@@ -361,6 +376,13 @@
           'bytes',
           `${fmtBytes(s.rx_bytes || 0)} ↑ / ${fmtBytes(s.tx_bytes || 0)} ↓`
         );
+        if (s.close_code !== null && s.close_code !== undefined) {
+          const reasonSuffix = s.close_reason ? ` — ${s.close_reason}` : '';
+          setText(card, 'close', `${s.close_code}${reasonSuffix}`);
+          toggleRow(card, 'close', true);
+        } else {
+          toggleRow(card, 'close', false);
+        }
       };
 
       // Each card has per-target rows (one per classify_target bucket).
@@ -438,7 +460,7 @@
           const age = (ageEnd - new Date(s.connected_at).getTime()) / 1000;
           if (s.kind === 'intercept') updateIntercept(card, s, age);
           else if (s.kind === 'http_client') updateHttpClient(card, s, now);
-          else updateTunnel(card, s, age);
+          else updateTunnel(card, s, age, now);
           applyDisconnectState(card, s, now);
         }
         // Remove cards for sessions that disappeared between polls.

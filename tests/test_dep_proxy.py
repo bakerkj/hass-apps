@@ -201,6 +201,77 @@ def test_tunnel_connection_kind_is_tunnel_for_non_passthrough() -> None:
     assert conn.status()["kind"] == "tunnel"
 
 
+def test_tunnel_connection_surfaces_subprotocol_and_addon_slug() -> None:
+    """Subprotocol and addon-slug both flow into the snapshot so the UI
+    can show e.g. ``esphome-events`` and ``esphome_dist_server`` next
+    to the connection.
+    """
+    conn = proxy.TunnelConnection(
+        remote_addr="1.2.3.4",
+        target_path="/api/hassio_ingress/abc/events",
+        passthrough=False,
+        subprotocol="esphome-events",
+        addon_slug="esphome_dist_server",
+    )
+    snap = conn.status()
+    assert snap["subprotocol"] == "esphome-events"
+    assert snap["addon_slug"] == "esphome_dist_server"
+    # Defaults: no frames yet, no close meta.
+    assert snap["last_msg_at"] is None
+    assert snap["close_code"] is None
+    assert snap["close_reason"] == ""
+
+
+def test_tunnel_connection_mark_frame_sets_last_msg_at() -> None:
+    """``mark_frame`` records the most-recent activity timestamp so
+    the UI can show ``Xs ago`` for tunnels that connected cleanly but
+    then went silent.
+    """
+    conn = proxy.TunnelConnection(
+        remote_addr="1.2.3.4", target_path="/custom/ws", passthrough=False
+    )
+    assert conn.status()["last_msg_at"] is None
+    conn.mark_frame()
+    assert conn.status()["last_msg_at"] is not None
+
+
+def test_tunnel_connection_mark_closed_surfaces_close_meta() -> None:
+    """``mark_closed`` records the disconnect code / reason so the
+    retained card during the 60-s window shows why the tunnel ended.
+    """
+    conn = proxy.TunnelConnection(
+        remote_addr="1.2.3.4", target_path="/custom/ws", passthrough=False
+    )
+    conn.mark_closed(1011, "internal error")
+    snap = conn.status()
+    assert snap["close_code"] == 1011
+    assert snap["close_reason"] == "internal error"
+
+
+def test_tunnel_connection_decode_addon_slug() -> None:
+    """The panel-style Referer URL carries the addon slug after the
+    8-hex install-hash prefix; non-panel URLs (lovelace, ws upgrade
+    referrers) return empty.
+    """
+    decode = proxy.TunnelConnection.decode_addon_slug
+    assert (
+        decode("http://hass:8126/8455f921_esphome_dist_server") == "esphome_dist_server"
+    )
+    assert (
+        decode("http://hass:8126/8455f921_esphome_dist_server/")
+        == "esphome_dist_server"
+    )
+    assert (
+        decode("http://hass:8126/8455f921_esphome_dist_server/builds")
+        == "esphome_dist_server"
+    )
+    assert decode("http://hass:8126/lighting-test/0") == ""
+    assert decode("") == ""
+    # Hash must be 8 hex chars exactly; near-misses don't match.
+    assert decode("http://hass:8126/8455F921_too_uppercase") == ""
+    assert decode("http://hass:8126/8455f9_too_short") == ""
+
+
 def _opts(target_url: str, **kw: Any) -> proxy.Options:
     return proxy.Options(
         target_url=target_url,
