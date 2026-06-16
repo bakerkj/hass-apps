@@ -308,6 +308,13 @@ def _render_nginx_conf(listen_port: int, ha_port: int) -> str:
         template.replace("__HA_HOST__", "127.0.0.1")
         .replace("__HA_PORT__", str(ha_port))
         .replace("__XFWD_BLOCK__", "")
+        # Match the INFO-level form ``render-nginx-conf`` produces. The
+        # test harness never flips log_level to DEBUG, so the gated
+        # ``if=$nginx_loggable`` directive is the correct shape here.
+        .replace(
+            "__STDERR_ACCESS_LOG__",
+            "access_log /dev/stderr combined if=$nginx_loggable;",
+        )
         .replace("listen 8126 default_server", f"listen {listen_port} default_server")
         .replace(
             "listen [::]:8126 default_server",

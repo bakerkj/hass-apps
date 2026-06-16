@@ -32,10 +32,46 @@ import signal
 from pathlib import Path
 
 from aiohttp import web
+from aiohttp.abc import AbstractAccessLogger
 
 from . import __version__, config, customization, http_traffic, proxy, statusui
 from .const import HTTP_ACCESS_LOG_PATH, INGRESS_PORT, PROXY_BIND_PORT
 from .session import SessionRegistry
+
+
+class _RealIPAccessLogger(AbstractAccessLogger):
+    """``aiohttp.access`` logger that surfaces the upstream client IP
+    from the ``X-Real-IP`` / ``X-Forwarded-For`` headers instead of the
+    aiohttp peer address. Both apps sit behind a reverse proxy: nginx
+    for the proxy app (loopback peer), Supervisor ingress for the
+    status app (bridge-network peer). Showing those peer IPs is
+    useless for attribution; the upstream headers carry the real
+    browser IP.
+    """
+
+    def log(
+        self,
+        request: web.BaseRequest,
+        response: web.StreamResponse,
+        time: float,
+    ) -> None:
+        client = request.headers.get("X-Real-IP", "").strip()
+        if not client:
+            xff = request.headers.get("X-Forwarded-For", "")
+            client = xff.split(",", 1)[0].strip()
+        if not client:
+            client = request.remote or "-"
+        self.logger.info(
+            '%s "%s %s" %d %d %.3fs "%s" "%s"',
+            client,
+            request.method,
+            request.path_qs,
+            response.status,
+            response.body_length,
+            time,
+            request.headers.get("Referer", "-"),
+            request.headers.get("User-Agent", "-"),
+        )
 
 
 def main() -> int:
@@ -158,10 +194,22 @@ async def _serve(
         )
     )
 
+    # Python is the canonical INFO-level access log: ``_RealIPAccessLogger``
+    # surfaces the upstream client IP, and the URI is already stripped of
+    # the opaque Supervisor ``/api/hassio_ingress/<token>/`` prefix, so the
+    # line is more useful than nginx's combined-format equivalent. nginx
+    # is therefore DEBUG-only (see render-nginx-conf).
+    #
+    # The status app is a special case — it serves only ``index.html``
+    # plus the 2 s ``/api/sessions`` poll, so its access log is ~100%
+    # poll noise. Keep it off below DEBUG.
+    aiohttp_access_logger = logging.getLogger("aiohttp.access")
+    status_access_log = aiohttp_access_logger if cfg.log_level == "DEBUG" else None
+
     runners = []
-    for app, host, port, name in (
+    for app, host, port, name, access_log_arg in (
         # Proxy app is loopback-only; nginx talks to it on 127.0.0.1.
-        (proxy_app, "127.0.0.1", PROXY_BIND_PORT, "proxy"),
+        (proxy_app, "127.0.0.1", PROXY_BIND_PORT, "proxy", aiohttp_access_logger),
         # Status app binds on every interface so Supervisor's ingress
         # proxy (which reaches the addon over the hassio docker bridge,
         # NOT the container's loopback) can hit it. ``ports:`` in
@@ -169,9 +217,13 @@ async def _serve(
         # paths are: Supervisor ingress (auth-gated by HA) and other
         # containers on the same bridge. Don't tighten this without
         # also reworking how Supervisor reaches the UI.
-        (status_app, "0.0.0.0", INGRESS_PORT, "status"),  # noqa: S104
+        (status_app, "0.0.0.0", INGRESS_PORT, "status", status_access_log),  # noqa: S104
     ):
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(
+            app,
+            access_log=access_log_arg,
+            access_log_class=_RealIPAccessLogger,
+        )
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()
