@@ -11,12 +11,6 @@ configuration:
       direct client connections (no trusted_proxies configuration needed).
       Disable to forward standard proxy headers instead. Applies to HTTP
       requests only; the WebSocket connection always reaches HA directly.
-  dashboard_url_path:
-    name: Dashboard URL path
-    description: >-
-      URL path of the dashboard each client's subscription starts on (e.g.
-      "lovelace-kiosk"). Leave blank for the default dashboard. The scope then
-      follows the client's navigation.
   state_update_interval:
     name: State update interval
     description: >-

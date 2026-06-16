@@ -27,8 +27,8 @@ class Options:
 
     * Upstream HA URL and the header policy the proxy uses when talking
       to it (``target_url``, ``transparent``, ``passthrough_all``).
-    * The initial dashboard, throttle window, scope include/exclude
-      filters threaded into each session.
+    * The throttle window and scope include/exclude filters threaded
+      into each session.
     * The cross-session ``SessionRegistry`` reference (for the status
       UI) and the loaded customization extensions.
     * Registry-update tracking knobs.
@@ -39,8 +39,7 @@ class Options:
     transparent: bool = True
     passthrough_all: bool = False
 
-    # Initial dashboard + steady-state knobs.
-    dashboard_url_path: str = ""
+    # Steady-state knobs.
     throttle: float = 0.0
     extra_entities: list[str] = field(default_factory=list)
     include_globs: list[str] = field(default_factory=list)

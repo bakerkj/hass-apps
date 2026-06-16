@@ -479,20 +479,45 @@ async def _auth(ws: aiohttp.ClientWebSocketResponse) -> None:
     assert msg["type"] == "auth_ok"
 
 
+async def _settle_startup(
+    ws: aiohttp.ClientWebSocketResponse, fake: "FakeHA", *, msg_id: int = 1
+) -> None:
+    """Drive a single client-side ``lovelace/config`` so the proxy reaches a
+    settled "session is initialized" state. Real browsers always issue this
+    soon after auth; tests that want to probe steady-state behaviour use
+    this helper to mirror the natural sequence and wait for ``FakeHA`` to
+    have seen the request (``on_lovelace_config``).
+
+    Returns once the response has been delivered back to the test client.
+    """
+    # Empty url_path matches the previous proxy-injected fetch and triggers
+    # FakeHA's default dashboard config (with ``light.kitchen``), so tests
+    # that previously relied on the proxy's session-start fetch still see
+    # the same scope shape after this helper returns.
+    await ws.send_json({"id": msg_id, "type": "lovelace/config", "url_path": ""})
+    await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+    # Drain the response to keep the read pipe clean for subsequent reads.
+    while True:
+        msg = await _read(ws)
+        if msg.get("id") == msg_id and msg.get("type") == "result":
+            return
+
+
 @pytest.mark.asyncio
 async def test_scope_snapshot_and_coalesced_changes_filtered() -> None:
-    fake_runner, proxy_runner, proxy_url, _fake = await _setup()
+    fake_runner, proxy_runner, proxy_url, fake = await _setup()
     try:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 2, "type": "subscribe_entities"})
 
                 res = await _read(ws)
-                assert res["type"] == "result" and res["success"] and res["id"] == 1
+                assert res["type"] == "result" and res["success"] and res["id"] == 2
 
                 snap = await _read(ws)
-                assert snap["type"] == "event" and snap["id"] == 1
+                assert snap["type"] == "event" and snap["id"] == 2
                 add = snap["event"]["a"]
                 assert "light.kitchen" in add
                 assert "sensor.temp" not in add, "out-of-scope entity in snapshot"
@@ -501,7 +526,7 @@ async def test_scope_snapshot_and_coalesced_changes_filtered() -> None:
                 # Sensor is out of scope (filtered); the proxy must split the
                 # frame and only propagate the light change.
                 chg = await _read(ws)
-                assert chg["type"] == "event" and chg["id"] == 1
+                assert chg["type"] == "event" and chg["id"] == 2
                 changed = chg["event"].get("c", {})
                 assert "light.kitchen" in changed
                 assert "sensor.temp" not in changed
@@ -512,12 +537,13 @@ async def test_scope_snapshot_and_coalesced_changes_filtered() -> None:
 
 @pytest.mark.asyncio
 async def test_device_page_navigation_rescopes() -> None:
-    fake_runner, proxy_runner, proxy_url, _fake = await _setup()
+    fake_runner, proxy_runner, proxy_url, fake = await _setup()
     try:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 2, "type": "subscribe_entities"})
                 await _read(ws)  # result
                 snap = await _read(ws)
                 assert "light.kitchen" in snap["event"]["a"]
@@ -529,7 +555,7 @@ async def test_device_page_navigation_rescopes() -> None:
                 # the re-scope emits remove + add diffs.
                 await ws.send_json(
                     {
-                        "id": 2,
+                        "id": 3,
                         "type": "browser_mod/update",
                         "data": {"path": "/config/devices/device/dev2"},
                     }
@@ -553,12 +579,13 @@ async def test_customization_implicit_entity_seeded_into_scope() -> None:
     cust = Customization(
         implicit_entities={"custom:my-implicit-card": ("calendar.workday",)}
     )
-    fake_runner, proxy_runner, proxy_url, _fake = await _setup(cust)
+    fake_runner, proxy_runner, proxy_url, fake = await _setup(cust)
     try:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 2, "type": "subscribe_entities"})
                 await _read(ws)  # result
                 snap = await _read(ws)
                 add = snap["event"]["a"]
@@ -582,12 +609,13 @@ async def test_calendar_panel_navigation_scopes_to_domain() -> None:
     and keeps ``calendar.workday`` — no add event needed because the
     calendar entity was already in scope.
     """
-    fake_runner, proxy_runner, proxy_url, _fake = await _setup()
+    fake_runner, proxy_runner, proxy_url, fake = await _setup()
     try:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 2, "type": "subscribe_entities"})
                 await _read(ws)  # result
                 snap = await _read(ws)
                 assert "light.kitchen" in snap["event"]["a"]
@@ -598,7 +626,7 @@ async def test_calendar_panel_navigation_scopes_to_domain() -> None:
 
                 await ws.send_json(
                     {
-                        "id": 2,
+                        "id": 3,
                         "type": "browser_mod/update",
                         "data": {"browser": {"path": "/calendar"}},
                     }
@@ -673,26 +701,27 @@ async def test_client_side_id_reuse_is_rejected() -> None:
     a client that reuses or regresses an id gets ERR_ID_REUSE back and the
     message is NOT forwarded.
     """
-    fake_runner, proxy_runner, proxy_url, _fake = await _setup()
+    fake_runner, proxy_runner, proxy_url, fake = await _setup()
     try:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 5, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 6, "type": "subscribe_entities"})
                 await _read(ws)  # result
                 await _read(ws)  # snapshot
                 await _read(ws)  # propagated change
 
                 # Reuse id 5 — should be rejected without forwarding.
-                await ws.send_json({"id": 5, "type": "ping"})
+                await ws.send_json({"id": 6, "type": "ping"})
                 rej = await _read(ws)
-                assert rej["id"] == 5
+                assert rej["id"] == 6
                 assert rej["type"] == "result"
                 assert rej["success"] is False
                 assert rej["error"]["code"] == "id_reuse"
 
                 # Lower id (3) — also rejected.
-                await ws.send_json({"id": 3, "type": "ping"})
+                await ws.send_json({"id": 4, "type": "ping"})
                 rej2 = await _read(ws)
                 assert rej2["error"]["code"] == "id_reuse"
     finally:
@@ -737,7 +766,8 @@ async def test_registry_update_event_triggers_refetch_and_rescopes() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
+                await _settle_startup(ws, fake)
+                await ws.send_json({"id": 2, "type": "subscribe_entities"})
                 await _read(ws)  # result
                 snap = await _read(ws)
                 assert "light.kitchen" in snap["event"]["a"]
@@ -767,7 +797,7 @@ async def test_registry_update_event_triggers_refetch_and_rescopes() -> None:
 
                 await ws.send_json(
                     {
-                        "id": 2,
+                        "id": 3,
                         "type": "browser_mod/update",
                         "data": {"path": "/config/devices/device/dev3"},
                     }
@@ -845,7 +875,7 @@ async def test_incremental_mode_entity_remove_is_local_only() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 # Baseline counts after startup.
                 base_list = fake.entity_list_count
                 base_get = fake.entity_get_count
@@ -873,7 +903,7 @@ async def test_incremental_mode_entity_create_uses_per_entity_get() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_list = fake.entity_list_count
                 base_get = fake.entity_get_count
 
@@ -908,7 +938,7 @@ async def test_incremental_mode_burst_promotes_to_full_refetch() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_list = fake.entity_list_count
                 base_get = fake.entity_get_count
 
@@ -942,7 +972,7 @@ async def test_full_mode_refetches_on_event() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_list = fake.entity_list_count
                 base_get = fake.entity_get_count
 
@@ -974,7 +1004,7 @@ async def test_full_mode_debounces_burst_into_one_refetch() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_list = fake.entity_list_count
 
                 # Five back-to-back events well inside one debounce window.
@@ -1002,7 +1032,7 @@ async def test_incremental_mode_device_remove_is_local_only() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_list = fake.device_list_count
 
                 await emit_device_registry_event(fake, "remove", "dev1")
@@ -1028,7 +1058,7 @@ async def test_incremental_mode_device_create_refetches_device_list() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_entity_list = fake.entity_list_count
                 base_device_list = fake.device_list_count
 
@@ -1119,7 +1149,7 @@ async def test_periodic_refetch_runs_on_interval() -> None:
         async with aiohttp.ClientSession() as cs:
             async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
                 await _auth(ws)
-                await asyncio.wait_for(fake.on_lovelace_config.wait(), timeout=2.0)
+                await _settle_startup(ws, fake)
                 base_entity_list = fake.entity_list_count
                 base_device_list = fake.device_list_count
 
