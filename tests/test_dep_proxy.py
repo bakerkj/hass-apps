@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
+import pytest
 from aiohttp import web
 from multidict import CIMultiDict, CIMultiDictProxy
 
@@ -417,24 +418,70 @@ async def test_tunnel_ws_passes_text_and_binary_and_counts() -> None:
 
 
 async def test_tunnel_ws_handles_dial_failure() -> None:
-    # HA isn't running on this port. The proxy completes the client
-    # handshake first (it has to, to send WS frames in response), then
-    # dials HA, fails, logs, and closes the client. The test client sees
-    # a successful upgrade followed by an immediate close — no raise.
+    # HA isn't running on this port. The proxy now dials HA FIRST (so it
+    # can thread the upstream's chosen subprotocol back into the client
+    # handshake), and on dial failure returns a plain HTTP 502 — the
+    # client's WS upgrade attempt sees the 502 as a ``WSServerHandshakeError``
+    # rather than an empty 101 followed by immediate close.
     closed_port = _free_port()
     ha_url = f"http://127.0.0.1:{closed_port}"
     proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
     try:
         async with aiohttp.ClientSession() as cs:
-            async with cs.ws_connect(proxy_url + "/custom/ws") as ws:
-                msg = await ws.receive(timeout=2.0)
-                assert msg.type in (
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.CLOSING,
-                )
+            with pytest.raises(aiohttp.WSServerHandshakeError) as exc_info:
+                await cs.ws_connect(proxy_url + "/custom/ws")
+            assert exc_info.value.status == 502
     finally:
         await proxy_runner.cleanup()
+
+
+async def test_tunnel_ws_closes_upstream_on_prepare_failure() -> None:
+    """If ``ws_client.prepare()`` raises after the upstream dial has
+    succeeded (e.g. the client's TCP connection drops in the window
+    between dial and accept), ``ws_ha`` must be closed — leaving it
+    open would leak upstream WS sessions under reconnect-loop load.
+    """
+    upstream_closed = False
+
+    class _FakeWS:
+        protocol: str | None = None
+
+        async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+            nonlocal upstream_closed
+            upstream_closed = True
+
+        def __aiter__(self) -> Any:
+            return self
+
+        async def __anext__(self) -> Any:
+            raise StopAsyncIteration
+
+    async def fake_ws_connect(_url: str, **_kwargs: Any) -> _FakeWS:
+        return _FakeWS()
+
+    proxy_app = proxy.create_app(_opts("http://127.0.0.1:1"))
+    proxy_runner, proxy_url = await _start_app(proxy_app)
+    real_client = proxy_app[proxy.CLIENT_KEY]
+    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
+        ws_connect=fake_ws_connect, close=real_client.close
+    )
+    # Make ``WebSocketResponse.prepare`` raise to simulate the client
+    # dropping its TCP connection in the dial→accept window.
+    from unittest.mock import patch
+
+    try:
+        with patch.object(
+            web.WebSocketResponse,
+            "prepare",
+            side_effect=RuntimeError("client dropped"),
+        ):
+            async with aiohttp.ClientSession() as cs:
+                with pytest.raises(Exception):
+                    await cs.ws_connect(proxy_url + "/custom/ws")
+    finally:
+        await proxy_runner.cleanup()
+
+    assert upstream_closed, "ws_ha.close() must be called when prepare() raises"
 
 
 # ---- passthrough_all dispatch ---------------------------------------------
@@ -499,6 +546,96 @@ async def test_ws_dial_forwards_custom_headers_and_strips_handshake() -> None:
     assert "sec-websocket-key" not in lower
     assert "sec-websocket-version" not in lower
     assert "sec-websocket-extensions" not in lower
+
+
+async def test_tunnel_ws_rewrites_origin_to_match_upstream_host() -> None:
+    """Tornado's default ``WebSocketHandler.check_origin`` (used by
+    ESPHome Dashboard's ``/events`` and other WS endpoints) rejects any
+    upgrade where ``Origin`` doesn't match ``Host``. The browser's
+    original ``Origin`` names the *proxy* host, not the upstream HA host,
+    so DEP must rewrite ``Origin`` on the upstream dial to match
+    ``ws_base`` — otherwise the upstream accepts the handshake and
+    immediately closes, producing a tight reconnect loop.
+    """
+    captured: dict[str, Any] = {}
+
+    class _FakeWS:
+        protocol: str | None = None
+
+        async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+            return None
+
+        def __aiter__(self) -> Any:
+            return self
+
+        async def __anext__(self) -> Any:
+            raise StopAsyncIteration
+
+    async def fake_ws_connect(url: str, **kwargs: Any) -> Any:
+        captured["headers"] = kwargs.get("headers")
+        return _FakeWS()
+
+    proxy_app = proxy.create_app(_opts("http://homeassistant:8123"))
+    proxy_runner, proxy_url = await _start_app(proxy_app)
+    real_client = proxy_app[proxy.CLIENT_KEY]
+    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
+        ws_connect=fake_ws_connect, close=real_client.close
+    )
+    try:
+        async with aiohttp.ClientSession() as cs:
+            try:
+                async with cs.ws_connect(
+                    proxy_url + "/api/hassio_ingress/abc/events",
+                    headers={"Origin": "http://hass.keneli.org:8126"},
+                ) as ws:
+                    await ws.receive(timeout=2.0)
+            except aiohttp.ClientError:
+                pass
+    finally:
+        await proxy_runner.cleanup()
+
+    headers = captured["headers"]
+    # Upstream must see Origin matching upstream Host, NOT the browser's
+    # proxy-host Origin.
+    assert headers["Origin"] == "http://homeassistant:8123"
+
+
+async def test_tunnel_ws_negotiates_subprotocol_end_to_end() -> None:
+    """``Sec-WebSocket-Protocol`` must be forwarded end-to-end: the
+    client's proposal reaches the upstream, and the upstream's pick is
+    echoed back to the client. Real motivating case: ESPHome Builder's
+    ``/events`` endpoint requires a specific subprotocol and closes the
+    WS immediately if the server doesn't ack one.
+    """
+
+    async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+        # Upstream accepts the ``esphome-events`` proposal among any the
+        # client offered.
+        ws = web.WebSocketResponse(protocols=("esphome-events",))
+        await ws.prepare(request)
+        await ws.close()
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/api/hassio_ingress/{tail:.*}", ws_handler)
+    upstream_runner, upstream_url = await _start_app(app)
+    try:
+        proxy_app = proxy.create_app(_opts(upstream_url))
+        proxy_runner, proxy_url = await _start_app(proxy_app)
+        try:
+            async with aiohttp.ClientSession() as cs:
+                async with cs.ws_connect(
+                    proxy_url + "/api/hassio_ingress/abc/events",
+                    protocols=("esphome-events", "other-proto"),
+                ) as ws:
+                    # Upstream's choice must have round-tripped back through
+                    # the proxy's response to the client.
+                    assert ws.protocol == "esphome-events"
+                    await ws.receive(timeout=2.0)
+        finally:
+            await proxy_runner.cleanup()
+    finally:
+        await upstream_runner.cleanup()
 
 
 async def test_tunnel_ws_propagates_close_code() -> None:
