@@ -84,12 +84,12 @@ def test_parse_line_malformed_returns_none():
         (
             "/f1c878cb_adsb-multi-portal-feeder/",
             "",
-            "addon: f1c878cb_adsb-multi-portal-feeder",
+            "addon: adsb-multi-portal-feeder",
         ),
         (
             "/api/hassio_ingress/abc/index.html",
             "http://hass:8126/f1c878cb_adsb-multi-portal-feeder/",
-            "addon: f1c878cb_adsb-multi-portal-feeder",
+            "addon: adsb-multi-portal-feeder",
         ),
         ("/api/hassio_ingress/abc/anything", "", "addon-ingress"),
         ("/api/states/sensor.foo", "", "ha-rest"),
@@ -248,7 +248,7 @@ def test_client_classifies_ingress_via_referer():
         referer="http://hass:8126/f1c878cb_adsb-multi-portal-feeder/",
     )
     snap = reg.conns[0].status()
-    assert snap["rows"][0]["target"] == "addon: f1c878cb_adsb-multi-portal-feeder"
+    assert snap["rows"][0]["target"] == "addon: adsb-multi-portal-feeder"
 
 
 # ---- tail_access_log -----------------------------------------------------

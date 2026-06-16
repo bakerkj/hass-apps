@@ -144,10 +144,11 @@ class TunnelConnection:
         # Lazy resolution: the ingress-token → addon-slug map is
         # populated by the http_traffic tailer, which can lag a few
         # hundred ms behind tunnel construction. Look up each time we
-        # render a snapshot until we get a hit, then cache.
-        if not self._addon_slug:
-            from . import http_traffic
-
+        # render a snapshot until we get a hit, then cache. Guard on
+        # the path prefix so non-ingress tunnels (Frigate WS, plain
+        # ``/api/websocket`` passthrough) don't rerun a guaranteed-miss
+        # lookup on every 2-second poll.
+        if not self._addon_slug and self._target.startswith("/api/hassio_ingress/"):
             late = http_traffic.addon_slug_for_path(self._target)
             if late:
                 self._addon_slug = late

@@ -53,6 +53,18 @@ _LOG_RE = re.compile(
 # bucketing into the ``addon: …`` target group.
 _PANEL_RE = re.compile(r"^/([a-f0-9]{8}_[A-Za-z0-9_-]+)(?:/|$)")
 
+
+def _strip_install_hash(panel_slug: str) -> str:
+    """``ccab4aaf_esphome_dist_server`` → ``esphome_dist_server``. The
+    8-hex prefix is per-install and meaningless to operators; strip it
+    so HTTP-client and tunnel cards display the same human-readable
+    addon name.
+    """
+    if "_" in panel_slug:
+        return panel_slug.split("_", 1)[1]
+    return panel_slug
+
+
 # Ingress path is ``/api/hassio_ingress/<opaque-token>/...``. The token
 # is per-addon-session and can be mapped to the addon's slug by
 # observing the panel-style Referer on the first iframe-content
@@ -87,11 +99,7 @@ def _remember_ingress_panel(uri: str, referer: str) -> None:
     pm = _PANEL_RE.match(referer_path)
     if pm is None:
         return
-    slug = pm.group(1)
-    # Strip the 8-hex install-hash prefix; the addon slug is what's
-    # after the first underscore.
-    if "_" in slug:
-        slug = slug.split("_", 1)[1]
+    slug = _strip_install_hash(pm.group(1))
     token = tm.group(1)
     _INGRESS_TOKEN_TO_SLUG[token] = slug
     if len(_INGRESS_TOKEN_TO_SLUG) > _INGRESS_TOKEN_MAP_MAX:
@@ -123,11 +131,11 @@ def classify_target(uri: str, referer: str = "") -> str:
         referer_path = urlparse(referer).path if referer else ""
         m = _PANEL_RE.match(referer_path)
         if m:
-            return f"addon: {m.group(1)}"
+            return f"addon: {_strip_install_hash(m.group(1))}"
         return "addon-ingress"
     m = _PANEL_RE.match(uri)
     if m:
-        return f"addon: {m.group(1)}"
+        return f"addon: {_strip_install_hash(m.group(1))}"
     if uri.startswith("/api/"):
         return "ha-rest"
     if uri.startswith("/static/") or uri.startswith("/frontend_latest/"):
