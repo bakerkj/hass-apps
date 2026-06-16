@@ -74,14 +74,18 @@
         margin: 0 0 8px;
         word-break: break-all;
       }
-      /* Short hostname (first DNS label) shown to the left of the IP.
-         Empty span when reverse DNS hasn't resolved or returned nothing. */
-      .hostname {
-        color: var(--muted);
-        font-weight: normal;
-      }
+      /* Short hostname (first DNS label) shown to the left of the IP and
+         given the prominent slot in the h2; the IP shifts to muted when a
+         hostname is present. Empty hostname (reverse DNS still pending or
+         absent) leaves the IP at its normal weight so the card still has
+         a primary identifier. */
       .hostname:not(:empty)::after {
         content: ' · ';
+        color: var(--muted);
+      }
+      .hostname:not(:empty) + .remote {
+        color: var(--muted);
+        font-weight: normal;
       }
       .row {
         display: flex;
@@ -218,7 +222,7 @@
       const interceptTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote" class="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
           <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
           <div class="row"><span class="k">View</span><span class="v"><code data-field="view"></code></span></div>
@@ -236,7 +240,7 @@
       const tunnelTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote" class="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Connected</span><span class="v" data-field="connected"></span></div>
           <div class="row" data-row="path" style="display:none"><span class="k">Path</span><span class="v"><code data-field="path"></code></span></div>
           <div class="row"><span class="k">→ HA</span><span class="v" data-field="ha-msgs"></span></div>
@@ -251,7 +255,7 @@
       const httpClientTemplate = (s) => {
         const kindLabel = KIND_LABEL[s.kind] || s.kind;
         return `<div class="card" data-id="${cardId(s)}">
-          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote"></span> <span class="pill">${kindLabel}</span></h2>
+          <h2><span data-field="hostname" class="hostname"></span><span data-field="remote" class="remote"></span> <span class="pill">${kindLabel}</span></h2>
           <div class="row"><span class="k">Requests</span><span class="v" data-field="reqs"></span></div>
           <div class="row"><span class="k">rx / tx</span><span class="v" data-field="bytes"></span></div>
           <table class="http-rows" data-field="rows"></table>
