@@ -194,7 +194,7 @@ class ScopeResolver:
             self._filters.customization,
         )
         if not scoped:
-            self._log.info("no entities resolved for %s; serving all", view.label())
+            self._log.info("%s no entities resolved; serving all", view.label())
             return ScopeSet(all=True)
         return ScopeSet(ids=scoped)
 
@@ -400,26 +400,26 @@ class ScopeResolver:
         entities", since an empty scope would leave the frontend with
         no state.
 
-        ``url_path`` is included in fallback / failure warnings so an
-        operator can tell which dashboard widened scope to "all
-        entities" — the empty string renders as ``''`` (default
-        dashboard) in the log line.
+        Fallback / failure warnings lead with the dashboard ``/url_path``
+        so an operator can scan the path column across a session's
+        events. Empty ``url_path`` (HA's default-dashboard fetch)
+        renders as ``/``.
         """
-        path_repr = repr(url_path)
+        path = f"/{url_path}" if url_path else "/"
         if not msg.get("success"):
             err = msg.get("error") or {}
             code = err.get("code") if isinstance(err, dict) else None
             code_str = code if isinstance(code, str) else ""
             if code_str in _CONFIG_DENY_CODES:
                 self._log.warning(
-                    "lovelace/config denied for %s (code=%r): keeping scope",
-                    path_repr,
+                    "%s lovelace/config denied (code=%r): keeping scope",
+                    path,
                     code_str,
                 )
                 return None
             self._log.warning(
-                "lovelace/config failed for %s (code=%r); serving all entities",
-                path_repr,
+                "%s lovelace/config failed (code=%r); serving all entities",
+                path,
                 code_str,
             )
             return ScopeSet(all=True)
@@ -431,8 +431,8 @@ class ScopeResolver:
         extract = dashboard.extract_scope(result, self._filters.customization)
         if extract.empty():
             self._log.warning(
-                "dashboard parser returned no entities for %s; serving all entities",
-                path_repr,
+                "%s dashboard parser returned no entities; serving all entities",
+                path,
             )
             return ScopeSet(all=True)
         scoped = dashboard.apply_filters(
@@ -462,6 +462,8 @@ class ScopeResolver:
         if not isinstance(result, dict):
             return
         self.energy_entities = dashboard.extract_energy_entities(result)
-        self._log.debug("energy prefs: %d entities resolved", len(self.energy_entities))
+        self._log.debug(
+            "/energy energy prefs resolved: %d entities", len(self.energy_entities)
+        )
         if self._get_current_view().kind is ViewKind.ENERGY:
             self.resolve_current_view()

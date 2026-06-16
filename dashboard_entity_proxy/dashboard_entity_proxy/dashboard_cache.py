@@ -92,7 +92,7 @@ class DashboardCache:
         # dashboard, which we cache under the empty-string key.
         key = url_path if isinstance(url_path, str) else ""
         if self.drop(key):
-            log.debug("dashboard cache invalidated for %r", key)
+            log.debug("%s dashboard cache invalidated", f"/{key}" if key else "/")
             # If the user is on the dashboard that just got edited,
             # force a fresh fetch so scope re-resolves now rather than
             # only on the next navigation.
