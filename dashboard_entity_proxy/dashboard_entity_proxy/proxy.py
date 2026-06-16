@@ -18,6 +18,7 @@ import aiohttp
 from aiohttp import WSMsgType, web
 from multidict import CIMultiDict
 
+from . import hostname_lookup
 from .const import (
     HA_WS_PATH,
     HEARTBEAT,
@@ -68,6 +69,7 @@ class TunnelConnection:
         self._target = target_path
         self._passthrough = passthrough
         self._connected_at = datetime.now(timezone.utc)
+        hostname_lookup.prime(remote_addr)
         self.msgs_client_to_ha = 0
         self.msgs_ha_to_client = 0
         # Byte counters parallel to msgs_*. rx is client→HA payload
@@ -81,9 +83,11 @@ class TunnelConnection:
         status UI. Distinct ``kind`` value from intercepted ``Session``s so
         the UI can render the two differently.
         """
+        hostname_lookup.prime(self._remote)
         return {
             "kind": "passthrough" if self._passthrough else "tunnel",
             "remote_addr": self._remote,
+            "hostname": hostname_lookup.cached_hostname(self._remote),
             "connected_at": self._connected_at.isoformat(),
             "target_path": self._target,
             "messages_client_to_ha": self.msgs_client_to_ha,
