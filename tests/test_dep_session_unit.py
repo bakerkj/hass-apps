@@ -542,13 +542,25 @@ def test_scope_from_config_fallback_for_strategy_dashboard():
     assert out.all is True
 
 
-def test_scope_from_config_fallback_for_parseable_but_empty_dashboard():
+def test_scope_from_config_fallback_for_parseable_but_empty_dashboard(caplog):
     """A dashboard that yields zero entities from the walker (no cards
     reference anything, no patterns) widens to all rather than serving
-    a blank snapshot."""
+    a blank snapshot. The warning identifies the dashboard by its
+    ``url_path`` so an operator can investigate which dashboard widened.
+    """
+    import logging
+
     s = _make_session_for_scope_from_config()
-    out = s._scope.scope_from_config({"success": True, "result": {"views": [{}]}})
+    with caplog.at_level(logging.WARNING, logger=s._log.name):
+        out = s._scope.scope_from_config(
+            {"success": True, "result": {"views": [{}]}}, url_path="my-dash"
+        )
     assert out.all is True
+    assert any(
+        "dashboard parser returned no entities" in r.message
+        and "'my-dash'" in r.message
+        for r in caplog.records
+    )
 
 
 def test_scope_from_config_returns_extracted_entities():
@@ -1379,11 +1391,14 @@ def test_scope_from_config_unauthorized_does_not_widen(caplog):
             {
                 "success": False,
                 "error": {"code": "unauthorized", "message": "denied"},
-            }
+            },
+            url_path="locked",
         )
     assert out is None
     assert any(
-        "lovelace/config denied" in r.message and "unauthorized" in r.message
+        "lovelace/config denied" in r.message
+        and "unauthorized" in r.message
+        and "'locked'" in r.message
         for r in caplog.records
     )
 
@@ -1410,10 +1425,16 @@ def test_scope_from_config_not_found_widens_with_warning(caplog):
             {
                 "success": False,
                 "error": {"code": "not_found", "message": "no such dashboard"},
-            }
+            },
+            url_path="kitchen-tablet",
         )
     assert out is not None and out.all is True
-    assert any("serving all entities" in r.message for r in caplog.records)
+    assert any(
+        "lovelace/config failed" in r.message
+        and "'kitchen-tablet'" in r.message
+        and "not_found" in r.message
+        for r in caplog.records
+    )
 
 
 def test_resolve_scope_does_not_overwrite_cache_on_denial():
