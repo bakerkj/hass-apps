@@ -1188,7 +1188,7 @@ def test_lovelace_updated_out_of_order_responses_apply_latest_only():
         s._dashboard_cache.scopes[url] = entry
 
     s._scope.cache_and_reapply = _capture  # type: ignore[method-assign]
-    s._scope.scope_from_config = lambda msg: ScopeSet(  # type: ignore[method-assign]
+    s._scope.scope_from_config = lambda msg, url_path="": ScopeSet(  # type: ignore[method-assign]
         ids=msg["result"]["views"][0]["badges"]
     )
 
@@ -1925,11 +1925,11 @@ def _make_session_for_status_shape():
     return s
 
 
-def test_status_default_summary_omits_full_scope_entities():
-    """The default ``status()`` shape carries ``scope_count`` and
-    ``scope_sample`` but NOT the full ``scope_entities`` list — that's the
-    whole point of the change (avoid ballooning the per-poll JSON on large
-    installs).
+def test_status_default_summary_carries_full_scope_sample():
+    """The default ``status()`` shape carries ``scope_count`` and the
+    full ``scope_sample`` list, but not the legacy ``scope_entities``
+    duplicate. Capping was removed so the Ingress UI can show every
+    entity a session is serving without needing ``?detail=full``.
     """
     s = _make_session_for_status_shape()
     ids = [f"light.{i}" for i in range(120)]
@@ -1939,9 +1939,7 @@ def test_status_default_summary_omits_full_scope_entities():
     snap = s.status()
     assert snap["scope_count"] == 120
     assert "scope_entities" not in snap
-    # Sample is capped at 50 ids.
-    assert len(snap["scope_sample"]) == 50
-    assert snap["scope_sample"] == ids[:50]
+    assert snap["scope_sample"] == ids
 
 
 def test_status_detail_full_includes_scope_entities():
