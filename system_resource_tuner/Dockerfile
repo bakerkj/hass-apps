@@ -12,8 +12,12 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.5.3-r0 \
-  python3=3.14.5-r0
+  python3=3.14.5-r0 \
+  py3-pip=26.1.2-r0 \
+  uv=0.11.19-r0
+RUN --mount=type=cache,target=/root/.cache/uv \
+  uv pip install --system --break-system-packages \
+    aiodocker==0.27.0
 
 COPY run.sh /run.sh
 COPY system_resource_tuner /opt/system_resource_tuner

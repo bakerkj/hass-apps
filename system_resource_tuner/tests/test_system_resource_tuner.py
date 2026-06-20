@@ -327,7 +327,7 @@ def test_process_tuning_is_configured_via_cpuset():
 
 
 # ---------------------------------------------------------------------------
-# desired_update_args
+# desired_update_kwargs
 # ---------------------------------------------------------------------------
 
 
@@ -342,49 +342,42 @@ def _target(**kwargs) -> srt.Target:
     return srt.Target(**defaults)
 
 
-def test_desired_update_args_no_changes_needed():
+def test_desired_update_kwargs_no_changes_needed():
     target = _target(cpuset_cpus="0-3", cpu_shares=512, blkio_weight=100)
     current = {"cpuset_cpus": "0-3", "cpu_shares": 512, "blkio_weight": 100}
-    assert srt.desired_update_args(target, current) == []
+    assert srt.desired_update_kwargs(target, current) == {}
 
 
-def test_desired_update_args_cpuset_differs():
+def test_desired_update_kwargs_cpuset_differs():
     target = _target(cpuset_cpus="0-1")
     current = {"cpuset_cpus": "0-3", "cpu_shares": 0, "blkio_weight": 0}
-    args = srt.desired_update_args(target, current)
-    assert "--cpuset-cpus" in args
-    assert "0-1" in args
+    assert srt.desired_update_kwargs(target, current) == {"CpusetCpus": "0-1"}
 
 
-def test_desired_update_args_cpu_shares_differs():
+def test_desired_update_kwargs_cpu_shares_differs():
     target = _target(cpu_shares=1024)
     current = {"cpuset_cpus": "", "cpu_shares": 512, "blkio_weight": 0}
-    args = srt.desired_update_args(target, current)
-    assert "--cpu-shares" in args
-    assert "1024" in args
+    assert srt.desired_update_kwargs(target, current) == {"CpuShares": 1024}
 
 
-def test_desired_update_args_blkio_differs():
+def test_desired_update_kwargs_blkio_differs():
     target = _target(blkio_weight=200)
     current = {"cpuset_cpus": "", "cpu_shares": 0, "blkio_weight": 100}
-    args = srt.desired_update_args(target, current)
-    assert "--blkio-weight" in args
-    assert "200" in args
+    assert srt.desired_update_kwargs(target, current) == {"BlkioWeight": 200}
 
 
-def test_desired_update_args_cpuset_equivalent_no_update():
+def test_desired_update_kwargs_cpuset_equivalent_no_update():
     # "0,1,2,3" and "0-3" are equivalent sets — no update needed
     target = _target(cpuset_cpus="0-3")
     current = {"cpuset_cpus": "0,1,2,3", "cpu_shares": 0, "blkio_weight": 0}
-    args = srt.desired_update_args(target, current)
-    assert "--cpuset-cpus" not in args
+    assert "CpusetCpus" not in srt.desired_update_kwargs(target, current)
 
 
-def test_desired_update_args_only_non_none_fields_checked():
-    # If target field is None, that field is never added to args
+def test_desired_update_kwargs_only_non_none_fields_checked():
+    # If target field is None, that field is never added to kwargs
     target = _target(cpuset_cpus=None, cpu_shares=None, blkio_weight=None)
     current = {"cpuset_cpus": "0", "cpu_shares": 1024, "blkio_weight": 50}
-    assert srt.desired_update_args(target, current) == []
+    assert srt.desired_update_kwargs(target, current) == {}
 
 
 # ---------------------------------------------------------------------------
