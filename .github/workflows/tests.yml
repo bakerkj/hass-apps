@@ -18,7 +18,7 @@ jobs:
       addons: ${{ steps.scope.outputs.addons }}
       mode: ${{ steps.scope.outputs.mode }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
       - id: scope
@@ -95,14 +95,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7.0.0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: tests
       - run:
           uv run pytest -m "not integration and not e2e" --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Unit test results"
@@ -112,7 +112,7 @@ jobs:
       # file, so include-hidden-files is required for upload-artifact@v4.
       - run: mv .coverage .coverage.unit
         if: ${{ !cancelled() }}
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: coverage-unit
@@ -134,8 +134,8 @@ jobs:
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
     steps:
-      - uses: actions/checkout@v7.0.0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: integration-tests
@@ -147,7 +147,7 @@ jobs:
       # ~100 MB of dependencies. Keyed on the pin so a renovate bump busts
       # it. A user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
-      - uses: actions/cache@v5.0.5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
@@ -176,14 +176,14 @@ jobs:
           uv run pytest -m integration -v
           --ignore=dashboard_entity_proxy/tests/integration
           --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Integration test results"
           files: junit.xml
       - run: mv .coverage .coverage.integration
         if: ${{ !cancelled() }}
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: coverage-integration
@@ -209,8 +209,8 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
-      - uses: actions/checkout@v7.0.0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: integration-tests-ha
@@ -220,7 +220,7 @@ jobs:
       # busts the cache automatically.
       - name: Cache HA image
         id: ha-image-cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/ha-image.tar
           key: ha-image-${{ env.HA_IMAGE }}
@@ -238,7 +238,7 @@ jobs:
       # this base on every job adds tens of seconds of network latency.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
@@ -255,8 +255,8 @@ jobs:
       # reused across CI runs. ``DEP_PROXY_IMAGE`` tells conftest's
       # ``addon_image`` fixture to use this prebuilt tag instead of
       # invoking its own ``docker buildx build``.
-      - uses: docker/setup-buildx-action@v4.1.0
-      - uses: docker/build-push-action@v7.2.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ./dashboard_entity_proxy
           load: true
@@ -276,14 +276,14 @@ jobs:
           -v --junit-xml=junit.xml
         env:
           DEP_PROXY_IMAGE: dep_int_test:ci
-      - uses: EnricoMi/publish-unit-test-result-action@v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
           check_name: "HA integration test results"
           files: junit.xml
       - run: mv .coverage .coverage.integration_ha
         if: ${{ !cancelled() }}
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: coverage-integration-ha
@@ -303,8 +303,8 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
-      - uses: actions/checkout@v7.0.0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: container-hooks-e2e
@@ -312,7 +312,7 @@ jobs:
       # the network leg. Keyed on the pin; renovate-bumps invalidate it.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
@@ -329,8 +329,8 @@ jobs:
       # ``container_hooks_e2e:ci`` and surfaced to conftest via
       # ``CONTAINER_HOOKS_IMAGE`` so the session fixture skips its own
       # docker build.
-      - uses: docker/setup-buildx-action@v4.1.0
-      - uses: docker/build-push-action@v7.2.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ./container_hooks
           load: true
@@ -345,14 +345,14 @@ jobs:
           --junit-xml=junit.xml
         env:
           CONTAINER_HOOKS_IMAGE: container_hooks_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
           check_name: "container_hooks e2e results"
           files: junit.xml
       - run: mv .coverage .coverage.container_hooks_e2e
         if: ${{ !cancelled() }}
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: coverage-container-hooks-e2e
@@ -377,14 +377,14 @@ jobs:
     # at least one artifact to combine.
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v7.0.0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: coverage
       # Pull both jobs' data files into the repo root so `coverage combine`
       # (and the subsequent source re-analysis) find them and the sources.
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: coverage-*
           merge-multiple: true
@@ -409,7 +409,7 @@ jobs:
           fi
       - name: Sticky PR comment
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-        uses: marocchino/sticky-pull-request-comment@v3.0.4
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
         with:
           header: coverage
           path: coverage.md
