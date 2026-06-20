@@ -11,6 +11,86 @@ permissions:
   pull-requests: write
 
 jobs:
+  discover:
+    name: Discover test scope
+    runs-on: ubuntu-24.04
+    outputs:
+      addons: ${{ steps.scope.outputs.addons }}
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          WORKFLOW_PATH: .github/workflows/tests.yml
+        run: |
+          # Two modes drive a single ``addons`` array:
+          #
+          #   smoke-all     : a cross-cutting file changed (this workflow,
+          #                   pyproject, uv.lock, or the repo-root
+          #                   conftest). Run every addon's test surface.
+          #
+          #   smoke-changed : regular diff — only addons whose dirs were
+          #                   touched in this push/PR.
+          #
+          # The unit-test job always runs (it's fast and covers every
+          # addon at once); the integration / e2e jobs gate on the
+          # ``addons`` array via ``contains(fromJson(...), '<addon>')``.
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          elif [ -n "$PUSH_BEFORE_SHA" ] \
+              && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$PUSH_BEFORE_SHA" 2>/dev/null; then
+            base="$PUSH_BEFORE_SHA"
+          else
+            base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          echo "base for diff: $base"
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"
+          echo "$changed" | awk '{print "  " $0}'
+
+          # Known addons whose tests this workflow runs.
+          ALL='container_hooks container_info_mqtt dashboard_entity_proxy ffmpeg_snapshotter frigate_compressor haos_configurator intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt'
+
+          # ``WORKFLOW_PATH`` is matched as a literal (its dots are real
+          # path characters, not ERE metacharacters); the other patterns
+          # need ``-E`` for the alternation. Matches how ``addon-build``
+          # splits the same check.
+          if echo "$changed" | grep -qx "$WORKFLOW_PATH" \
+              || echo "$changed" \
+              | grep -qxE "pyproject\.toml|uv\.lock|conftest\.py"; then
+            echo "cross-cutting file touched -> smoke-all"
+            mode='smoke-all'
+            selected="$ALL"
+          else
+            mode='smoke-changed'
+            selected=""
+            for addon in $ALL; do
+              if echo "$changed" | grep -q "^${addon}/"; then
+                selected="$selected $addon"
+              fi
+            done
+            selected=$(echo "$selected" | xargs)
+          fi
+
+          json='['
+          first=true
+          for a in $selected; do
+            if [ "$first" = true ]; then first=false; else json="${json},"; fi
+            json="${json}\"$a\""
+          done
+          json="${json}]"
+          echo "mode:   $mode"
+          echo "addons: $json"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "addons=$json" >> "$GITHUB_OUTPUT"
+
   tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -41,6 +121,12 @@ jobs:
           if-no-files-found: error
 
   integration-tests:
+    needs: discover
+    # FC + ffmpeg_snapshotter ship the integration-marked tests this job
+    # runs; skip the (apt-install-ffmpeg) setup when neither was touched.
+    if: |
+      contains(fromJson(needs.discover.outputs.addons), 'frigate_compressor') ||
+      contains(fromJson(needs.discover.outputs.addons), 'ffmpeg_snapshotter')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -106,6 +192,12 @@ jobs:
           if-no-files-found: error
 
   integration-tests-ha:
+    needs: discover
+    # Heavy: HA image pull, addon-image build, Chrome. Only run when DEP
+    # source or its tests were touched.
+    if:
+      contains(fromJson(needs.discover.outputs.addons),
+      'dashboard_entity_proxy')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -200,6 +292,8 @@ jobs:
           if-no-files-found: error
 
   container-hooks-e2e:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.addons), 'container_hooks')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -269,9 +363,18 @@ jobs:
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [tests, integration-tests, integration-tests-ha, container-hooks-e2e]
-    # Report whatever coverage was produced even if a test job failed; the
-    # failing job already reds the build.
+    needs:
+      [
+        discover,
+        tests,
+        integration-tests,
+        integration-tests-ha,
+        container-hooks-e2e,
+      ]
+    # Report whatever coverage was produced even if a test job failed or
+    # was skipped via the discover gate; the failing job (if any) already
+    # reds the build, and the unit-test job is always-on so there's always
+    # at least one artifact to combine.
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@v7
@@ -286,6 +389,8 @@ jobs:
           pattern: coverage-*
           merge-multiple: true
       - name: Combine and report
+        env:
+          MODE: ${{ needs.discover.outputs.mode }}
         run: |
           set -euo pipefail
           uv run coverage combine
@@ -294,9 +399,14 @@ jobs:
           # (by module, by file) with each breakdown collapsed beneath.
           uv run python scripts/coverage_summary.py coverage.json \
             | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
-          # Enforce the floor on the combined total (was --cov-fail-under in
-          # pytest addopts, which could only see one job's data at a time).
-          uv run coverage report --fail-under=30
+          # Only enforce the floor when every test job ran (``smoke-all``);
+          # in ``smoke-changed`` mode the combined total is incomplete by
+          # design and a hard threshold would be a misleading red flag.
+          if [ "$MODE" = "smoke-all" ]; then
+            uv run coverage report --fail-under=30
+          else
+            uv run coverage report
+          fi
       - name: Sticky PR comment
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v3.0.4
