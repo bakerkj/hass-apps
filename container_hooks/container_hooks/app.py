@@ -146,21 +146,48 @@ async def _fire_trailing(
     last_run: dict[str, float],
     trailing: dict[str, asyncio.Task[None]],
     trailing_event: dict[str, dict[str, Any]],
+    stop: asyncio.Event,
 ) -> None:
     """Sleep ``delay`` seconds, then dispatch ``_dispatch`` with the
     most recent event stashed for this container.
 
-    Cancellation: the awaiting ``sleep`` raises ``asyncio.CancelledError``
-    when an outside-window event arrives (the main loop cancels stale
-    trailings before firing) or when the addon shuts down. In both cases
-    we let the exception propagate after the cleanup below.
+    Two races to guard against, both of the same shape: the cancel call
+    cannot preempt synchronous code once ``sleep`` has returned, so a
+    cancel arriving in that microsecond window won't stop us from
+    dispatching. The post-sleep guards below catch both:
+
+    1. **Shutdown**: ``stop`` is set when the main loop tears down.
+       Checked first because it's the cheapest test.
+    2. **Outside-window supersede**: the main loop pops + cancels our
+       trailing entry before firing its own leading dispatch. After
+       our sleep returns, ``trailing.get(container)`` no longer points
+       at us — bail rather than dispatch a duplicate.
+
+    We compare task identity (``asyncio.current_task()``) rather than
+    just key presence: a brand-new trailing could be armed for the
+    same container during the race, and we still need to bail because
+    that newer trailing is now the source of truth.
     """
+    self_task = asyncio.current_task()
     try:
         await asyncio.sleep(delay)
     except asyncio.CancelledError:
-        trailing.pop(container, None)
-        trailing_event.pop(container, None)
+        # Only clear our entry if it's still us — a successor task
+        # registered mid-race shouldn't lose its registration.
+        if trailing.get(container) is self_task:
+            trailing.pop(container, None)
+            trailing_event.pop(container, None)
         raise
+    if stop.is_set():
+        if trailing.get(container) is self_task:
+            trailing.pop(container, None)
+            trailing_event.pop(container, None)
+        return
+    if trailing.get(container) is not self_task:
+        # Superseded by outside-window leading fire (or a successor
+        # trailing armed against our successor's last_run). Either
+        # way the dispatch for this restart already happened.
+        return
     event = trailing_event.pop(container, None)
     trailing.pop(container, None)
     if event is None:
@@ -535,6 +562,7 @@ async def main_async() -> int:
                                 last_run,
                                 trailing,
                                 trailing_event,
+                                stop,
                             )
                         )
                     log.debug(
@@ -569,6 +597,21 @@ async def main_async() -> int:
                 )
 
     finally:
+        # Cancel pending trailing-debounce timers FIRST, before any
+        # ``await`` that yields to the loop — otherwise an expired
+        # timer can run ``_fire_trailing`` to completion during the
+        # await for ``next_task``/``stop_task`` or ``events_iter.aclose()``
+        # and spawn a dispatch that then runs during the in_flight drain.
+        # ``stop`` is set by this point so ``_fire_trailing``'s race
+        # guard would catch a timer firing on the same tick as the
+        # cancel; the synchronous cancel here covers everything else.
+        if trailing:
+            log.info("cancelling %d pending trailing debounce timers", len(trailing))
+            for trail_task in trailing.values():
+                trail_task.cancel()
+            await asyncio.gather(*trailing.values(), return_exceptions=True)
+            trailing.clear()
+            trailing_event.clear()
         # Cancel and await any pending event-loop helper tasks before
         # the drain, so they don't surface as "task was destroyed but
         # pending" warnings at shutdown.
@@ -583,17 +626,6 @@ async def main_async() -> int:
         if events_iter is not None:
             with contextlib.suppress(Exception):
                 await events_iter.aclose()
-        # Cancel pending trailing-debounce timers — we don't want to
-        # fire post-start scripts during shutdown drain. The tasks
-        # themselves are not in ``in_flight`` (they're "sleep then
-        # spawn", not active dispatches), so they're tracked separately.
-        if trailing:
-            log.info("cancelling %d pending trailing debounce timers", len(trailing))
-            for t in trailing.values():
-                t.cancel()
-            await asyncio.gather(*trailing.values(), return_exceptions=True)
-            trailing.clear()
-            trailing_event.clear()
         # Drain in-flight dispatches before closing the docker client —
         # ``docker.close()`` invalidates open connections, and any task
         # mid-exec/put_archive would raise.
