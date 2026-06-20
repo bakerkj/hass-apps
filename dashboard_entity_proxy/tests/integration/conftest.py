@@ -53,7 +53,7 @@ HA_BOOT_TIMEOUT = 120
 # defaults to; pinned for reproducibility. Renovate tracks via the
 # comment so a bump opens a PR on both this and Dockerfile together.
 # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.23"
+ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
 ADDON_BOOT_TIMEOUT = 30
 ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
 

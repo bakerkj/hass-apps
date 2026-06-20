@@ -11,7 +11,7 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-# Pin every apk to a concrete Alpine 3.23 version so renovate's
+# Pin every apk to a concrete Alpine 3.24 version so renovate's
 # alpine_3_23 custom manager (see renovate.json) can bump them.
 # nsenter comes from busybox in the HA base image.
 RUN --mount=type=cache,target=/var/cache/apk apk add \

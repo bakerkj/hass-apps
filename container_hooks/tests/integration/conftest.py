@@ -43,7 +43,7 @@ import pytest
 # comments so a base-image bump opens a PR on conftest + Dockerfile +
 # tests.yml together.
 # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.23"
+ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
 # renovate: datasource=docker depName=alpine
 TARGET_IMAGE = "alpine:3.20"
 

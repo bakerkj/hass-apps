@@ -11,8 +11,8 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-# Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
-# second pulls onevpl-intel-gpu from Alpine edge because Alpine 3.23 stable
+# Two apk calls in one RUN: the first uses Alpine 3.24 stable repos; the
+# second pulls onevpl-intel-gpu from Alpine edge because Alpine 3.24 stable
 # only ships the libvpl dispatcher, not its runtime backend (libmfx-gen).
 # Without the runtime, h264_qsv fails.  The package has moved between edge
 # subrepos (testing -> community) before, so list both; --repository scopes

@@ -11,9 +11,9 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-# Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
+# Two apk calls in one RUN: the first uses Alpine 3.24 stable repos; the
 # second pulls igt-gpu-tools (provides intel_gpu_top) from Alpine
-# edge/testing because Alpine 3.23 stable doesn't package it.
+# edge/testing because Alpine 3.24 stable doesn't package it.
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
