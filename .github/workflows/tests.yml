@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
@@ -47,7 +47,7 @@ jobs:
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
@@ -115,7 +115,7 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
@@ -207,7 +207,7 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
@@ -272,7 +272,7 @@ jobs:
     # failing job already reds the build.
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
