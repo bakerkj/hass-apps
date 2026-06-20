@@ -79,7 +79,7 @@ async def self_container_name(docker: aiodocker.Docker) -> str:
     try:
         info = await (await docker.containers.get(hostname)).show()
         return str(info.get("Name", "")).lstrip("/")
-    except (DockerError, KeyError, AttributeError):
+    except DockerError, KeyError, AttributeError:
         return ""
 
 
@@ -185,7 +185,7 @@ async def docker_ps_running(
     for c in containers:
         try:
             raw = c["Names"]
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             continue
         if not raw:
             continue

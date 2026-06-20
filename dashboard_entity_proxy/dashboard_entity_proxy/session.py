@@ -469,7 +469,7 @@ class Session:
                     await asyncio.wait_for(
                         asyncio.shield(writer), timeout=CLEANUP_DRAIN_TIMEOUT
                     )
-                except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                except asyncio.TimeoutError, Exception:  # noqa: BLE001
                     pass
             for task in tasks:
                 task.cancel()

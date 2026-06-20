@@ -81,7 +81,7 @@ def _have_docker() -> bool:
         return False
     try:
         _docker("version", "--format", "{{.Server.Version}}")
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         return False
     return True
 

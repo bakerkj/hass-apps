@@ -482,7 +482,7 @@ def _close_meta_from_task(task: "asyncio.Task[Any]") -> tuple[int, str] | None:
         return None
     try:
         return task.result()
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+    except asyncio.CancelledError, Exception:  # noqa: BLE001
         return None
 
 

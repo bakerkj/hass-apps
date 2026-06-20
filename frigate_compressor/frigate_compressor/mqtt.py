@@ -418,7 +418,7 @@ class MqttPublisher:
             )
             try:
                 info.wait_for_publish(timeout=2.0)
-            except (RuntimeError, ValueError):
+            except RuntimeError, ValueError:
                 # paho raises if the loop already isn't running or the
                 # broker has dropped — best-effort, not worth retrying.
                 pass

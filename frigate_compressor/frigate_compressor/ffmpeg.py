@@ -175,7 +175,7 @@ def _parse_fps(fps_str: str | None) -> float | None:
         if len(parts) == 2:
             return float(parts[0]) / float(parts[1])
         return float(parts[0])
-    except (ValueError, ZeroDivisionError):
+    except ValueError, ZeroDivisionError:
         return None
 
 
@@ -224,7 +224,7 @@ def _probe(filepath: Path) -> dict | None:
     def _try(key: str, parser):
         try:
             return parser(data[key])
-        except (KeyError, ValueError, TypeError):
+        except KeyError, ValueError, TypeError:
             return None
 
     info: dict = {
@@ -284,7 +284,7 @@ def _build_scale_filter(
                 dims = f"{w}:{h}"
             else:
                 dims = "iw/2:ih/2"  # fallback if ffprobe failed
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             dims = "iw/2:ih/2"
     else:
         return ""

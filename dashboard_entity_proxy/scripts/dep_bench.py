@@ -138,7 +138,7 @@ async def _fake_ha_handler(
                 await ws.send_json(
                     {"id": sub_id, "type": "event", "event": {"c": changes}}
                 )
-            except (ConnectionResetError, RuntimeError):
+            except ConnectionResetError, RuntimeError:
                 return
             next_t += effective_period
 
@@ -264,7 +264,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float) -> None:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return
-        except (OSError, socket.timeout):
+        except OSError, socket.timeout:
             time.sleep(0.5)
     raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
 

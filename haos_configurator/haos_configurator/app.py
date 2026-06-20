@@ -45,7 +45,7 @@ def read_options() -> dict[str, Any]:
     try:
         with open("/data/options.json") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return {}
 
 

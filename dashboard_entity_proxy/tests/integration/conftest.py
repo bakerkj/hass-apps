@@ -278,7 +278,7 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return
-        except (OSError, socket.timeout):
+        except OSError, socket.timeout:
             time.sleep(0.5)
     raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
 
