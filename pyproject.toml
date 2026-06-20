@@ -59,6 +59,12 @@ warn_unused_ignores = true
 module = "humanfriendly"
 ignore_missing_imports = true
 
+# patch_ng (used by container_hooks for unified-diff application) ships
+# without stubs; suppress the missing-import noise here.
+[[tool.mypy.overrides]]
+module = "patch_ng"
+ignore_missing_imports = true
+
 
 
 [tool.pytest.ini_options]
