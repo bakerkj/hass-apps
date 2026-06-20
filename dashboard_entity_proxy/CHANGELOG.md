@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.3](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.2...dashboard_entity_proxy-v0.1.3) (2026-06-20)
+
+
+### Miscellaneous Chores
+
+* **3.14:** drop redundant from __future__ import annotations ([#253](https://github.com/bakerkj/hass-apps/issues/253)) ([4eba832](https://github.com/bakerkj/hass-apps/commit/4eba832ce9136f7e1afc3b9ec9ecd975714eb60c))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+
+
+### Code Refactoring
+
+* per-addon test layout ([#239](https://github.com/bakerkj/hass-apps/issues/239)) ([bc5b93b](https://github.com/bakerkj/hass-apps/commit/bc5b93b60f31901d14f3bd0393289946e1eec1f2))
+
+
+### Tests
+
+* **dep:** replace asyncio.get_event_loop() with get_running_loop() ([#252](https://github.com/bakerkj/hass-apps/issues/252)) ([eb68424](https://github.com/bakerkj/hass-apps/commit/eb68424d6587e6ee1f07f2319ee0eacc93f088db))
+
 ## [0.1.2](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.1...dashboard_entity_proxy-v0.1.2) (2026-06-16)
 
 
