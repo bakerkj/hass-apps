@@ -58,8 +58,13 @@ jobs:
           # Known addons whose tests this workflow runs.
           ALL='container_hooks container_info_mqtt dashboard_entity_proxy ffmpeg_snapshotter frigate_compressor haos_configurator intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt'
 
-          if echo "$changed" \
-              | grep -qxE "${WORKFLOW_PATH}|pyproject\.toml|uv\.lock|conftest\.py"; then
+          # ``WORKFLOW_PATH`` is matched as a literal (its dots are real
+          # path characters, not ERE metacharacters); the other patterns
+          # need ``-E`` for the alternation. Matches how ``addon-build``
+          # splits the same check.
+          if echo "$changed" | grep -qx "$WORKFLOW_PATH" \
+              || echo "$changed" \
+              | grep -qxE "pyproject\.toml|uv\.lock|conftest\.py"; then
             echo "cross-cutting file touched -> smoke-all"
             mode='smoke-all'
             selected="$ALL"
