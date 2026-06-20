@@ -48,7 +48,7 @@ def _patch_lookup(
             raise outcome
         return (outcome, "0")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "getnameinfo", fake_getnameinfo)
     return called
 
@@ -113,7 +113,7 @@ async def test_cancelled_resolve_clears_in_flight(
         await asyncio.Event().wait()  # never completes
         raise AssertionError("unreachable")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "getnameinfo", hanging_getnameinfo)
 
     hostname_lookup.prime("10.5.5.5")

@@ -238,6 +238,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pyyaml" },
     { name = "selenium" },
+    { name = "types-humanfriendly" },
     { name = "types-paho-mqtt" },
     { name = "types-pyyaml" },
     { name = "voluptuous" },
@@ -260,6 +261,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "selenium", specifier = ">=4.0" },
+    { name = "types-humanfriendly", specifier = ">=10.0.1.20250319" },
     { name = "types-paho-mqtt", specifier = ">=1.6.0" },
     { name = "types-pyyaml", specifier = ">=6.0" },
     { name = "voluptuous", specifier = "==0.16.0" },
@@ -705,6 +707,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d1/3c/8b4358e81f2f2cfe71b66a267f023a91db20a817b9425dd964873796980a/trio_websocket-0.12.2.tar.gz", hash = "sha256:22c72c436f3d1e264d0910a3951934798dcc5b00ae56fc4ee079d46c7cf20fae", size = 33549, upload-time = "2025-02-25T05:16:58.947Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/19/eb640a397bba49ba49ef9dbe2e7e5c04202ba045b6ce2ec36e9cadc51e04/trio_websocket-0.12.2-py3-none-any.whl", hash = "sha256:df605665f1db533f4a386c94525870851096a223adcb97f72a07e8b4beba45b6", size = 21221, upload-time = "2025-02-25T05:16:57.545Z" },
+]
+
+[[package]]
+name = "types-humanfriendly"
+version = "10.0.1.20250319"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/26/9d3bd17958e3288f3eff4a7e5f2f8d88f7b2b95c1a2307fffe2c4f587727/types_humanfriendly-10.0.1.20250319.tar.gz", hash = "sha256:452aa1abbfff88a44cd9985eb459555bb1eae0cdd7bc084269146bfdbf1ff31d", size = 13361, upload-time = "2025-03-19T02:52:19.149Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/9f/694f2a833cda25f633c0c53e1d9e65a8a46b887ed4dd30f20de22e7100ee/types_humanfriendly-10.0.1.20250319-py3-none-any.whl", hash = "sha256:0fec93cc793b91309481ed4bb9bed178ffde0076026fb3ac1cc3299ad7ecbc46", size = 14835, upload-time = "2025-03-19T02:52:17.906Z" },
 ]
 
 [[package]]
