@@ -20,7 +20,8 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: tests
-      - run: uv run pytest tests/ -m "not integration" --junit-xml=junit.xml
+      - run:
+          uv run pytest -m "not integration and not e2e" --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
         with:
@@ -82,11 +83,12 @@ jobs:
       # Collect coverage here too (no --no-cov): these are the only tests that
       # exercise the real ffmpeg/ffprobe code paths, so they meaningfully add
       # to the combined total reported by the `coverage` job. The HA-docker
-      # integration tests live in tests/integration/ and run in a separate
+      # integration tests live in dashboard_entity_proxy/tests/integration/ and run in a separate
       # job that brings up docker + Chrome — they're excluded here so this
       # job stays narrow.
       - run:
-          uv run pytest tests/ -m integration -v --ignore=tests/integration
+          uv run pytest -m integration -v
+          --ignore=dashboard_entity_proxy/tests/integration
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@v2
         if: ${{ !cancelled() }}
@@ -107,7 +109,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      # Mirror the two pins in tests/integration/conftest.py. Renovate
+      # Mirror the two pins in dashboard_entity_proxy/tests/integration/conftest.py. Renovate
       # tracks each via the comments so a bump opens a PR on both
       # workflow and conftest together.
       # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
@@ -178,8 +180,8 @@ jobs:
       - name: Verify Chrome present
         run: google-chrome --version
       - run:
-          uv run pytest tests/integration/ -m integration -v
-          --junit-xml=junit.xml
+          uv run pytest dashboard_entity_proxy/tests/integration/ -m integration
+          -v --junit-xml=junit.xml
         env:
           DEP_PROXY_IMAGE: dep_int_test:ci
       - uses: EnricoMi/publish-unit-test-result-action@v2
@@ -201,7 +203,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      # Mirror the pin in tests/integration/container_hooks/conftest.py.
+      # Mirror the pin in container_hooks/tests/integration/conftest.py.
       # Renovate tracks via the comment so a base-image bump opens a PR
       # on both files together.
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
@@ -245,7 +247,7 @@ jobs:
           cache-from: type=gha,scope=container-hooks-e2e
           cache-to: type=gha,scope=container-hooks-e2e,mode=max
       - run:
-          uv run pytest tests/integration/container_hooks/ -m e2e -v
+          uv run pytest container_hooks/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           CONTAINER_HOOKS_IMAGE: container_hooks_e2e:ci

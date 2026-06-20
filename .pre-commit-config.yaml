@@ -125,17 +125,21 @@ repos:
         name: mypy
         entry: uv run mypy
         language: system
-        files: ^(container_info_mqtt|dashboard_entity_proxy|ffmpeg_snapshotter|frigate_compressor|haos_configurator|intel_gpu_top_mqtt|system_resource_tuner|turbostat_mqtt)/.*\.py$
+        # Inner package paths only (e.g. ``foo/foo``); skip ``foo/tests``
+        # so the type-checker doesn't fight test-only ergonomics
+        # (literal dicts seeded via .update, etc.) the way the source
+        # contract does. Tests run in the test job and catch real bugs.
+        files: ^(container_info_mqtt/container_info_mqtt|dashboard_entity_proxy/dashboard_entity_proxy|ffmpeg_snapshotter/ffmpeg_snapshotter|frigate_compressor/frigate_compressor|haos_configurator/haos_configurator|intel_gpu_top_mqtt/intel_gpu_mqtt|system_resource_tuner/system_resource_tuner|turbostat_mqtt/turbostat_mqtt)/.*\.py$
         pass_filenames: false
         args:
-          - container_info_mqtt
-          - dashboard_entity_proxy
-          - ffmpeg_snapshotter
-          - frigate_compressor
-          - haos_configurator
-          - intel_gpu_top_mqtt
-          - system_resource_tuner
-          - turbostat_mqtt
+          - container_info_mqtt/container_info_mqtt
+          - dashboard_entity_proxy/dashboard_entity_proxy
+          - ffmpeg_snapshotter/ffmpeg_snapshotter
+          - frigate_compressor/frigate_compressor
+          - haos_configurator/haos_configurator
+          - intel_gpu_top_mqtt/intel_gpu_mqtt
+          - system_resource_tuner/system_resource_tuner
+          - turbostat_mqtt/turbostat_mqtt
 
   - repo: local
     hooks:

@@ -9,17 +9,17 @@ Bring-up costs:
   * addon image build (~30-60 s once per session; cacheable via
     ``CONTAINER_HOOKS_IMAGE`` env var when CI prebuilds it via
     docker/build-push-action with a gha cache, mirroring the
-    ``DEP_PROXY_IMAGE`` pattern in tests/integration/conftest.py)
+    ``DEP_PROXY_IMAGE`` pattern in
+    ``dashboard_entity_proxy/tests/integration/conftest.py``)
   * target ``alpine`` image pull (~5 s once per session)
   * addon + target container start (~500 ms each, per test)
 
 Run with::
 
-    pytest tests/integration/container_hooks/ -m e2e
+    pytest container_hooks/tests/integration/ -m e2e
 
-The default ``pytest`` invocation skips this directory (see
-``pyproject.toml`` ``addopts`` + the ``--ignore=tests/integration``
-flag in the basic integration job).
+The default ``pytest`` invocation excludes the ``e2e`` marker (see
+``tests`` job in ``.github/workflows/tests.yml``).
 
 Requirements: docker, host ``/var/run/docker.sock`` accessible. No HA
 needed — these tests only exercise the addon's docker-events plumbing.
@@ -47,7 +47,7 @@ ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.23"
 # renovate: datasource=docker depName=alpine
 TARGET_IMAGE = "alpine:3.20"
 
-ADDON_SOURCE_DIR = Path(__file__).resolve().parents[3] / "container_hooks"
+ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
 ADDON_BOOT_TIMEOUT = 30
 DEFAULT_DEBOUNCE_SECONDS = 1
 

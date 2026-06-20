@@ -5,9 +5,9 @@ headless Chrome through scenarios the in-process fake-HA e2e tests can't model
 (real browser timing, real frontend code, real WebSocket compression, etc.).
 
 Each test marked `@pytest.mark.integration` and lives under
-`tests/integration/`. The default `pytest` run for this repo excludes
-integration tests via `-m "not integration"` in CI; you can also run them on
-demand locally.
+`dashboard_entity_proxy/tests/integration/`. The default `pytest` run for this
+repo excludes integration tests via `-m "not integration"` in CI; you can also
+run them on demand locally.
 
 ## Requirements
 
@@ -24,13 +24,13 @@ demand locally.
 
 ```bash
 # Just the integration suite (boots HA + proxy + Chrome):
-uv run pytest tests/integration/ -m integration --no-cov
+uv run pytest dashboard_entity_proxy/tests/integration/ -m integration --no-cov
 
 # A single test:
-uv run pytest tests/integration/test_client_config_scope.py -m integration --no-cov
+uv run pytest dashboard_entity_proxy/tests/integration/test_client_config_scope.py -m integration --no-cov
 
 # With diagnostic prints (-s disables pytest's output capture):
-uv run pytest tests/integration/ -m integration --no-cov -s
+uv run pytest dashboard_entity_proxy/tests/integration/ -m integration --no-cov -s
 ```
 
 A first run pulls the pinned HA image (~1.5 GB) and builds the addon image from
@@ -73,7 +73,7 @@ behavior.
 
 ## Adding a test
 
-1. Drop a `test_*.py` under `tests/integration/`.
+1. Drop a `test_*.py` under `dashboard_entity_proxy/tests/integration/`.
 2. Mark every test with `@pytest.mark.integration`.
 3. Use `ha_ws` to create dashboards or fixtures via the HA API.
 4. Use `browser("/your-dashboard/0")` to drive Chrome through the proxy.
