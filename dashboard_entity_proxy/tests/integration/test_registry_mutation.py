@@ -17,10 +17,10 @@ import pytest
 
 from _wait import wait_until
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
-@INTEGRATION
+@E2E
 def test_registry_update_event_propagates_new_entity(browser, ha, ha_ws):
     """1. Open a dashboard widened to the new entity's slot.
     2. Create ``input_boolean.int_runtime_added`` via HA API.

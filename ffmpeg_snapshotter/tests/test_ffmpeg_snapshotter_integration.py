@@ -25,7 +25,7 @@ import pytest
 import ffmpeg_snapshotter as fs
 
 pytestmark = [
-    pytest.mark.integration,
+    pytest.mark.e2e,
     pytest.mark.skipif(
         shutil.which("ffmpeg") is None,
         reason="ffmpeg not available",

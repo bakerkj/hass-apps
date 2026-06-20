@@ -8,7 +8,7 @@ Bring-up costs are paid once per test session via ``scope="session"``
 fixtures — HA bootstrap is ~30-60 s, paid once. Each test creates its
 own dashboards/data via HA's WebSocket API for isolation.
 
-Run with ``pytest dashboard_entity_proxy/tests/integration/ -m integration``.
+Run with ``pytest dashboard_entity_proxy/tests/integration/ -m e2e``.
 
 Requirements: docker, a free ``ghcr.io/home-assistant/home-assistant``
 image pull, headless Chrome (system ``google-chrome`` + the
@@ -66,17 +66,16 @@ def _docker_available() -> bool:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip every integration-test in this directory when docker isn't
+    """Skip every e2e test in this directory when docker isn't
     available — the harness can't bring HA up, so the tests would all
     error out otherwise.
     """
     if _docker_available():
         return
-    skip = pytest.mark.skip(reason="docker not available; HA integration tests need it")
+    skip = pytest.mark.skip(reason="docker not available; HA e2e tests need it")
     for item in items:
-        if (
-            "integration" in item.keywords
-            and "dashboard_entity_proxy/tests/integration" in str(item.fspath)
+        if "e2e" in item.keywords and "dashboard_entity_proxy/tests/integration" in str(
+            item.fspath
         ):
             item.add_marker(skip)
 

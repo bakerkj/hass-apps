@@ -14,7 +14,7 @@ import pytest
 
 from _wait import wait_until
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
 def _create_dashboard(ha_ws, url_path: str, entity_ids: list[str]) -> None:
@@ -68,7 +68,7 @@ def _scope_probe(chrome) -> dict[str, bool]:
     )
 
 
-@INTEGRATION
+@E2E
 def test_navigation_narrows_then_renarrows(browser, ha_ws):
     """Two dashboards with disjoint entity sets. After navigating
     A→B, scope should reflect B's entities (and have shed A's).

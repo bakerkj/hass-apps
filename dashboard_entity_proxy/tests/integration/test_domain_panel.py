@@ -12,7 +12,7 @@ import pytest
 
 from _wait import wait_until
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
 def _create_dashboard(ha_ws, url_path: str, entity_ids: list[str]) -> None:
@@ -83,7 +83,7 @@ def _list_calendar_entities(chrome) -> list[str]:
     )
 
 
-@INTEGRATION
+@E2E
 def test_navigate_to_calendar_loads_calendar_entities(browser, ha, ha_ws, proxy_url):
     """From a narrowly-scoped dashboard, navigating to /calendar should
     populate hass.states with calendar.* entities without a reload.
@@ -133,7 +133,7 @@ def test_navigate_to_calendar_loads_calendar_entities(browser, ha, ha_ws, proxy_
     print(f"calendar.* in hass.states: {cal_after}")
 
 
-@INTEGRATION
+@E2E
 def test_calendar_entities_in_scope_without_navigation(browser, ha, ha_ws):
     """A narrowly-scoped dashboard with no /calendar navigation and no
     browser_mod/update should still have calendar.* entities in

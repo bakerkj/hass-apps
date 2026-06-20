@@ -15,10 +15,10 @@ import pytest
 
 from _wait import wait_for_session_ready
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
-@INTEGRATION
+@E2E
 def test_weather_subscribe_forecast_routes_through_proxy(browser, ha):
     """``weather/subscribe_forecast`` is a ``namespaced/subscribe_*``
     streaming command. The whitelist match classifies it as a
@@ -73,7 +73,7 @@ def test_weather_subscribe_forecast_routes_through_proxy(browser, ha):
         )
 
 
-@INTEGRATION
+@E2E
 def test_render_template_subscription_routes_through_proxy(browser, ha):
     """``render_template`` is the canonical "no subscribe in the name"
     streaming subscription. It re-renders on each state change of the

@@ -13,7 +13,7 @@ import urllib.request
 import aiohttp
 import pytest
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 # Status-UI port. The addon container runs with ``--network host`` (see
 # ``proxy_url`` fixture), so the Python-served /api/sessions endpoint
@@ -29,7 +29,7 @@ def _fetch_sessions(detail: str = "summary") -> list[dict]:
         return json.loads(r.read())["sessions"]
 
 
-@INTEGRATION
+@E2E
 async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str]):
     """Drive a few HTTP requests through the addon's nginx; assert the
     status UI lists at least one ``http_client`` card whose rows include
@@ -73,7 +73,7 @@ async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str
     )
 
 
-@INTEGRATION
+@E2E
 async def test_http_traffic_detail_full_returns_all_rows(
     proxy_url: str, ha: dict[str, str]
 ):
