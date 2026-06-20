@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.23](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.22...container_info_mqtt-v0.1.23) (2026-06-20)
+
+
+### Miscellaneous Chores
+
+* **3.14:** drop redundant from __future__ import annotations ([#253](https://github.com/bakerkj/hass-apps/issues/253)) ([4eba832](https://github.com/bakerkj/hass-apps/commit/4eba832ce9136f7e1afc3b9ec9ecd975714eb60c))
+* **deps:** update alpine apk packages to v29.5.2-r0 ([#195](https://github.com/bakerkj/hass-apps/issues/195)) ([e685982](https://github.com/bakerkj/hass-apps/commit/e6859825824e3103291ee853b6abc1d6faafdd27))
+* **deps:** update dependency docker-cli to v29.5.1-r0 ([#184](https://github.com/bakerkj/hass-apps/issues/184)) ([0e022d1](https://github.com/bakerkj/hass-apps/commit/0e022d1c2d84efff0aef4ee65d5f0aa3cb75ebf2))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+
+
+### Code Refactoring
+
+* per-addon test layout ([#239](https://github.com/bakerkj/hass-apps/issues/239)) ([bc5b93b](https://github.com/bakerkj/hass-apps/commit/bc5b93b60f31901d14f3bd0393289946e1eec1f2))
+
 ## [0.1.22](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.21...container_info_mqtt-v0.1.22) (2026-05-18)
 
 
