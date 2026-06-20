@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.17](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.16...birdnet_audio_stream-v0.1.17) (2026-06-20)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#176](https://github.com/bakerkj/hass-apps/issues/176)) ([92ab256](https://github.com/bakerkj/hass-apps/commit/92ab2568f56b3367b87da9f2d6ca39659c69737c))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+
+
+### Documentation
+
+* **birdnet_audio_stream:** add config screen labels and descriptions ([#162](https://github.com/bakerkj/hass-apps/issues/162)) ([ee8b083](https://github.com/bakerkj/hass-apps/commit/ee8b083aa76746279676bc82deef9f3dfc3b0cfc))
+
 ## [0.1.16](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.15...birdnet_audio_stream-v0.1.16) (2026-05-15)
 
 
