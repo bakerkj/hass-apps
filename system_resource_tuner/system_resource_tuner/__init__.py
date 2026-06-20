@@ -28,6 +28,7 @@ from .docker import (  # noqa: E402,F401
     apply_all,
     apply_target,
     desired_update_kwargs,
+    docker_events,
     docker_inspect_limits,
     docker_top_processes,
     docker_url,

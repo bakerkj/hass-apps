@@ -1,20 +1,25 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Entry-point: option parsing, initial apply, reconcile loop.
+"""Entry-point: event-driven fast-path + periodic reconcile backstop.
 
-Runs on a single ``asyncio`` event loop. Daemon I/O (``docker
-update``, ``docker top``) goes through ``aiodocker`` against the unix
-socket. CPU-bound bits (``os.setpriority``, ``os.sched_setaffinity``,
-``/proc`` walks, the host ``ps`` subprocess) are kept synchronous and
-pushed to a worker thread via ``asyncio.to_thread`` so the loop stays
-responsive while a large thread list is being walked.
+Two concurrent tasks under a single asyncio event loop:
 
-Reconcile cadence is unchanged from the pre-async version: one initial
-apply if ``apply_on_start`` is set, then ``interval_seconds`` between
-full reconcile passes. SIGTERM and SIGINT set an ``asyncio.Event``
-that's awaited as the loop's sleep mechanism, so signal latency is
-near-zero rather than up to one full interval.
+1. **Events task** — subscribes to docker container ``start`` events
+   for configured containers and runs a per-container apply chain
+   (cgroup-level update + initial process tunings) followed by a
+   short retry ladder that catches worker threads that spawn late.
+
+2. **Reconcile task** — every ``interval_seconds``, re-runs the
+   full apply over every configured target. This is the backstop
+   for ``host_process_targets`` (host PIDs don't emit docker events),
+   for the gap window if the events stream drops, and for any drift
+   in container-level cgroup limits.
+
+CPU-bound work (``os.setpriority`` etc.) runs in ``asyncio.to_thread``
+so the event loop stays responsive while a large thread list is being
+walked. SIGTERM / SIGINT set an ``asyncio.Event`` and both tasks observe
+it for near-zero shutdown latency.
 """
 
 import argparse
@@ -22,6 +27,8 @@ import asyncio
 import contextlib
 import logging
 import signal
+import time
+from typing import Any
 
 import aiodocker
 import aiohttp
@@ -37,8 +44,210 @@ from .config import (
     parse_process_targets,
     parse_targets,
 )
-from .docker import apply_all, docker_url
-from .process import apply_process_tunings
+from .docker import apply_all, apply_target, docker_events, docker_url
+from .process import apply_process_tuning, apply_process_tunings
+
+# Sensible defaults for the post-start retry ladder. Most containers'
+# worker threads spawn within a few seconds of entrypoint; 0+1+3+8 covers
+# typical cases (ffmpeg/Frigate child workers, multi-threaded servers
+# warming up) without sticking around long enough to interfere with the
+# periodic reconcile.
+_DEFAULT_POST_START_RETRY_SECONDS: tuple[int, ...] = (0, 1, 3, 8)
+_DEFAULT_POST_START_RETRY_MAX_SECONDS: int = 30
+
+
+def _parse_retry_ladder(raw: Any, log: logging.Logger) -> tuple[int, ...]:
+    """Normalize ``post_start_retry_seconds`` to a tuple of non-negative ints."""
+    if raw is None:
+        return _DEFAULT_POST_START_RETRY_SECONDS
+    if not isinstance(raw, list):
+        log.warning(
+            "post_start_retry_seconds must be a list of ints; using default %s",
+            list(_DEFAULT_POST_START_RETRY_SECONDS),
+        )
+        return _DEFAULT_POST_START_RETRY_SECONDS
+    out: list[int] = []
+    for v in raw:
+        try:
+            n = int(v)
+        except TypeError, ValueError:
+            log.warning("post_start_retry_seconds entry %r is not an int; skipping", v)
+            continue
+        if n < 0:
+            log.warning("post_start_retry_seconds entry %d is negative; skipping", n)
+            continue
+        out.append(n)
+    if not out:
+        return _DEFAULT_POST_START_RETRY_SECONDS
+    return tuple(out)
+
+
+def _bucket_by_container(
+    targets: list[Target],
+    process_targets: list[ProcessTuning],
+) -> tuple[dict[str, list[Target]], dict[str, list[ProcessTuning]], set[str]]:
+    """Group configured tunings by container for the events fast-path.
+
+    Returns ``(targets_by_container, process_by_container, watch_set)``.
+    ``watch_set`` is the union of names the events task cares about —
+    used to filter the daemon's event stream in the dispatch loop.
+    """
+    targets_by_container: dict[str, list[Target]] = {}
+    for t in targets:
+        targets_by_container.setdefault(t.container, []).append(t)
+    process_by_container: dict[str, list[ProcessTuning]] = {}
+    for pt in process_targets:
+        if pt.container is not None:
+            process_by_container.setdefault(pt.container, []).append(pt)
+    watch_set = set(targets_by_container) | set(process_by_container)
+    return targets_by_container, process_by_container, watch_set
+
+
+async def _apply_for_container(
+    docker: aiodocker.Docker,
+    container: str,
+    container_targets: list[Target],
+    container_processes: list[ProcessTuning],
+    retry_ladder: tuple[int, ...],
+    retry_max_seconds: int,
+    dry_run: bool,
+    log: logging.Logger,
+) -> None:
+    """Apply cgroup + process tunings for one container, then retry the
+    process tunings on the ladder to catch late-spawned worker threads.
+
+    Container-level ``docker update`` runs exactly once: cgroup state is
+    persistent across the container's lifetime, so re-applying would be
+    pure busywork. Process tunings re-run on each ladder step because
+    new threads may have spawned since the last pass; the inner fast
+    paths in ``apply_process_nice`` / ``apply_process_cpuset`` no-op
+    when nothing has changed, so the cost is bounded.
+    """
+    try:
+        for t in container_targets:
+            await apply_target(docker, t, dry_run, log)
+        for pt in container_processes:
+            await apply_process_tuning(docker, pt, dry_run, log)
+        if not container_processes:
+            return
+        start = time.monotonic()
+        for delay in retry_ladder:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if time.monotonic() - start > retry_max_seconds:
+                log.debug(
+                    "post-start retry for %s capped at %ds",
+                    container,
+                    retry_max_seconds,
+                )
+                return
+            for pt in container_processes:
+                await apply_process_tuning(docker, pt, dry_run, log)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — top-level dispatch safety net
+        log.exception("apply chain for %s failed", container)
+
+
+async def _events_loop(
+    docker: aiodocker.Docker,
+    watch_set: set[str],
+    targets_by_container: dict[str, list[Target]],
+    process_by_container: dict[str, list[ProcessTuning]],
+    retry_ladder: tuple[int, ...],
+    retry_max_seconds: int,
+    dry_run: bool,
+    in_flight: dict[str, asyncio.Task[None]],
+    stop: asyncio.Event,
+    log: logging.Logger,
+) -> None:
+    """Subscribe to docker start events and dispatch the per-container
+    apply chain when a watched container starts.
+
+    A fresh start event for the same container cancels any in-flight
+    apply chain for that container — PIDs from the prior incarnation
+    are dead, and the new chain will re-apply against the fresh PIDs.
+    """
+    if not watch_set:
+        # Nothing configured to listen for; the events task is a no-op.
+        # Park on stop so the parent can still cancel us cleanly.
+        await stop.wait()
+        return
+
+    log.info(
+        "subscribing to docker start events for %d container(s): %s",
+        len(watch_set),
+        sorted(watch_set),
+    )
+    # ``Any`` because ``docker_events`` is annotated ``AsyncIterator[dict]``
+    # but its body uses ``yield``, so the runtime object is an async
+    # generator with ``aclose``. Typing as ``Any`` mirrors what
+    # container_hooks does and avoids fighting the iterator-vs-generator
+    # split for what's effectively a generator throughout.
+    events_iter: Any = docker_events(docker, log, events=("start",)).__aiter__()
+    stop_task = asyncio.create_task(stop.wait())
+    next_task: asyncio.Task[Any] | None = None
+    try:
+        while not stop.is_set():
+            next_task = asyncio.create_task(events_iter.__anext__())
+            done, _pending = await asyncio.wait(
+                {next_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task in done:
+                next_task.cancel()
+                next_task = None
+                break
+            try:
+                event = await next_task
+            except StopAsyncIteration:
+                next_task = None
+                break
+            next_task = None
+            attrs = event.get("Actor", {}).get("Attributes", {})
+            container = attrs.get("name") or ""
+            if container not in watch_set:
+                continue
+
+            # Cancel any in-flight ladder for this container — the start
+            # event means we're now applying against a fresh PID set.
+            prev = in_flight.pop(container, None)
+            if prev is not None and not prev.done():
+                prev.cancel()
+            log.info("event_start: applying tuning to %s", container)
+            task = asyncio.create_task(
+                _apply_for_container(
+                    docker,
+                    container,
+                    targets_by_container.get(container, []),
+                    process_by_container.get(container, []),
+                    retry_ladder,
+                    retry_max_seconds,
+                    dry_run,
+                    log,
+                )
+            )
+            in_flight[container] = task
+
+            def _on_done(t: asyncio.Task[None], c: str = container) -> None:
+                # Only clear our slot if it's still us — a successor
+                # already replaced the mapping if it isn't.
+                if in_flight.get(c) is t:
+                    in_flight.pop(c, None)
+
+            task.add_done_callback(_on_done)
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await next_task
+        if not stop_task.done():
+            stop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
+        with contextlib.suppress(Exception):
+            await events_iter.aclose()
+
 
 # Hard cap on the startup probe so a daemon that's reachable but hung
 # (HA Supervisor mid-restart is a known case) doesn't block ``main_async``
@@ -73,6 +282,31 @@ async def _reconcile_pass(
         log.exception("reconcile pass failed; will retry next tick")
 
 
+async def _reconcile_loop(
+    docker: aiodocker.Docker,
+    targets: list[Target],
+    process_targets: list[ProcessTuning],
+    host_process_targets: list[ProcessTuning],
+    interval_seconds: int,
+    dry_run: bool,
+    stop: asyncio.Event,
+    log: logging.Logger,
+) -> None:
+    """Periodic full reconcile: backstop for host PIDs, drift, and any
+    start event the addon missed (e.g. while the events stream was
+    reconnecting after a daemon hiccup).
+    """
+    while not stop.is_set():
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+        if stop.is_set():
+            return
+        log.debug("periodic reconcile pass")
+        await _reconcile_pass(
+            docker, targets, process_targets, host_process_targets, dry_run, log
+        )
+
+
 async def main_async() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--options", default="/data/options.json")
@@ -88,12 +322,20 @@ async def main_async() -> int:
     log = logging.getLogger("system_resource_tuner")
     log.info("System Resource Tuner v%s starting", __version__)
 
-    interval_seconds = int(options.get("interval_seconds", 60))
+    interval_seconds = int(options.get("interval_seconds", 300))
     if interval_seconds < 5:
         interval_seconds = 5
 
     apply_on_start = parse_bool(options.get("apply_on_start", True), default=True)
     dry_run = parse_bool(options.get("dry_run", False), default=False)
+    retry_ladder = _parse_retry_ladder(options.get("post_start_retry_seconds"), log)
+    retry_max_seconds = int(
+        options.get(
+            "post_start_retry_max_seconds", _DEFAULT_POST_START_RETRY_MAX_SECONDS
+        )
+    )
+    if retry_max_seconds < 0:
+        retry_max_seconds = 0
 
     try:
         targets = parse_targets(options.get("targets"), log)
@@ -111,11 +353,17 @@ async def main_async() -> int:
             "No valid tuning configured; running in idle mode (no changes will be applied)."
         )
 
+    targets_by_container, process_by_container, watch_set = _bucket_by_container(
+        targets, process_targets
+    )
+
     _cfg_lines = [
         "Configuration:",
         f"  apply_on_start:       {apply_on_start}",
         f"  dry_run:              {dry_run}",
-        f"  interval:             {interval_seconds}s",
+        f"  reconcile_interval:   {interval_seconds}s",
+        f"  post_start_retry:     {list(retry_ladder)} (cap {retry_max_seconds}s)",
+        f"  events_watch:         {sorted(watch_set)}",
         f"  log_level:            {log_level}",
     ]
     if targets:
@@ -161,6 +409,9 @@ async def main_async() -> int:
         loop.add_signal_handler(sig, stop.set)
 
     docker = aiodocker.Docker(url=docker_url())
+    in_flight: dict[str, asyncio.Task[None]] = {}
+    events_task: asyncio.Task[None] | None = None
+    reconcile_task: asyncio.Task[None] | None = None
     try:
         try:
             await asyncio.wait_for(
@@ -198,24 +449,57 @@ async def main_async() -> int:
             return 1
 
         if apply_on_start:
+            log.info("initial apply over all configured targets")
             await _reconcile_pass(
                 docker, targets, process_targets, host_process_targets, dry_run, log
             )
 
-        while not stop.is_set():
-            # ``wait_for`` returns when the event is set (signal) and
-            # raises ``TimeoutError`` when ``interval_seconds`` has elapsed
-            # — the timeout is the "tick" path. Either way we loop and
-            # the top-of-loop check decides whether to apply again or
-            # exit.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
-            if stop.is_set():
-                break
-            await _reconcile_pass(
-                docker, targets, process_targets, host_process_targets, dry_run, log
+        events_task = asyncio.create_task(
+            _events_loop(
+                docker,
+                watch_set,
+                targets_by_container,
+                process_by_container,
+                retry_ladder,
+                retry_max_seconds,
+                dry_run,
+                in_flight,
+                stop,
+                log,
             )
+        )
+        reconcile_task = asyncio.create_task(
+            _reconcile_loop(
+                docker,
+                targets,
+                process_targets,
+                host_process_targets,
+                interval_seconds,
+                dry_run,
+                stop,
+                log,
+            )
+        )
+
+        await stop.wait()
     finally:
+        # Stop the two long-running tasks first so they don't spawn new
+        # work during shutdown. Then drain any in-flight per-container
+        # apply chains before closing the docker client.
+        for task in (events_task, reconcile_task):
+            if task is not None and not task.done():
+                task.cancel()
+        if events_task is not None or reconcile_task is not None:
+            await asyncio.gather(
+                *(t for t in (events_task, reconcile_task) if t is not None),
+                return_exceptions=True,
+            )
+        if in_flight:
+            log.info("draining %d in-flight apply chain(s)", len(in_flight))
+            for t in list(in_flight.values()):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
         await docker.close()
 
     log.info("Shutting down")

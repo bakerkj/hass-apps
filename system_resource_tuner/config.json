@@ -20,10 +20,17 @@
   ],
   "apparmor": false,
   "options": {
-    "interval_seconds": 60,
+    "interval_seconds": 300,
     "apply_on_start": true,
     "dry_run": false,
     "log_level": "INFO",
+    "post_start_retry_seconds": [
+      0,
+      1,
+      3,
+      8
+    ],
+    "post_start_retry_max_seconds": 30,
     "targets": [],
     "process_targets": [],
     "host_process_targets": []
@@ -33,6 +40,10 @@
     "apply_on_start": "bool",
     "dry_run": "bool",
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "post_start_retry_seconds": [
+      "int(0,3600)"
+    ],
+    "post_start_retry_max_seconds": "int(0,3600)",
     "targets": [
       {
         "container": "str",

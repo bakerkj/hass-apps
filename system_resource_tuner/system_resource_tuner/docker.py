@@ -8,6 +8,11 @@ container-level ``docker update`` (cpuset / cpu-shares / blkio-weight)
 translates to a ``POST /containers/{id}/update`` over the unix socket;
 ``docker top`` translates to ``container.top(...)``.
 
+``docker_events`` exposes the daemon's lifecycle stream as an async
+iterator — the fast-path that lets the addon apply tuning shortly
+after a target container starts rather than waiting for the next
+periodic reconcile tick.
+
 Exception handling here is intentionally broader than ``DockerError``:
 ``aiohttp``-level transport errors, ``OSError`` (socket gone), and
 ``asyncio.TimeoutError`` all map to "log + skip this pass" so a
@@ -18,6 +23,7 @@ crash-and-respawn) doesn't crash the reconcile loop.
 import asyncio
 import logging
 import shlex
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +44,12 @@ _TRANSIENT_DAEMON_ERRORS: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
     OSError,
 )
+
+# Backoff between reconnect attempts when the events stream exits.
+# Keeps the loop from spinning at full speed when the daemon socket is
+# unreachable; doubles on consecutive failures up to the cap.
+_RECONNECT_BACKOFF_INITIAL_SECONDS = 1.0
+_RECONNECT_BACKOFF_MAX_SECONDS = 30.0
 
 
 def docker_url() -> str:
@@ -190,6 +202,58 @@ async def apply_all(
 ) -> None:
     for target in targets:
         await apply_target(docker, target, dry_run, log)
+
+
+async def docker_events(
+    docker: aiodocker.Docker,
+    log: logging.Logger,
+    events: tuple[str, ...] = ("start",),
+) -> AsyncIterator[dict]:
+    """Async iterator yielding matching container lifecycle events.
+
+    Filters by ``Action`` in Python because docker treats multiple
+    ``event=`` filter values as a logical AND, not OR. Auto-reconnects
+    with exponential backoff on socket / daemon hiccups. The caller is
+    expected to handle its own shutdown signal and stop awaiting.
+    """
+    wanted = set(events)
+    backoff = _RECONNECT_BACKOFF_INITIAL_SECONDS
+    while True:
+        saw_event = False
+        subscriber = None
+        try:
+            subscriber = docker.events.subscribe()
+            while True:
+                event = await subscriber.get()
+                if event is None:
+                    break
+                if event.get("Type") != "container":
+                    continue
+                saw_event = True
+                action = event.get("Action")
+                if action in wanted:
+                    yield event
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — aiohttp.ClientError must also retry
+            log.warning(
+                "docker events stream error: %s; reconnecting in %.1fs",
+                e,
+                backoff,
+            )
+        else:
+            log.warning("docker events stream ended; reconnecting in %.1fs", backoff)
+        # Drop the subscriber before the backoff sleep so aiodocker's
+        # ChannelSubscriber.__del__ removes its queue from
+        # ``channel.queues`` immediately. aiodocker 0.27 has no
+        # ``unsubscribe`` / ``__aexit__`` surface, so ``del`` is the
+        # documented exit.
+        if subscriber is not None:
+            del subscriber
+        if saw_event:
+            backoff = _RECONNECT_BACKOFF_INITIAL_SECONDS
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX_SECONDS)
 
 
 async def docker_top_processes(
