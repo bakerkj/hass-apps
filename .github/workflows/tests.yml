@@ -37,9 +37,9 @@ jobs:
           #   smoke-changed : regular diff — only addons whose dirs were
           #                   touched in this push/PR.
           #
-          # The unit-test job always runs (it's fast and covers every
-          # addon at once); the integration / e2e jobs gate on the
-          # ``addons`` array via ``contains(fromJson(...), '<addon>')``.
+          # ``unit-tests`` always runs (fast, covers every addon at once);
+          # the per-addon e2e jobs gate on the ``addons`` array via
+          # ``contains(fromJson(...), '<addon>')``.
           set -euo pipefail
           if [ "$EVENT" = "pull_request" ]; then
             base="$PR_BASE_SHA"
@@ -91,7 +91,8 @@ jobs:
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "addons=$json" >> "$GITHUB_OUTPUT"
 
-  tests:
+  unit-tests:
+    name: Unit tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -99,7 +100,7 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
-          cache-suffix: tests
+          cache-suffix: unit-tests
       - run:
           uv run pytest -m "not integration and not e2e" --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
@@ -107,9 +108,9 @@ jobs:
         with:
           check_name: "Unit test results"
           files: junit.xml
-      # Hand the unit-run coverage to the `coverage` job under a unique name so
-      # it can be combined with the integration coverage. .coverage is a hidden
-      # file, so include-hidden-files is required for upload-artifact@v4.
+      # Hand the unit-run coverage to the `coverage` job under a unique name
+      # so it can be combined with the per-addon e2e coverage. .coverage is a
+      # hidden file, so include-hidden-files is required for upload-artifact@v4.
       - run: mv .coverage .coverage.unit
         if: ${{ !cancelled() }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -120,13 +121,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-  integration-tests:
+  frigate-compressor-e2e:
+    name: Frigate Compressor e2e
     needs: discover
-    # FC + ffmpeg_snapshotter ship the integration-marked tests this job
-    # runs; skip the (apt-install-ffmpeg) setup when neither was touched.
-    if: |
-      contains(fromJson(needs.discover.outputs.addons), 'frigate_compressor') ||
-      contains(fromJson(needs.discover.outputs.addons), 'ffmpeg_snapshotter')
+    if: contains(fromJson(needs.discover.outputs.addons), 'frigate_compressor')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -138,14 +136,14 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
-          cache-suffix: integration-tests
+          cache-suffix: frigate-compressor-e2e
       # Cache only the downloaded .deb archives. The real `apt-get install`
-      # still runs every time, so dpkg postinst / update-alternatives
-      # execute normally and libblas.so.3 et al. are created — the failure
-      # mode cache-apt-pkgs-action hit. apt reuses the cached .debs for the
-      # pinned version (same version => same hash) instead of re-downloading
-      # ~100 MB of dependencies. Keyed on the pin so a renovate bump busts
-      # it. A user-owned archives dir avoids the root-owned
+      # still runs every time, so dpkg postinst / update-alternatives execute
+      # normally and libblas.so.3 et al. are created — the failure mode
+      # cache-apt-pkgs-action hit. apt reuses the cached .debs for the pinned
+      # version (same version => same hash) instead of re-downloading ~100 MB
+      # of dependencies. Keyed on the pin so a renovate bump busts it. A
+      # user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -158,40 +156,81 @@ jobs:
           sudo apt-get install -y \
             -o Dir::Cache::archives="$HOME/.apt-archives" \
             ffmpeg="$FFMPEG_APT_VERSION"
-          # apt runs as root and leaves a root-owned partial/ (0700) and
-          # lock that the non-root cache-save tar can't read, aborting the
-          # save. Hand the tree back to the runner so the .debs get cached.
+          # apt runs as root and leaves a root-owned partial/ (0700) and lock
+          # that the non-root cache-save tar can't read, aborting the save.
+          # Hand the tree back to the runner so the .debs get cached.
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
       # Fail loud if the binaries are missing: the integration tests
       # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
       # silently drop coverage instead of erroring.
       - run: ffmpeg -version && ffprobe -version
-      # Collect coverage here too (no --no-cov): these are the only tests that
-      # exercise the real ffmpeg/ffprobe code paths, so they meaningfully add
-      # to the combined total reported by the `coverage` job. The HA-docker
-      # integration tests live in dashboard_entity_proxy/tests/integration/ and run in a separate
-      # job that brings up docker + Chrome — they're excluded here so this
-      # job stays narrow.
       - run:
-          uv run pytest -m integration -v
-          --ignore=dashboard_entity_proxy/tests/integration
+          uv run pytest frigate_compressor/tests/ -m integration -v
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
-          check_name: "Integration test results"
+          check_name: "Frigate Compressor e2e results"
           files: junit.xml
-      - run: mv .coverage .coverage.integration
+      - run: mv .coverage .coverage.fc_e2e
         if: ${{ !cancelled() }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
-          name: coverage-integration
-          path: .coverage.integration
+          name: coverage-fc-e2e
+          path: .coverage.fc_e2e
           include-hidden-files: true
           if-no-files-found: error
 
-  integration-tests-ha:
+  ffmpeg-snapshotter-e2e:
+    name: FFmpeg Snapshotter e2e
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.addons), 'ffmpeg_snapshotter')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: ffmpeg-snapshotter-e2e
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.apt-archives
+          key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
+      - run: |
+          set -euo pipefail
+          mkdir -p ~/.apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y \
+            -o Dir::Cache::archives="$HOME/.apt-archives" \
+            ffmpeg="$FFMPEG_APT_VERSION"
+          sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
+      - run: ffmpeg -version && ffprobe -version
+      - run:
+          uv run pytest ffmpeg_snapshotter/tests/ -m integration -v
+          --junit-xml=junit.xml
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+        if: ${{ !cancelled() }}
+        with:
+          check_name: "FFmpeg Snapshotter e2e results"
+          files: junit.xml
+      - run: mv .coverage .coverage.snapshotter_e2e
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-snapshotter-e2e
+          path: .coverage.snapshotter_e2e
+          include-hidden-files: true
+          if-no-files-found: error
+
+  dashboard-entity-proxy-e2e:
+    name: Dashboard Entity Proxy e2e
     needs: discover
     # Heavy: HA image pull, addon-image build, Chrome. Only run when DEP
     # source or its tests were touched.
@@ -213,7 +252,7 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           cache-dependency-glob: "uv.lock"
-          cache-suffix: integration-tests-ha
+          cache-suffix: dashboard-entity-proxy-e2e
       # Cache the HA image (~1.5 GB) so we don't re-pull every run.
       # Saved to a tarball so actions/cache can store and restore it;
       # the cache key includes the image tag so a Renovate bump
@@ -279,19 +318,20 @@ jobs:
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
-          check_name: "HA integration test results"
+          check_name: "Dashboard Entity Proxy e2e results"
           files: junit.xml
-      - run: mv .coverage .coverage.integration_ha
+      - run: mv .coverage .coverage.dashboard_entity_proxy_e2e
         if: ${{ !cancelled() }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
-          name: coverage-integration-ha
-          path: .coverage.integration_ha
+          name: coverage-dashboard-entity-proxy-e2e
+          path: .coverage.dashboard_entity_proxy_e2e
           include-hidden-files: true
           if-no-files-found: error
 
   container-hooks-e2e:
+    name: Container Hooks e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'container_hooks')
     runs-on: ubuntu-24.04
@@ -348,7 +388,7 @@ jobs:
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
-          check_name: "container_hooks e2e results"
+          check_name: "Container Hooks e2e results"
           files: junit.xml
       - run: mv .coverage .coverage.container_hooks_e2e
         if: ${{ !cancelled() }}
@@ -361,20 +401,22 @@ jobs:
           if-no-files-found: error
 
   coverage:
+    name: Combined coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs:
       [
         discover,
-        tests,
-        integration-tests,
-        integration-tests-ha,
+        unit-tests,
+        frigate-compressor-e2e,
+        ffmpeg-snapshotter-e2e,
+        dashboard-entity-proxy-e2e,
         container-hooks-e2e,
       ]
-    # Report whatever coverage was produced even if a test job failed or
-    # was skipped via the discover gate; the failing job (if any) already
-    # reds the build, and the unit-test job is always-on so there's always
-    # at least one artifact to combine.
+    # Report whatever coverage was produced even if a test job failed or was
+    # skipped via the discover gate; the failing job (if any) already reds
+    # the build, and ``unit-tests`` is always-on so there's always at least
+    # one artifact to combine.
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -382,8 +424,9 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: coverage
-      # Pull both jobs' data files into the repo root so `coverage combine`
-      # (and the subsequent source re-analysis) find them and the sources.
+      # Pull every test job's data file into the repo root so `coverage
+      # combine` (and the subsequent source re-analysis) find them and the
+      # sources.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: coverage-*
