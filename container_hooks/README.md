@@ -159,14 +159,14 @@ esac
 
 ## Configuration
 
-| Option                | Default                          | Description                                                                                                                                                                 |
-| --------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `log_level`           | `INFO`                           | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                                                                                                                    |
-| `base_dir`            | `/homeassistant/container_hooks` | Root of the per-container hook tree. See "Layout" above.                                                                                                                    |
-| `initial_sweep`       | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                |
-| `debounce_seconds`    | `2`                              | Per-container debounce window for rapid re-fires, in seconds, 0-60 (`0` disables).                                                                                          |
-| `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `addon_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here. |
-| `container_overrides` | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                               |
+| Option                | Default                          | Description                                                                                                                                                                                                                    |
+| --------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `log_level`           | `INFO`                           | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                                                                                                                                                                       |
+| `base_dir`            | `/homeassistant/container_hooks` | Root of the per-container hook tree. See "Layout" above.                                                                                                                                                                       |
+| `initial_sweep`       | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                                                                   |
+| `debounce_seconds`    | `2`                              | Per-container debounce window for the post-start `scripts/` path only, in seconds, 0-60 (`0` disables). Pre-start hooks (`pre-start-files/`, `pre-start-patches/`, `pre-start/`) bypass debounce — see "Debounce scope" below. |
+| `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `addon_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here.                                                    |
+| `container_overrides` | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                                                                                  |
 
 ### Per-Container Overrides
 
@@ -182,6 +182,31 @@ container_overrides:
 Only set the fields you want to override; everything else falls through to the
 global defaults. Today only `debounce_seconds` is overridable; this shape leaves
 room for more per-container knobs without breaking existing config.
+
+### Debounce scope
+
+`debounce_seconds` applies **only to the post-start `scripts/` path** (the
+`start`-event dispatch). It does not gate any pre-start hook:
+
+| Hook                        | Event    | Debounced? |
+| --------------------------- | -------- | ---------- |
+| `pre-start-files/`          | `create` | No         |
+| `pre-start-patches/`        | `create` | No         |
+| `pre-start/*.sh`            | `create` | No         |
+| `scripts/*.sh` (post-start) | `start`  | Yes        |
+
+Pre-start hooks fire once per container lifecycle (each `create` is unique to a
+new container), so a debounce window would never apply to them anyway. Patches
+and staged files persist for the container's lifetime in the writable layer; a
+stop/start of the same container doesn't re-fire pre-start hooks because it
+doesn't re-fire `create`.
+
+Debounce is **leading + trailing**: the first `start` event in a window fires
+immediately, and if any further `start` events arrive while the window is still
+open, one **trailing** fire runs at the end of the window with the most recent
+event. So a watchdog flap that lands two restarts close together always gets at
+least one post-start run for the latest container state — the second restart
+isn't silently dropped if no third event arrives.
 
 ## Pre-Start Hooks (create events)
 

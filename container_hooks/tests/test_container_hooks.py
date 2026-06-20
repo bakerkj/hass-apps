@@ -25,6 +25,7 @@ from container_hooks.app import (
     _LAST_RUN_PRUNE_AGE_MULTIPLIER,
     _dispatch,
     _dispatch_pre_start,
+    _fire_trailing,
     _hook_env,
     _max_debounce,
     _prune_last_run,
@@ -283,6 +284,80 @@ def test_resolve_debounce_override_with_no_field_falls_through(
         container_overrides=(ContainerOverride(container="addon_x"),),
     )
     assert _resolve_debounce(opts, "addon_x") == 4
+
+
+# ---------------------------------------------------------------------------
+# _fire_trailing (trailing-edge debounce)
+# ---------------------------------------------------------------------------
+
+
+async def test_fire_trailing_dispatches_after_delay(tmp_path: Path) -> None:
+    """After ``delay`` seconds the trailing fire spawns a ``_dispatch``
+    carrying the most recent in-window event and updates ``last_run``.
+    """
+    docker = MagicMock()
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+    coros_to_close: list = []
+
+    def spawn(coro):
+        coros_to_close.append(coro)
+        spawned.append(coro)
+
+    await _fire_trailing(
+        "addon_x",
+        delay=0.0,
+        docker=docker,
+        options=_opts(tmp_path),
+        log=_LOG,
+        spawn=spawn,
+        last_run=last_run,
+        trailing=trailing,
+        trailing_event=trailing_event,
+    )
+
+    assert len(spawned) == 1
+    assert "addon_x" in last_run
+    assert "addon_x" not in trailing_event  # popped
+    # Close the unawaited coroutine to avoid the "never awaited" warning.
+    for c in coros_to_close:
+        c.close()
+
+
+async def test_fire_trailing_cancellation_clears_state(tmp_path: Path) -> None:
+    """A cancel during ``sleep`` clears trailing state and re-raises so
+    the awaiter sees ``CancelledError``.
+    """
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+
+    task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=10.0,
+            docker=MagicMock(),
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=lambda c: spawned.append(c),
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+        )
+    )
+    trailing["addon_x"] = task  # mimic the main-loop bookkeeping
+    await asyncio.sleep(0)  # yield so the task starts its sleep
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert spawned == []  # nothing dispatched
+    assert "addon_x" not in trailing
+    assert "addon_x" not in trailing_event
+    assert last_run == {}  # never updated
 
 
 # ---------------------------------------------------------------------------

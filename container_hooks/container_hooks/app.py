@@ -6,9 +6,18 @@
 Architecture: single ``asyncio`` event loop. The docker events stream
 runs as an async iterator; each matching event is fanned out to a
 concurrent task so a slow hook for one container doesn't block hooks
-for another. Per-container debounce is updated synchronously *before*
-the task is spawned, so two fast-following events for the same
-container don't both pass the debounce check.
+for another.
+
+Per-container debounce (start events / post-start ``scripts/`` only)
+is leading+trailing: the first event in a window fires immediately;
+subsequent events in the same window arm a one-shot trailing fire so
+the most recent restart isn't silently lost when no further event
+arrives. Create events bypass debounce entirely — they fire once per
+container lifecycle.
+
+``last_run`` is updated synchronously *before* a dispatch task is
+spawned, so two fast-following start events for the same container
+don't both pass the leading-edge check.
 
 Layout: everything for one container lives under
 ``<base_dir>/<container>/`` — see ``config.py`` for the path helpers
@@ -125,6 +134,51 @@ def _prune_last_run(last_run: dict[str, float], options: Options, now: float) ->
     stale = [k for k, t in last_run.items() if t < cutoff]
     for k in stale:
         del last_run[k]
+
+
+async def _fire_trailing(
+    container: str,
+    delay: float,
+    docker: aiodocker.Docker,
+    options: Options,
+    log: logging.Logger,
+    spawn: Any,
+    last_run: dict[str, float],
+    trailing: dict[str, asyncio.Task[None]],
+    trailing_event: dict[str, dict[str, Any]],
+) -> None:
+    """Sleep ``delay`` seconds, then dispatch ``_dispatch`` with the
+    most recent event stashed for this container.
+
+    Cancellation: the awaiting ``sleep`` raises ``asyncio.CancelledError``
+    when an outside-window event arrives (the main loop cancels stale
+    trailings before firing) or when the addon shuts down. In both cases
+    we let the exception propagate after the cleanup below.
+    """
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        trailing.pop(container, None)
+        trailing_event.pop(container, None)
+        raise
+    event = trailing_event.pop(container, None)
+    trailing.pop(container, None)
+    if event is None:
+        # Shouldn't happen — main loop always sets trailing_event before
+        # arming the task — but bail rather than dispatch a stale empty.
+        return
+    last_run[container] = time.monotonic()
+    log.info("debounce: trailing fire for %s", container)
+    spawn(
+        _dispatch(
+            docker,
+            container,
+            options,
+            log,
+            reason="event_start",
+            event=event,
+        )
+    )
 
 
 def _with_self_skip(options: Options, own_name: str) -> Options:
@@ -319,6 +373,12 @@ async def main_async() -> int:
     # a churny host.
     last_run: dict[str, float] = {}
     events_since_prune = 0
+    # Trailing-edge debounce state. ``trailing`` holds the pending fire
+    # task per container; ``trailing_event`` holds the latest in-window
+    # event payload so the trailing fire carries fresh metadata, not the
+    # original t=1 event.
+    trailing: dict[str, asyncio.Task[None]] = {}
+    trailing_event: dict[str, dict[str, Any]] = {}
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -455,13 +515,43 @@ async def main_async() -> int:
                 debounce = _resolve_debounce(options, container)
                 prev = last_run.get(container, 0.0)
                 if debounce and now - prev < debounce:
+                    # In window: leading fire already happened. Arm or
+                    # refresh a trailing fire so the most recent restart
+                    # isn't silently lost when no further event arrives.
+                    # If a trailing is already armed, just refresh the
+                    # stashed event — the timer was set against the
+                    # leading fire and shouldn't slide forward.
+                    trailing_event[container] = event
+                    if container not in trailing:
+                        delay = debounce - (now - prev)
+                        trailing[container] = asyncio.create_task(
+                            _fire_trailing(
+                                container,
+                                delay,
+                                docker,
+                                options,
+                                log,
+                                spawn,
+                                last_run,
+                                trailing,
+                                trailing_event,
+                            )
+                        )
                     log.debug(
-                        "debounce: skipping %s (%.1fs since last run, window=%ds)",
+                        "debounce: skipping leading-fire for %s "
+                        "(%.1fs since last run, window=%ds, trailing armed)",
                         container,
                         now - prev,
                         debounce,
                     )
                     continue
+                # Outside window: any armed trailing is stale (its
+                # dispatch would be redundant with the one we're about
+                # to spawn). Cancel before firing.
+                pending = trailing.pop(container, None)
+                if pending is not None:
+                    pending.cancel()
+                    trailing_event.pop(container, None)
                 last_run[container] = now
                 events_since_prune += 1
                 if events_since_prune >= _LAST_RUN_PRUNE_INTERVAL:
@@ -493,6 +583,17 @@ async def main_async() -> int:
         if events_iter is not None:
             with contextlib.suppress(Exception):
                 await events_iter.aclose()
+        # Cancel pending trailing-debounce timers — we don't want to
+        # fire post-start scripts during shutdown drain. The tasks
+        # themselves are not in ``in_flight`` (they're "sleep then
+        # spawn", not active dispatches), so they're tracked separately.
+        if trailing:
+            log.info("cancelling %d pending trailing debounce timers", len(trailing))
+            for t in trailing.values():
+                t.cancel()
+            await asyncio.gather(*trailing.values(), return_exceptions=True)
+            trailing.clear()
+            trailing_event.clear()
         # Drain in-flight dispatches before closing the docker client —
         # ``docker.close()`` invalidates open connections, and any task
         # mid-exec/put_archive would raise.
