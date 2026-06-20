@@ -6,7 +6,7 @@
   "frigate_compressor": "0.0.54",
   "haos_configurator": "0.0.6",
   "intel_gpu_top_mqtt": "0.3.30",
-  "container_hooks": "0.0.2",
+  "container_hooks": "0.1.0",
   "system_resource_tuner": "0.0.30",
   "turbostat_mqtt": "0.0.34"
 }
