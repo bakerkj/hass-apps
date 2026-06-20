@@ -1,6 +1,6 @@
 {
   "name": "BirdNET Audio Stream",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "image": "ghcr.io/bakerkj/{arch}-birdnet_audio_stream",
   "slug": "birdnet_audio_stream",
   "description": "Stream ALSA microphone audio over RTSP for BirdNET using go2rtc",
