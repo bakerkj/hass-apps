@@ -10,10 +10,14 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images in Dockerfiles",
-      "managerFilePatterns": ["/Dockerfile$/"],
+      "description": "Home Assistant add-on base images anywhere they're pinned: Dockerfile FROM/ARG lines, workflow ADDON_BASE_IMAGE/HA_IMAGE env vars, and ADDON_BASE_IMAGE constants in integration conftests. A single manager across all three file types so a base-image bump moves every reference together in one PR (the alternative — separate per-file managers or relying on the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps across two PRs and stranded one set when the other was merged).",
+      "managerFilePatterns": [
+        "/Dockerfile$/",
+        "/\\.github/workflows/.+\\.ya?ml$/",
+        "/tests/integration/conftest\\.py$/"
+      ],
       "matchStrings": [
-        "[\\s=](?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
+        "(?<depName>ghcr\\.io/home-assistant/[\\w.-]+):(?<currentValue>[\\w.-]+)"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
