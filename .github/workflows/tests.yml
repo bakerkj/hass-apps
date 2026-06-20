@@ -205,7 +205,7 @@ jobs:
       # tracks each via the comments so a bump opens a PR on both
       # workflow and conftest together.
       # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
-      HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.6.2"
+      HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.6.4"
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
