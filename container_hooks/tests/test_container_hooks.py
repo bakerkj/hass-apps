@@ -10,6 +10,7 @@ is involved.
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -25,6 +26,7 @@ from container_hooks.app import (
     _LAST_RUN_PRUNE_AGE_MULTIPLIER,
     _dispatch,
     _dispatch_pre_start,
+    _fire_trailing,
     _hook_env,
     _max_debounce,
     _prune_last_run,
@@ -283,6 +285,219 @@ def test_resolve_debounce_override_with_no_field_falls_through(
         container_overrides=(ContainerOverride(container="addon_x"),),
     )
     assert _resolve_debounce(opts, "addon_x") == 4
+
+
+# ---------------------------------------------------------------------------
+# _fire_trailing (trailing-edge debounce)
+# ---------------------------------------------------------------------------
+
+
+async def test_fire_trailing_dispatches_after_delay(tmp_path: Path) -> None:
+    """After ``delay`` seconds the trailing fire spawns a ``_dispatch``
+    carrying the most recent in-window event and updates ``last_run``.
+    """
+    docker = MagicMock()
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+    coros_to_close: list = []
+
+    def spawn(coro):
+        coros_to_close.append(coro)
+        spawned.append(coro)
+
+    # _fire_trailing's identity guard requires trailing[container] to
+    # match the running task. Register the task ref the same way the
+    # main loop does.
+    task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=0.0,
+            docker=docker,
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=spawn,
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+            stop=asyncio.Event(),
+        )
+    )
+    trailing["addon_x"] = task
+    await task
+
+    assert len(spawned) == 1
+    assert "addon_x" in last_run
+    assert "addon_x" not in trailing_event  # popped
+    # Close the unawaited coroutine to avoid the "never awaited" warning.
+    for c in coros_to_close:
+        c.close()
+
+
+async def test_fire_trailing_cancellation_clears_state(tmp_path: Path) -> None:
+    """A cancel during ``sleep`` clears trailing state and re-raises so
+    the awaiter sees ``CancelledError``.
+    """
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+
+    task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=10.0,
+            docker=MagicMock(),
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=lambda c: spawned.append(c),
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+            stop=asyncio.Event(),
+        )
+    )
+    trailing["addon_x"] = task  # mimic the main-loop bookkeeping
+    await asyncio.sleep(0)  # yield so the task starts its sleep
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert spawned == []  # nothing dispatched
+    assert "addon_x" not in trailing
+    assert "addon_x" not in trailing_event
+    assert last_run == {}  # never updated
+
+
+async def test_fire_trailing_stop_set_after_sleep_skips_dispatch(
+    tmp_path: Path,
+) -> None:
+    """If ``stop`` is set when ``sleep`` returns normally — the shutdown
+    race the cancel can't preempt because the awaitable already
+    resolved — no dispatch fires and state is cleared.
+    """
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+    stop = asyncio.Event()
+    stop.set()  # pre-set so the post-sleep check immediately bails
+
+    # Register a sentinel so the identity guard passes the trailing.get
+    # check and the stop branch is the path under test.
+    sentinel_task = asyncio.create_task(asyncio.sleep(0))
+    trailing["addon_x"] = sentinel_task
+    # Make the sentinel BE the current task by passing it as the marker —
+    # we do this by running _fire_trailing itself as the registered task.
+    real_task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=0.0,
+            docker=MagicMock(),
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=lambda c: spawned.append(c),
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+            stop=stop,
+        )
+    )
+    trailing["addon_x"] = real_task
+    sentinel_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sentinel_task
+    await real_task
+
+    assert spawned == []
+    assert last_run == {}
+    assert "addon_x" not in trailing
+    assert "addon_x" not in trailing_event
+
+
+async def test_fire_trailing_superseded_after_sleep_bails(tmp_path: Path) -> None:
+    """The outside-window race: trailing's sleep returns, but before
+    the post-sleep block runs the main loop has already popped
+    ``trailing[container]`` to fire its own leading dispatch. The
+    trailing must NOT spawn a duplicate dispatch.
+    """
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    spawned: list = []
+
+    task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=0.0,
+            docker=MagicMock(),
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=lambda c: spawned.append(c),
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+            stop=asyncio.Event(),
+        )
+    )
+    trailing["addon_x"] = task
+    # Yield so the task enters its sleep(0), which returns immediately
+    # but parks at the next checkpoint. Then simulate the main loop's
+    # outside-window supersede by popping our entry before letting the
+    # task resume into its post-sleep block.
+    await asyncio.sleep(0)
+    trailing.pop("addon_x", None)
+    trailing_event.pop("addon_x", None)
+    await task
+
+    assert spawned == []
+    assert last_run == {}
+
+
+async def test_fire_trailing_cancel_after_supersede_doesnt_clobber_state(
+    tmp_path: Path,
+) -> None:
+    """If a successor task has replaced our registration before our
+    CancelledError handler runs, we must NOT trash its state.
+    """
+    last_run: dict[str, float] = {}
+    trailing: dict[str, asyncio.Task] = {}
+    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc"}}
+    spawned: list = []
+
+    task = asyncio.create_task(
+        _fire_trailing(
+            "addon_x",
+            delay=10.0,
+            docker=MagicMock(),
+            options=_opts(tmp_path),
+            log=_LOG,
+            spawn=lambda c: spawned.append(c),
+            last_run=last_run,
+            trailing=trailing,
+            trailing_event=trailing_event,
+            stop=asyncio.Event(),
+        )
+    )
+    trailing["addon_x"] = task
+    await asyncio.sleep(0)
+
+    # Replace the registration with a successor sentinel before cancelling.
+    successor = asyncio.create_task(asyncio.sleep(0))
+    trailing["addon_x"] = successor
+    successor_event = {"id": "successor"}
+    trailing_event["addon_x"] = successor_event
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Successor's registration must survive.
+    assert trailing["addon_x"] is successor
+    assert trailing_event["addon_x"] is successor_event
+    with contextlib.suppress(asyncio.CancelledError):
+        await successor  # let it complete before test teardown
 
 
 # ---------------------------------------------------------------------------

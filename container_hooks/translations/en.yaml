@@ -23,8 +23,13 @@ configuration:
   debounce_seconds:
     name: Debounce window (seconds)
     description: >-
-      Per-container debounce window that suppresses rapid re-fires from
-      Supervisor watchdog flaps (0-60). Set to 0 to disable.
+      Per-container debounce window for the post-start ``scripts/*.sh`` path
+      only (0-60). Suppresses rapid re-fires from Supervisor watchdog flaps;
+      uses leading + trailing semantics so the most recent restart isn't
+      silently dropped. Pre-start hooks (``pre-start-files/``,
+      ``pre-start-patches/``, ``pre-start/``) bypass debounce — they fire on the
+      docker ``create`` event, which is one-shot per container lifecycle. Set to
+      0 to disable.
   skip_containers:
     name: Skip containers
     description: >-
@@ -35,6 +40,6 @@ configuration:
     description: >-
       Per-container overrides for global options. Each entry takes a
       ``container`` name and optional fields. Set ``debounce_seconds`` here to
-      override the global value for that container — e.g. ``0`` to disable
-      debounce on a chatty container, or a longer window on one that
-      watchdog-flaps a lot.
+      override the global value for that container (post-start ``scripts/*.sh``
+      only) — e.g. ``0`` to never debounce a container, or a longer window for
+      one that watchdog-flaps a lot.
