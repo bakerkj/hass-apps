@@ -1,7 +1,7 @@
 {
   "name": "Container Hooks",
   "slug": "container_hooks",
-  "description": "Per-container docker hooks: stage files, apply unified-diff patches, or run scripts at container create or start events — without forking the target image. (Create hooks are opt-in; see `watch_create_events`.)",
+  "description": "Per-container docker hooks: stage files, apply unified-diff patches, or run scripts at container create or start events — without forking the target image.",
   "url": "https://github.com/bakerkj/hass-apps",
   "version": "0.0.2",
   "image": "ghcr.io/bakerkj/{arch}-container_hooks",
@@ -22,8 +22,7 @@
     "initial_sweep": true,
     "debounce_seconds": 2,
     "skip_containers": [],
-    "container_overrides": [],
-    "watch_create_events": false
+    "container_overrides": []
   },
   "schema": {
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
@@ -38,7 +37,6 @@
         "container": "str",
         "debounce_seconds": "int(0,60)?"
       }
-    ],
-    "watch_create_events": "bool"
+    ]
   }
 }

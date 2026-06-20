@@ -150,7 +150,7 @@ def test_pre_start_files_land_in_target_before_entrypoint(
     """``pre-start-files/`` content is put_archive'd before docker start."""
     target_name = target.name
     _drop_pre_start_file(hooks_dir, target_name, "opt/rocs-marker", "from-pre-start\n")
-    write_options(options_path, watch_create_events=True, debounce_seconds=0)
+    write_options(options_path, debounce_seconds=0)
     addon.start(addon_image)
 
     # Create then start, so the addon's `container_created` handler races
@@ -187,7 +187,7 @@ def test_pre_start_patch_preserves_executable_mode(
         "-#!/bin/sh\n"
         "+#!/bin/sh -e\n",
     )
-    write_options(options_path, watch_create_events=True, debounce_seconds=0)
+    write_options(options_path, debounce_seconds=0)
     addon.start(addon_image)
 
     target.run()
@@ -225,7 +225,7 @@ def test_pre_start_patch_modifies_staged_file(
         "-original\n"
         "+patched\n",
     )
-    write_options(options_path, watch_create_events=True, debounce_seconds=0)
+    write_options(options_path, debounce_seconds=0)
     addon.start(addon_image)
 
     target.run()

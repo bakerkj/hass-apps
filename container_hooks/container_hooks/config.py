@@ -26,7 +26,6 @@ _KNOWN_OPTION_KEYS = frozenset(
         "debounce_seconds",
         "skip_containers",
         "container_overrides",
-        "watch_create_events",
     }
 )
 _KNOWN_OVERRIDE_KEYS = frozenset({"container", "debounce_seconds"})
@@ -53,7 +52,6 @@ class Options:
     debounce_seconds: int = 2
     skip_containers: tuple[str, ...] = field(default_factory=tuple)
     container_overrides: tuple[ContainerOverride, ...] = field(default_factory=tuple)
-    watch_create_events: bool = False
 
 
 # --- per-container path helpers ---------------------------------------------
@@ -163,5 +161,4 @@ def load_options(path: str) -> Options:
         ),
         skip_containers=skip,
         container_overrides=tuple(overrides),
-        watch_create_events=bool(raw.get("watch_create_events", False)),
     )
