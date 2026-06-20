@@ -834,9 +834,10 @@ async def test_startup_failure_disconnects_session() -> None:
                 # incoming frames until we see a close-type frame; any
                 # non-close frame is fine (e.g. lingering writes during
                 # cleanup) but a close frame must arrive within the timeout.
-                deadline = asyncio.get_event_loop().time() + 3.0
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 3.0
                 closed = False
-                while asyncio.get_event_loop().time() < deadline:
+                while loop.time() < deadline:
                     msg = await asyncio.wait_for(ws.receive(), timeout=3.0)
                     if msg.type in (
                         aiohttp.WSMsgType.CLOSE,
