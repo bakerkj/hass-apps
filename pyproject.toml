@@ -27,6 +27,7 @@ dev = [
     "selenium>=4.0",
     "websockets>=12.0",
     "pyjwt>=2.0",
+    "types-humanfriendly>=10.0.1.20250319",
 ]
 
 [tool.mypy]
@@ -52,12 +53,6 @@ mypy_path = [
 ]
 check_untyped_defs = true
 warn_unused_ignores = true
-
-# humanfriendly ships without a py.typed marker; treat it as untyped
-# rather than failing the type check.
-[[tool.mypy.overrides]]
-module = "humanfriendly"
-ignore_missing_imports = true
 
 # patch_ng (used by container_hooks for unified-diff application) ships
 # without stubs; suppress the missing-import noise here.
