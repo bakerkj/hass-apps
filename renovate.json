@@ -146,9 +146,9 @@
       "overridePackageName": "alpine_edge/onevpl-intel-gpu"
     },
     {
-      "description": "Avoid duplicate PRs: the custom regex manager above already handles ghcr.io/home-assistant/* FROM lines in Dockerfiles; disabling the built-in dockerfile manager for those packages keeps the regex manager as the single source so we don't get two PRs (one per datasource) on every base-image bump.",
+      "description": "Avoid duplicate PRs: the custom regex manager above already handles ghcr.io/home-assistant/* FROM lines in Dockerfiles; disabling the built-in dockerfile manager for those packages keeps the regex manager as the single source so we don't get two PRs (one per datasource) on every base-image bump. The /.../ matchPackageNames is regex syntax matching any package name containing 'home-assistant' — the dockerfile manager only sees image names, so this can only hit the HA base images.",
       "matchManagers": ["dockerfile"],
-      "matchPackageNames": ["ghcr.io/home-assistant/{/,}**"],
+      "matchPackageNames": ["/home-assistant/"],
       "enabled": false
     },
     {
