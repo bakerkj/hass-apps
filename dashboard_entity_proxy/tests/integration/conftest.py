@@ -8,9 +8,7 @@ Bring-up costs are paid once per test session via ``scope="session"``
 fixtures — HA bootstrap is ~30-60 s, paid once. Each test creates its
 own dashboards/data via HA's WebSocket API for isolation.
 
-Run with ``pytest tests/integration/ -m integration``. The default
-``pytest`` invocation does not include this directory (see
-``pyproject.toml``'s ``addopts``).
+Run with ``pytest dashboard_entity_proxy/tests/integration/ -m integration``.
 
 Requirements: docker, a free ``ghcr.io/home-assistant/home-assistant``
 image pull, headless Chrome (system ``google-chrome`` + the
@@ -57,7 +55,7 @@ HA_BOOT_TIMEOUT = 120
 # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
 ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.23"
 ADDON_BOOT_TIMEOUT = 30
-ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2] / "dashboard_entity_proxy"
+ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
 
 
 def _docker_available() -> bool:
@@ -78,7 +76,10 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="docker not available; HA integration tests need it")
     for item in items:
-        if "integration" in item.keywords and "tests/integration" in str(item.fspath):
+        if (
+            "integration" in item.keywords
+            and "dashboard_entity_proxy/tests/integration" in str(item.fspath)
+        ):
             item.add_marker(skip)
 
 
@@ -289,8 +290,7 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
 # template and the test harness has historically been a source of bugs
 # that only surfaced after deploy.
 _NGINX_TEMPLATE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "dashboard_entity_proxy/rootfs/etc/nginx/nginx.conf.tmpl"
+    Path(__file__).resolve().parents[2] / "rootfs/etc/nginx/nginx.conf.tmpl"
 )
 
 

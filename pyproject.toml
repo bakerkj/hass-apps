@@ -22,7 +22,8 @@ dev = [
     "aiodocker>=0.24",
     "patch-ng>=1.18",
     # Integration tests: drive a real headless Chrome through the proxy +
-    # a HA docker container. Required only when running ``tests/integration``.
+    # a HA docker container. Required only when running
+    # ``dashboard_entity_proxy/tests/integration``.
     "selenium>=4.0",
     "websockets>=12.0",
     "pyjwt>=2.0",
@@ -30,16 +31,24 @@ dev = [
 
 [tool.mypy]
 mypy_path = [
-    "container_info_mqtt",
-    "dashboard_entity_proxy",
-    "ffmpeg_snapshotter",
-    "frigate_compressor",
-    "haos_configurator",
-    "intel_gpu_top_mqtt",
     "container_hooks",
+    "container_hooks/tests",
+    "container_info_mqtt",
+    "container_info_mqtt/tests",
+    "dashboard_entity_proxy",
+    "dashboard_entity_proxy/tests",
+    "ffmpeg_snapshotter",
+    "ffmpeg_snapshotter/tests",
+    "frigate_compressor",
+    "frigate_compressor/tests",
+    "haos_configurator",
+    "haos_configurator/tests",
+    "intel_gpu_top_mqtt",
+    "intel_gpu_top_mqtt/tests",
     "system_resource_tuner",
+    "system_resource_tuner/tests",
     "turbostat_mqtt",
-    "tests",
+    "turbostat_mqtt/tests",
 ]
 check_untyped_defs = true
 warn_unused_ignores = true
@@ -50,21 +59,35 @@ warn_unused_ignores = true
 module = "humanfriendly"
 ignore_missing_imports = true
 
+# patch_ng (used by container_hooks for unified-diff application) ships
+# without stubs; suppress the missing-import noise here.
+[[tool.mypy.overrides]]
+module = "patch_ng"
+ignore_missing_imports = true
+
 
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = [
-    "container_info_mqtt",
-    "dashboard_entity_proxy",
-    "ffmpeg_snapshotter",
-    "frigate_compressor",
-    "haos_configurator",
-    "intel_gpu_top_mqtt",
     "container_hooks",
+    "container_hooks/tests",
+    "container_info_mqtt",
+    "container_info_mqtt/tests",
+    "dashboard_entity_proxy",
+    "dashboard_entity_proxy/tests",
+    "ffmpeg_snapshotter",
+    "ffmpeg_snapshotter/tests",
+    "frigate_compressor",
+    "frigate_compressor/tests",
+    "haos_configurator",
+    "haos_configurator/tests",
+    "intel_gpu_top_mqtt",
+    "intel_gpu_top_mqtt/tests",
     "system_resource_tuner",
-    "tests",
+    "system_resource_tuner/tests",
     "turbostat_mqtt",
+    "turbostat_mqtt/tests",
 ]
 # No --cov-fail-under here: the unit and integration jobs each collect only
 # part of the picture (integration exercises the real ffmpeg/ffprobe paths).

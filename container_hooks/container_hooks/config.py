@@ -109,7 +109,9 @@ def _coerce_int(value: object, default: int, key: str) -> int:
     taking the whole addon down.
     """
     try:
-        return max(0, int(value))
+        # ``int(object)`` isn't a typed overload, but the try/except below
+        # catches the TypeError/ValueError that mypy is worried about.
+        return max(0, int(value))  # type: ignore[call-overload]
     except (TypeError, ValueError):
         _log.warning(
             "options: %s=%r is not an integer; using default %d", key, value, default
