@@ -653,22 +653,74 @@ async def test_docker_events_python_filter_keeps_only_wanted_actions(
 
 
 # ---------------------------------------------------------------------------
-# self_container_name — hostname → full name resolution
+# self_container_name — mountinfo → docker name resolution
 # ---------------------------------------------------------------------------
+
+_FAKE_CID = "a" * 64
+_FAKE_LAYER_ID = "b" * 64
 
 
 async def test_self_container_name_resolves_id_to_full_name(monkeypatch) -> None:
-    """Short ID hostname must resolve to the full ``addon_<slug>_<name>`` form."""
+    """The mountinfo-derived ID resolves to the full ``addon_<slug>_<name>``."""
     monkeypatch.setattr(
-        "container_hooks.docker.socket.gethostname",
-        lambda: "abc123def456",
+        "container_hooks.docker._own_container_id",
+        lambda: _FAKE_CID,
     )
     fake_ctr = MagicMock()
     fake_ctr.show = AsyncMock(return_value={"Name": "/addon_local_container_hooks"})
     fake_docker = MagicMock()
     fake_docker.containers.get = AsyncMock(return_value=fake_ctr)
     assert await self_container_name(fake_docker) == "addon_local_container_hooks"
-    fake_docker.containers.get.assert_awaited_once_with("abc123def456")
+    fake_docker.containers.get.assert_awaited_once_with(_FAKE_CID)
+
+
+def test_own_container_id_skips_overlay2_layers_and_finds_container_id(
+    monkeypatch, tmp_path
+) -> None:
+    """The root overlay mount carries 64-hex layer IDs before the docker
+    bind-mount lines; ``/containers/<id>/`` anchoring must pin to the
+    container ID, not the first layer ID we happen to see.
+    """
+    p = tmp_path / "mountinfo"
+    p.write_text(
+        f"1 2 0:99 / / rw - overlay overlay rw,"
+        f"lowerdir=/var/lib/docker/overlay2/{_FAKE_LAYER_ID}/diff,"
+        f"upperdir=/var/lib/docker/overlay2/{_FAKE_LAYER_ID}/diff\n"
+        f"3 1 0:1 /containers/{_FAKE_CID}/resolv.conf /etc/resolv.conf rw - ext4 /dev/x rw\n"
+        f"4 1 0:1 /containers/{_FAKE_CID}/hostname /etc/hostname rw - ext4 /dev/x rw\n"
+    )
+    monkeypatch.setattr("container_hooks.docker.Path", lambda *_: p)
+    from container_hooks.docker import _own_container_id
+
+    assert _own_container_id() == _FAKE_CID
+
+
+def test_own_container_id_returns_empty_when_mountinfo_unreadable(monkeypatch) -> None:
+    """OSError on read (no /proc, denied, etc.) returns ``""``."""
+    from pathlib import Path as _RealPath
+
+    monkeypatch.setattr(
+        "container_hooks.docker.Path",
+        lambda *_: _RealPath("/does/not/exist/mountinfo_missing_for_test"),
+    )
+    from container_hooks.docker import _own_container_id
+
+    assert _own_container_id() == ""
+
+
+def test_own_container_id_returns_empty_when_no_container_mount(
+    monkeypatch, tmp_path
+) -> None:
+    """Mountinfo with overlay layer-id noise but no ``/containers/<id>/`` -> ``""``."""
+    p = tmp_path / "mountinfo"
+    p.write_text(
+        f"1 2 0:99 / / rw - overlay overlay rw,"
+        f"lowerdir=/var/lib/docker/overlay2/{_FAKE_LAYER_ID}/diff\n"
+    )
+    monkeypatch.setattr("container_hooks.docker.Path", lambda *_: p)
+    from container_hooks.docker import _own_container_id
+
+    assert _own_container_id() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -878,22 +930,35 @@ async def test_dispatch_pre_start_writes_exception_to_per_container_log(
 async def test_self_container_name_returns_empty_on_docker_error(
     monkeypatch,
 ) -> None:
-    """On a DockerError we return ``""`` so the caller can disable self-skip.
-
-    Returning the short hostname would add a never-matching value to
-    ``skip_containers``, silently allowing the addon to dispatch against
-    itself during ``initial_sweep`` — exactly the failure mode self-skip
-    exists to prevent.
+    """A DockerError on the API lookup returns ``""`` so the caller can
+    disable self-skip and warn. Adding a never-matching name to
+    ``skip_containers`` would silently allow the addon to dispatch
+    against itself during ``initial_sweep`` — exactly the failure mode
+    self-skip exists to prevent.
     """
     monkeypatch.setattr(
-        "container_hooks.docker.socket.gethostname",
-        lambda: "abc123def456",
+        "container_hooks.docker._own_container_id",
+        lambda: _FAKE_CID,
     )
     fake_docker = MagicMock()
     fake_docker.containers.get = AsyncMock(
         side_effect=DockerError(404, {"message": "not found"})
     )
     assert await self_container_name(fake_docker) == ""
+
+
+async def test_self_container_name_returns_empty_when_no_mountinfo_id(
+    monkeypatch,
+) -> None:
+    """If mountinfo can't yield an ID, skip the docker call and return ``""``."""
+    monkeypatch.setattr(
+        "container_hooks.docker._own_container_id",
+        lambda: "",
+    )
+    fake_docker = MagicMock()
+    fake_docker.containers.get = AsyncMock()
+    assert await self_container_name(fake_docker) == ""
+    fake_docker.containers.get.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

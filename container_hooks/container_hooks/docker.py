@@ -15,7 +15,7 @@ import datetime
 import io
 import logging
 import os
-import socket
+import re
 import tarfile
 import tempfile
 import time
@@ -59,23 +59,50 @@ async def _async_append(log_path: Path, text: str) -> None:
     await asyncio.to_thread(_sync_append, log_path, text)
 
 
+# ``/proc/self/mountinfo`` carries docker's bind mounts for
+# ``/etc/hostname``, ``/etc/hosts``, ``/etc/resolv.conf``, each with a
+# source path of the shape ``.../containers/<64-hex-id>/...``. That ID
+# survives every layout that matters here: cgroup v1, cgroup v2,
+# cgroup-namespaced (HAOS and GHA's ubuntu-24.04 runner), systemd or
+# cgroupfs driver — verified inline on both. Anchoring on
+# ``/containers/<id>/`` is what skips the overlay2 ``lowerdir`` /
+# ``upperdir`` layer IDs that appear in the file's first (root) line.
+_CONTAINER_ID_RE = re.compile(r"/containers/([0-9a-f]{64})/")
+
+
+def _own_container_id() -> str:
+    """Scrape our container ID out of ``/proc/self/mountinfo``.
+
+    Returns ``""`` if the file can't be read or no docker bind-mount
+    line is present; the caller surfaces that via the self-skip warning.
+    """
+    try:
+        text = Path("/proc/self/mountinfo").read_text()
+    except OSError:
+        return ""
+    m = _CONTAINER_ID_RE.search(text)
+    return m.group(1) if m else ""
+
+
 async def self_container_name(docker: aiodocker.Docker) -> str:
     """Resolve our own full docker name (e.g. ``addon_<slug>_container_hooks``).
 
-    ``gethostname()`` returns the short container ID, not the docker name
-    the events stream uses for ``skip_containers`` matching — so look up
-    ID → name via the API.
+    Pulls the container ID from ``/proc/self/mountinfo`` (see
+    ``_own_container_id``), then asks the docker API for the canonical
+    Name — that's what the events stream and ``docker_ps_running``
+    report, so it's what ``skip_containers`` has to match.
 
-    Returns ``""`` on lookup failure rather than the short hostname:
-    falling back to the short ID would silently break self-skip (the
-    events stream and ``docker_ps_running`` both report the full name),
-    so we'd add a never-matching value to ``skip_containers`` and could
-    dispatch against ourselves on ``initial_sweep``. The caller is
-    expected to warn the operator when this returns empty.
+    Returns ``""`` on any failure (no ID in mountinfo, docker lookup
+    fails). The caller is expected to warn the operator when this
+    returns empty; falling back to a guess would silently add a
+    never-matching value to ``skip_containers``, defeating self-skip
+    during ``initial_sweep``.
     """
-    hostname = socket.gethostname()
+    container_id = _own_container_id()
+    if not container_id:
+        return ""
     try:
-        info = await (await docker.containers.get(hostname)).show()
+        info = await (await docker.containers.get(container_id)).show()
         return str(info.get("Name", "")).lstrip("/")
     except DockerError, KeyError, AttributeError:
         return ""

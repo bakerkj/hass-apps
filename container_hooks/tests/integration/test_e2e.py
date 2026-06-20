@@ -359,3 +359,29 @@ def test_skip_containers_skips_listed_target(
         timeout=15,
     ), f"control hook never ran; addon log:\n{addon.logs()}"
     assert not target.exec_check("test", "-f", "/tmp/rocs-should-not-exist")
+
+
+def test_self_skip_auto_resolves_via_mountinfo(
+    addon,
+    addon_image,
+    options_path,
+    write_options,
+):
+    """Addon scrapes its own ID from ``/proc/self/mountinfo``, asks the
+    docker API for the name, and unions it into ``skip_containers``.
+
+    Asserts the production code path end-to-end: the warning is absent
+    and the addon's own name appears in the ``Configuration:`` line's
+    effective skip list.
+    """
+    write_options(options_path)
+    addon.start(addon_image)
+    logs = addon.logs()
+    assert "could not resolve own container name" not in logs, (
+        f"self-skip resolution failed inside the container; addon logs:\n{logs}"
+    )
+    config_lines = [line for line in logs.splitlines() if "Configuration:" in line]
+    assert config_lines, f"no Configuration: line in logs:\n{logs}"
+    assert addon.name in config_lines[0], (
+        f"own name {addon.name!r} not in Configuration line: {config_lines[0]!r}"
+    )
