@@ -5,8 +5,6 @@
 Shared pytest configuration: paho.mqtt stub.
 """
 
-from __future__ import annotations
-
 import logging
 import sys
 import types
