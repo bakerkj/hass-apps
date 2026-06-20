@@ -15,8 +15,6 @@ uses a real HA + real Chrome + real proxy to ensure the
 ``client_config`` dispatch path keeps doing its job.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from _wait import wait_until

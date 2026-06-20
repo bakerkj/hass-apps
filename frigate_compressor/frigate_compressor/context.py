@@ -3,8 +3,6 @@
 
 """``CompressorContext`` — shared state passed to workers and service loops."""
 
-from __future__ import annotations
-
 import sqlite3
 import threading
 from dataclasses import dataclass, field

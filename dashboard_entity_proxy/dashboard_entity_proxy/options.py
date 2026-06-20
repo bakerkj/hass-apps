@@ -8,8 +8,6 @@ knobs and the session's per-connection knobs on a single object so
 there's one source of truth for both.
 """
 
-from __future__ import annotations
-
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING

@@ -11,8 +11,6 @@ container. The kind of hook lives in a fixed subdirectory under it:
 order; use ``00-``, ``10-``, ``20-`` prefixes.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from dataclasses import dataclass, field

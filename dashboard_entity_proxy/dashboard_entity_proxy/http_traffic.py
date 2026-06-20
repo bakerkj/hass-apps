@@ -13,8 +13,6 @@ and the whole client is removed from the registry when all of its rows
 have expired.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os

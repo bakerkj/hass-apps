@@ -14,8 +14,6 @@ snapshot omits ``current_path`` and ``target_path`` so users with
 Ingress access can't see which dashboards other clients are on.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

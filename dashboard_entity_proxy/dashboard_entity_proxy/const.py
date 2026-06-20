@@ -10,8 +10,6 @@ sets, walker key tables, schema-validation guards) stay with their
 modules.
 """
 
-from __future__ import annotations
-
 import re
 
 

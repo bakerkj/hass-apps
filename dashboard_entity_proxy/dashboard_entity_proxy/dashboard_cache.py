@@ -6,8 +6,6 @@ tracking so a late stale ``lovelace/config`` response can't overwrite
 the cache with older data.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Callable
 

@@ -8,8 +8,6 @@ as 'given this prior state, calling X has these effects on the manager's
 fields and these calls on the callbacks.'
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 

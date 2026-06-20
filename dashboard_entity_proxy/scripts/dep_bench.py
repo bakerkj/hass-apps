@@ -28,8 +28,6 @@ Run::
     uv run dashboard_entity_proxy/scripts/dep_bench.py --entities 5000 --rate 500 --clients 10
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json

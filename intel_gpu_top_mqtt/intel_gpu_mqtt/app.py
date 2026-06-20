@@ -3,8 +3,6 @@
 
 """Entry-point orchestration: CLI/options parsing, MQTT lifecycle, main loop."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import logging

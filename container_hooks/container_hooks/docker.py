@@ -10,8 +10,6 @@ Pre-start scripts run in the addon container via
 CLI directly against the target before its entrypoint starts.
 """
 
-from __future__ import annotations
-
 import asyncio
 import datetime
 import io

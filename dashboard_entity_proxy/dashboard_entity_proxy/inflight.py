@@ -3,8 +3,6 @@
 
 """Bookkeeping for the per-session inflight dispatch table."""
 
-from __future__ import annotations
-
 import collections
 
 from .const import INFLIGHT_SWEPT_RECALL_MAX

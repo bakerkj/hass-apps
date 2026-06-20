@@ -11,8 +11,6 @@ on rather than raise; these helpers return ``None`` / empty dict so
 callers can guard with a single ``if`` line.
 """
 
-from __future__ import annotations
-
 from typing import Any, Callable
 
 

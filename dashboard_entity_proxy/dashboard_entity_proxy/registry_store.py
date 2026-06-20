@@ -14,8 +14,6 @@ See ARCHITECTURE.md for the ``full`` vs ``incremental`` trade-offs and
 the burst-threshold promotion rule.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Callable
 

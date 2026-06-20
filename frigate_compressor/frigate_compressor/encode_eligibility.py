@@ -12,8 +12,6 @@ for encode worker slots.
 Also exposes ``time_until_next_eligible`` for the no-work sleep path.
 """
 
-from __future__ import annotations
-
 import time
 
 from .config import Config

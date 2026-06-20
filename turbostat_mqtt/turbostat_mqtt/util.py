@@ -3,8 +3,6 @@
 
 """Small utilities shared across the turbostat_mqtt package."""
 
-from __future__ import annotations
-
 import re
 import time
 

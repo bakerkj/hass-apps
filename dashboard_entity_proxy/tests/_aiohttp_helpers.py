@@ -9,8 +9,6 @@ are loaded in the same pytest run — whichever was imported first wins
 ``sys.modules["conftest"]``.
 """
 
-from __future__ import annotations
-
 import socket
 
 from aiohttp import web

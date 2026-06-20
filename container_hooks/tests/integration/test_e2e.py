@@ -13,8 +13,6 @@ container serves as the hook target. We assert by:
     debounce, and skip decisions).
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

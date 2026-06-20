@@ -11,8 +11,6 @@ filesystem).  The eligibility query and its per-window cap live in
 ``swap_eligibility``.
 """
 
-from __future__ import annotations
-
 import threading
 import traceback
 from collections import Counter

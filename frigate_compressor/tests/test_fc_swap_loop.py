@@ -3,8 +3,6 @@
 
 """Tests for ``swap_eligibility.get_eligible_swaps`` and ``swap_loop.run_swap_loop``."""
 
-from __future__ import annotations
-
 import threading
 import time
 from unittest.mock import MagicMock

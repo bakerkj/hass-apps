@@ -11,8 +11,6 @@ proxy observed the change and made the new entity available on
 demand.
 """
 
-from __future__ import annotations
-
 import time
 
 import pytest

@@ -20,8 +20,6 @@ Schema errors raise ``ValueError`` — the addon container exits non-zero
 on bad config rather than booting with surprising defaults.
 """
 
-from __future__ import annotations
-
 import json
 import re
 from dataclasses import dataclass, field

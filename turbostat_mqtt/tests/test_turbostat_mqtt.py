@@ -3,8 +3,6 @@
 
 """Tests for pure/utility functions in turbostat_mqtt.turbostat_mqtt."""
 
-from __future__ import annotations
-
 import subprocess
 
 import turbostat_mqtt as tm

@@ -11,8 +11,6 @@ write to ``/config`` — the map in :file:`config.json` is
 ``addon_config:ro``.
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 import os

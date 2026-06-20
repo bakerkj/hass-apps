@@ -10,8 +10,6 @@ both sets; removal supersedes add so an entity that vanishes during the
 window only emits the removal.
 """
 
-from __future__ import annotations
-
 from typing import Any, Callable
 
 

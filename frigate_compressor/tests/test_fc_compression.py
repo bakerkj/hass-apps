@@ -3,8 +3,6 @@
 
 """Tests for get_eligible_recordings, compress_one, and housekeeping."""
 
-from __future__ import annotations
-
 import sqlite3
 import subprocess
 import threading

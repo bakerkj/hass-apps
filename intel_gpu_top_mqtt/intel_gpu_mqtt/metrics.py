@@ -3,8 +3,6 @@
 
 """Build per-sensor metric dicts from an intel_gpu_top JSON sample."""
 
-from __future__ import annotations
-
 from typing import Any
 
 from .util import dig, find_engine_field, safe_float

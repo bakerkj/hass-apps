@@ -9,8 +9,6 @@ single ``sh -c`` call site is :func:`run_user_action`, which is by
 design (action commands are user-authored shell strings).
 """
 
-from __future__ import annotations
-
 import logging
 import subprocess
 from typing import IO

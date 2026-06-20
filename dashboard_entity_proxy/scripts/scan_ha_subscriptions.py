@@ -26,8 +26,6 @@ Or against a checkout::
 Outputs sorted command-type strings, one per line.
 """
 
-from __future__ import annotations
-
 import ast
 import sys
 from pathlib import Path

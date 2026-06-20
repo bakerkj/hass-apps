@@ -6,8 +6,6 @@ per-client HTTP panes. Two concerns: parsing nginx log lines, and
 aggregating them into per-source clients with their per-target rows.
 """
 
-from __future__ import annotations
-
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone

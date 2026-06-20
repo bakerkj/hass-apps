@@ -3,8 +3,6 @@
 
 """Tests for pure/utility functions in intel_gpu_mqtt.intel_gpu_mqtt."""
 
-from __future__ import annotations
-
 import json
 import logging
 import subprocess

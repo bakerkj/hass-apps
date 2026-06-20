@@ -22,8 +22,6 @@ Installs SIGTERM / SIGINT handlers for clean shutdown and cleans up both
 runners on exit.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import contextlib

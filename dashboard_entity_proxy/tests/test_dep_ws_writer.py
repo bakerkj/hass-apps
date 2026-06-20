@@ -9,8 +9,6 @@ inbound queue items and the done signal, and verifies the
 write-failure → on_write_failure → exit path.
 """
 
-from __future__ import annotations
-
 import asyncio
 
 import pytest

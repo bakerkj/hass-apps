@@ -9,8 +9,6 @@ as they produce snapshots.  The MQTT publisher (a separate thread) calls
 guarded by a single lock per stats instance.
 """
 
-from __future__ import annotations
-
 import threading
 import time
 from dataclasses import dataclass

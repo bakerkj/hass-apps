@@ -18,8 +18,6 @@ original lazy-registry-fetch bug surface in tests instead of silently
 serving wrong scope in production.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from dataclasses import dataclass, field

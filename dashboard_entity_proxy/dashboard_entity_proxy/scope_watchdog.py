@@ -9,8 +9,6 @@ abort on session close, a logger, a timeout, an ``is_scope_ready``
 predicate, and a ``widen_to_all`` action.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from typing import Callable

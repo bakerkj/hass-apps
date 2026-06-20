@@ -3,8 +3,6 @@
 
 """Rate limiter + throttle window constants — leaf module, no project deps."""
 
-from __future__ import annotations
-
 import threading
 import time
 

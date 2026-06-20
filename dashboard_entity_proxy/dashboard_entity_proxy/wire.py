@@ -6,8 +6,6 @@ both single-object frames and coalesced JSON-array frames, plus small
 message builders for the few outbound messages the proxy synthesizes.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from typing import Any

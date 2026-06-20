@@ -15,8 +15,6 @@ the customization can be wired in without disturbing the
 session-shared ``proxy_url``.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from _wait import wait_until

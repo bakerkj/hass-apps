@@ -10,8 +10,6 @@ a segment reaches ``tier2.min_days``, the sibling replaces the tier-1
 file at the primary path.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 T2_INFIX = ".t2"

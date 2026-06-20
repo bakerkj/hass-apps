@@ -22,8 +22,6 @@ The caller only ``wait4``'s ``outer``, which did near-zero work.
 the accumulated IO goes to init's accounting — not back up to caller.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import os

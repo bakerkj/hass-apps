@@ -18,8 +18,6 @@ so they match ``coverage report`` exactly; per-module percentages (which coverag
 does not compute) are derived from the summed statement counts.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 from pathlib import Path

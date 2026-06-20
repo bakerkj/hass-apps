@@ -3,8 +3,6 @@
 
 """MQTT helpers: health state + HA discovery publisher."""
 
-from __future__ import annotations
-
 import json
 import logging
 from typing import Any

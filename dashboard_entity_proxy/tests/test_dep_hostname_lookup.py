@@ -8,8 +8,6 @@ exercise the cache, the TTL refresh, and the first-label truncation
 without depending on /etc/hosts or a live DNS server.
 """
 
-from __future__ import annotations
-
 import asyncio
 import socket
 from typing import Any

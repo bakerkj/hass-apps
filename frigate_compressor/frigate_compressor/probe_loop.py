@@ -3,8 +3,6 @@
 
 """Background ffprobe loop — fills missing metadata for new Frigate recordings."""
 
-from __future__ import annotations
-
 import sqlite3
 import threading
 import time

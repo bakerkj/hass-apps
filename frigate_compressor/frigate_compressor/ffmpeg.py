@@ -3,8 +3,6 @@
 
 """ffmpeg/ffprobe wrappers: encoder selection, probing, filter + cmd builders."""
 
-from __future__ import annotations
-
 import subprocess
 from pathlib import Path
 

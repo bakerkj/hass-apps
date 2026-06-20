@@ -3,8 +3,6 @@
 
 """Daemon entrypoint: ``main()`` and the top-level scheduling loop."""
 
-from __future__ import annotations
-
 import argparse
 import signal
 import threading

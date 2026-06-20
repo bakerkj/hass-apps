@@ -8,8 +8,6 @@ without modifying the add-on. An empty / missing file leaves every list empty,
 which preserves today's behavior.
 """
 
-from __future__ import annotations
-
 import fnmatch
 import re
 from dataclasses import dataclass, field

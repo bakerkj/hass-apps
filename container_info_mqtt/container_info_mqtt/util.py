@@ -3,8 +3,6 @@
 
 """Small utilities: slug/name helpers, safe coercion, deep-get, subprocess error."""
 
-from __future__ import annotations
-
 import re
 import subprocess
 from typing import Any

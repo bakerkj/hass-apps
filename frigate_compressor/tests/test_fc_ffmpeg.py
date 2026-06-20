@@ -3,8 +3,6 @@
 
 """Tests for FFmpeg helpers: scale/fps filters, command building, and ffprobe."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

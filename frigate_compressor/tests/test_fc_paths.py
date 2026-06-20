@@ -3,8 +3,6 @@
 
 """Tests for tier-2 sibling-path helpers."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import frigate_compressor as fc

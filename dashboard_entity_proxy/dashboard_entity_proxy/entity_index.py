@@ -23,8 +23,6 @@ entity's device", matching what the HA frontend does on the Areas
 settings page.
 """
 
-from __future__ import annotations
-
 import heapq
 from typing import Any
 

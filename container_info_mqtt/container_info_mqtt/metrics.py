@@ -3,8 +3,6 @@
 
 """Metric definitions + per-metric value extraction + rate/aggregate helpers."""
 
-from __future__ import annotations
-
 import logging
 import re
 from datetime import datetime

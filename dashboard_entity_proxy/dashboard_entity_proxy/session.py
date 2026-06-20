@@ -24,8 +24,6 @@ they never yield mid-mutation. Each connection has a writer task draining a
 bounded queue; a full queue disconnects the slow peer.
 """
 
-from __future__ import annotations
-
 import asyncio
 import itertools
 import logging

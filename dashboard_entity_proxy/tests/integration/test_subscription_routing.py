@@ -13,8 +13,6 @@ versions popped the inflight entry on the result frame, breaking every
 subscription after the first message.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from _wait import wait_for_session_ready

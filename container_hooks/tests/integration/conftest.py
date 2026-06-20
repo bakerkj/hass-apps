@@ -25,8 +25,6 @@ Requirements: docker, host ``/var/run/docker.sock`` accessible. No HA
 needed — these tests only exercise the addon's docker-events plumbing.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import shutil

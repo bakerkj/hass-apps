@@ -15,8 +15,6 @@ flight. A failed PTR caches as the empty string and is retried on the
 same TTL.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import socket

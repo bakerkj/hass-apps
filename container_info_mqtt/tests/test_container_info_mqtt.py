@@ -3,8 +3,6 @@
 
 """Tests for pure/utility functions in container_info_mqtt.container_info_mqtt."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import logging

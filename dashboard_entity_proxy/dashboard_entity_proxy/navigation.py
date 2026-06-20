@@ -22,8 +22,6 @@ Inputs come from two places at runtime:
     ``is_settings_signal``.
 """
 
-from __future__ import annotations
-
 import enum
 from dataclasses import dataclass
 from typing import Any

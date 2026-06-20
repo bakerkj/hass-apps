@@ -21,8 +21,6 @@ Two families:
   their results are consumed internally by the session.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

@@ -8,8 +8,6 @@ events (entity_registry_updated, device_registry_updated) collapses into
 a single rebuild/refetch instead of a per-event flurry.
 """
 
-from __future__ import annotations
-
 import asyncio
 from typing import Any
 

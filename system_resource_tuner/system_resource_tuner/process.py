@@ -3,8 +3,6 @@
 
 """Process & thread discovery + nice/cpuset application."""
 
-from __future__ import annotations
-
 import logging
 import os
 import re
