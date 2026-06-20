@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.54](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.53...frigate_compressor-v0.0.54) (2026-06-20)
+
+
+### Miscellaneous Chores
+
+* **3.14:** drop redundant from __future__ import annotations ([#253](https://github.com/bakerkj/hass-apps/issues/253)) ([4eba832](https://github.com/bakerkj/hass-apps/commit/4eba832ce9136f7e1afc3b9ec9ecd975714eb60c))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+* **mypy:** enable check_untyped_defs + warn_unused_ignores (non-DEP scope) ([#206](https://github.com/bakerkj/hass-apps/issues/206)) ([5d83443](https://github.com/bakerkj/hass-apps/commit/5d83443a7be960bf867b79411cce56f881d4d5be))
+
+
+### Code Refactoring
+
+* per-addon test layout ([#239](https://github.com/bakerkj/hass-apps/issues/239)) ([bc5b93b](https://github.com/bakerkj/hass-apps/commit/bc5b93b60f31901d14f3bd0393289946e1eec1f2))
+
 ## [0.0.53](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.52...frigate_compressor-v0.0.53) (2026-05-19)
 
 
