@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.30](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.29...intel_gpu_top_mqtt-v0.3.30) (2026-06-20)
+
+
+### Bug Fixes
+
+* **intel_gpu_top_mqtt:** use monotonic clock for restart debounce and stall watchdog ([#158](https://github.com/bakerkj/hass-apps/issues/158)) ([b2f7a01](https://github.com/bakerkj/hass-apps/commit/b2f7a0114d4ba49bc8d60f89d9d574857b1728da))
+
+
+### Miscellaneous Chores
+
+* **3.14:** drop redundant from __future__ import annotations ([#253](https://github.com/bakerkj/hass-apps/issues/253)) ([4eba832](https://github.com/bakerkj/hass-apps/commit/4eba832ce9136f7e1afc3b9ec9ecd975714eb60c))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+
+
+### Documentation
+
+* **intel_gpu_top_mqtt:** add config screen labels and descriptions ([#165](https://github.com/bakerkj/hass-apps/issues/165)) ([0af4797](https://github.com/bakerkj/hass-apps/commit/0af4797ed04ac887cc9da63b8e2b3735b1413af4))
+
+
+### Code Refactoring
+
+* per-addon test layout ([#239](https://github.com/bakerkj/hass-apps/issues/239)) ([bc5b93b](https://github.com/bakerkj/hass-apps/commit/bc5b93b60f31901d14f3bd0393289946e1eec1f2))
+
 ## [0.3.29](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.28...intel_gpu_top_mqtt-v0.3.29) (2026-05-15)
 
 
