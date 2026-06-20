@@ -62,13 +62,14 @@
     },
     {
       "customType": "regex",
-      "description": "home-assistant/builder build-image action (calver-tagged sub-path)",
+      "description": "home-assistant/builder build-image action (calver-tagged sub-path). Versioning is explicitly 'loose' so the calver tags (2026.06.0) compare correctly — the helpers:pinGitHubActionDigestsToSemver preset would otherwise apply semver to this depName globally, which silently ignores calver and surfaces the old pre-calver semver tags (4.x, 7.x) as 'latest' (cf. closed PRs #246 / #248).",
       "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "home-assistant/builder/actions/build-image@(?<currentValue>[\\w.-]+)"
       ],
       "depNameTemplate": "home-assistant/builder",
-      "datasourceTemplate": "github-releases"
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose"
     },
     {
       "customType": "regex",
@@ -155,6 +156,11 @@
       "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0)",
       "matchDepNames": ["python"],
       "allowedVersions": "<3.15"
+    },
+    {
+      "description": "Override the helpers:pinGitHubActionDigestsToSemver preset's semver versioning for home-assistant/builder, which moved from semver tags (1.x-7.x) to calver tags (2026.06.0+). With semver versioning, the calver tags don't parse and Renovate proposes 'upgrades' to the old pre-calver semver tags (this surfaced as the bogus #246 and #248 PRs).",
+      "matchPackageNames": ["home-assistant/builder"],
+      "versioning": "loose"
     }
   ]
 }
