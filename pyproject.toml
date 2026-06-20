@@ -1,7 +1,7 @@
 [project]
 name = "hass-apps"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 
 [tool.uv]
 required-version = "==0.11.*"
