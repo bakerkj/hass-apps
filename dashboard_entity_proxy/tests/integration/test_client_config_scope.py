@@ -19,7 +19,7 @@ import pytest
 
 from _wait import wait_until
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
 def _create_test_dashboard(ha_ws, url_path: str, entities: list[str]) -> None:
@@ -59,7 +59,7 @@ def _create_test_dashboard(ha_ws, url_path: str, entities: list[str]) -> None:
     assert r.get("success"), f"config save failed: {r}"
 
 
-@INTEGRATION
+@E2E
 def test_client_lovelace_config_narrows_scope(browser, ha_ws):
     """Dashboard with explicit ``entity: input_boolean.int_test_a`` only.
     Browser through the proxy must end up with that entity in

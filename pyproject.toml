@@ -89,8 +89,7 @@ pythonpath = [
 # The threshold is enforced once on the combined total in the `coverage` CI job.
 addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
-    "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
-    "e2e: tests that build and run a real addon image against the host dockerd",
+    "e2e: tests that exercise real external systems (ffmpeg/ffprobe binaries, docker daemon, full HA + Chrome stack). Skipped by default to keep the unit run hermetic; each per-addon e2e CI job runs them with the relevant externals installed.",
 ]
 
 [tool.coverage.run]

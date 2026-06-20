@@ -20,7 +20,7 @@ import pytest
 from _wait import wait_until
 from dashboard_entity_proxy.customization import Customization
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
 def _create_dashboard(ha_ws, url_path: str, cards: list[dict]) -> None:
@@ -50,7 +50,7 @@ def _create_dashboard(ha_ws, url_path: str, cards: list[dict]) -> None:
     assert r.get("success"), f"config save failed: {r}"
 
 
-@INTEGRATION
+@E2E
 def test_implicit_entities_from_customization_reach_browser(
     proxy_factory, browser, ha, ha_ws
 ):

@@ -15,10 +15,10 @@ import urllib.request
 
 import pytest
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
-@INTEGRATION
+@E2E
 def test_compressed_frontend_asset_arrives_compressed(proxy_url, ha):
     """Request a frontend JS bundle through the proxy with
     ``Accept-Encoding: gzip``. The proxy should forward the upstream
@@ -48,7 +48,7 @@ def test_compressed_frontend_asset_arrives_compressed(proxy_url, ha):
     )
 
 
-@INTEGRATION
+@E2E
 def test_uncompressed_request_still_works(proxy_url, ha):
     """Without ``Accept-Encoding`` the proxy must still serve the
     asset (HA returns it uncompressed, proxy forwards verbatim).

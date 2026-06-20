@@ -101,8 +101,7 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: unit-tests
-      - run:
-          uv run pytest -m "not integration and not e2e" --junit-xml=junit.xml
+      - run: uv run pytest -m "not e2e" --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
@@ -160,12 +159,12 @@ jobs:
           # that the non-root cache-save tar can't read, aborting the save.
           # Hand the tree back to the runner so the .debs get cached.
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
-      # Fail loud if the binaries are missing: the integration tests
+      # Fail loud if the binaries are missing: the e2e tests
       # shutil.which()-skip when ffmpeg/ffprobe are absent, which would
       # silently drop coverage instead of erroring.
       - run: ffmpeg -version && ffprobe -version
       - run:
-          uv run pytest frigate_compressor/tests/ -m integration -v
+          uv run pytest frigate_compressor/tests/ -m e2e -v
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
@@ -212,7 +211,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
       - run: ffmpeg -version && ffprobe -version
       - run:
-          uv run pytest ffmpeg_snapshotter/tests/ -m integration -v
+          uv run pytest ffmpeg_snapshotter/tests/ -m e2e -v
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
@@ -311,8 +310,8 @@ jobs:
       - name: Verify Chrome present
         run: google-chrome --version
       - run:
-          uv run pytest dashboard_entity_proxy/tests/integration/ -m integration
-          -v --junit-xml=junit.xml
+          uv run pytest dashboard_entity_proxy/tests/integration/ -m e2e -v
+          --junit-xml=junit.xml
         env:
           DEP_PROXY_IMAGE: dep_int_test:ci
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0

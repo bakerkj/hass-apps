@@ -17,10 +17,10 @@ import pytest
 
 from _wait import wait_for_session_ready
 
-INTEGRATION = pytest.mark.integration
+E2E = pytest.mark.e2e
 
 
-@INTEGRATION
+@E2E
 def test_subscribe_events_state_changed_routes_through_proxy(browser, ha):
     """Client subscribes to ``state_changed`` via the proxy. A real
     state change in HA must produce an event delivered back through
@@ -90,7 +90,7 @@ def test_subscribe_events_state_changed_routes_through_proxy(browser, ha):
     )
 
 
-@INTEGRATION
+@E2E
 def test_browser_logs_no_unknown_subscription_warning(browser, ha):
     """Regression test: the proxy used to pop client subscription
     inflight entries on the result frame, causing subsequent events
