@@ -12,8 +12,8 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.5.2-r0 \
-  python3=3.12.13-r0
+  docker-cli=29.5.3-r0 \
+  python3=3.14.5-r0
 
 COPY run.sh /run.sh
 COPY system_resource_tuner /opt/system_resource_tuner

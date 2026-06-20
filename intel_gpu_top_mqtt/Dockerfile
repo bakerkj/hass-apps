@@ -17,8 +17,8 @@ LABEL \
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      py3-paho-mqtt=1.6.1-r3 \
-      python3=3.12.13-r0 \
+      py3-paho-mqtt=1.6.1-r4 \
+      python3=3.14.5-r0 \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       igt-gpu-tools=2.3-r0

@@ -12,14 +12,14 @@ LABEL \
   org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  nginx=1.28.3-r3 \
-  nginx-mod-http-brotli=1.28.3-r3 \
-  nginx-mod-http-zstd=1.28.3-r3 \
-  python3=3.12.13-r0 \
+  nginx=1.30.2-r1 \
+  nginx-mod-http-brotli=1.30.2-r1 \
+  nginx-mod-http-zstd=1.30.2-r1 \
+  python3=3.14.5-r0 \
   py3-aiohttp=3.13.5-r0 \
-  py3-humanfriendly=10.0-r5 \
-  py3-voluptuous=0.15.2-r0 \
-  py3-yaml=6.0.3-r0
+  py3-humanfriendly=10.0-r7 \
+  py3-voluptuous=0.15.2-r1 \
+  py3-yaml=6.0.3-r2
 
 COPY rootfs/ /
 COPY dashboard_entity_proxy /opt/dashboard_entity_proxy

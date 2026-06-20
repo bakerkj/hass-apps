@@ -15,8 +15,8 @@ LABEL \
 # alpine_3_23 custom manager (see renovate.json) can bump them.
 # nsenter comes from busybox in the HA base image.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      python3=3.12.13-r0 \
-      py3-yaml=6.0.3-r0
+      python3=3.14.5-r0 \
+      py3-yaml=6.0.3-r2
 
 COPY run.sh /run.sh
 COPY haos_configurator /opt/haos_configurator
