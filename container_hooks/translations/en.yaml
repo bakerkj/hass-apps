@@ -38,13 +38,3 @@ configuration:
       override the global value for that container — e.g. ``0`` to disable
       debounce on a chatty container, or a longer window on one that
       watchdog-flaps a lot.
-  watch_create_events:
-    name: Watch create events (pre-start hooks)
-    description: >-
-      Also subscribe to docker container ``create`` events and run the pre-start
-      hook trio (put_archive of ``pre-start-files/``, patches in
-      ``pre-start-patches/``, scripts in ``pre-start/``) for the container
-      before Supervisor calls ``docker start``. Window between create and start
-      is typically 50-200 ms; treat it as best-effort. See the "Timing reality"
-      section of the add-on README for the full caveats and the deterministic
-      alternatives (e.g. s6 ``cont-init.d`` drops, Python ``sitecustomize``).

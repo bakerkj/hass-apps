@@ -367,12 +367,10 @@ async def main_async() -> int:
     options = _with_self_skip(options, own)
 
     log.info(
-        "Configuration: base_dir=%s initial_sweep=%s debounce_seconds=%d "
-        "watch_create_events=%s skip=%s",
+        "Configuration: base_dir=%s initial_sweep=%s debounce_seconds=%d skip=%s",
         options.base_dir,
         options.initial_sweep,
         options.debounce_seconds,
-        options.watch_create_events,
         sorted(options.skip_containers),
     )
     dispatch_sem = asyncio.Semaphore(_MAX_CONCURRENT_DISPATCHES)
@@ -405,9 +403,13 @@ async def main_async() -> int:
         if stop.is_set():
             return 0
 
-        events_to_watch: tuple[str, ...] = (
-            ("create", "start") if options.watch_create_events else ("start",)
-        )
+        # ``create`` fires the pre-start hook path (files / patches /
+        # pre-start scripts run before the target's entrypoint);
+        # ``start`` fires the post-start ``scripts/`` path. Always
+        # subscribe to both — whether a particular dispatch produces
+        # any work is decided per-event by the per-container filesystem
+        # scan in ``_resolve_*``.
+        events_to_watch: tuple[str, ...] = ("create", "start")
         log.info(
             "subscribing to docker container events: %s",
             ",".join(events_to_watch),

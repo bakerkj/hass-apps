@@ -151,7 +151,6 @@ def _write_options(path: Path, **overrides: Any) -> None:
         "debounce_seconds": DEFAULT_DEBOUNCE_SECONDS,
         "skip_containers": [],
         "container_overrides": [],
-        "watch_create_events": False,
     }
     base.update(overrides)
     path.write_text(json.dumps(base))

@@ -68,8 +68,8 @@ target has to be running first."
 - For each event, looks under `<base_dir>/<container>/` for hooks (post-start
   scripts, pre-start files, pre-start patches, pre-start scripts). Output is
   captured to per-container log files under `<base_dir>/<container>/logs/`.
-- Optional pre-start (`create` event) hooks land files inside the target's
-  writable layer before its entrypoint runs — see "Pre-Start Hooks" below.
+- Pre-start (`create` event) hooks land files inside the target's writable layer
+  before its entrypoint runs — see "Pre-Start Hooks" below.
 - Per-container debounce window suppresses rapid re-fires from Supervisor
   watchdog flaps.
 - Architecture is `asyncio`-based: each event dispatch is a concurrent task, so
@@ -166,7 +166,6 @@ esac
 | `initial_sweep`       | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                |
 | `debounce_seconds`    | `2`                              | Per-container debounce window for rapid re-fires, in seconds, 0-60 (`0` disables).                                                                                          |
 | `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `addon_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here. |
-| `watch_create_events` | `false`                          | Also subscribe to `create` events and run pre-start hooks. See "Pre-Start Hooks" below.                                                                                     |
 | `container_overrides` | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                               |
 
 ### Per-Container Overrides
@@ -186,13 +185,12 @@ room for more per-container knobs without breaking existing config.
 
 ## Pre-Start Hooks (create events)
 
-When `watch_create_events` is `true`, the add-on also subscribes to docker
-container `create` events. The daemon emits `create` between the container's
-writable filesystem layer existing and its entrypoint running — for any
-container on the host (Supervisor add-ons, `docker compose`, plain
-`docker run`), not just Supervisor-managed ones. This is the only window in
-which you can stage files into the target's writable layer before its entrypoint
-reads them.
+The add-on subscribes to docker container `create` events. The daemon emits
+`create` between the container's writable filesystem layer existing and its
+entrypoint running — for any container on the host (Supervisor add-ons,
+`docker compose`, plain `docker run`), not just Supervisor-managed ones. This is
+the only window in which you can stage files into the target's writable layer
+before its entrypoint reads them.
 
 Three pre-start mechanisms are available; all fire on the same event.
 
@@ -308,9 +306,9 @@ it doesn't mix with the post-start hook's log.
 - Post-start hooks (`event_start` / `initial_sweep`) are shipped into the target
   via `put_archive` and run with aiodocker's `container.exec` API. No `docker`
   CLI is invoked.
-- Pre-start hooks (`container_created`, opt-in via `watch_create_events`) run in
-  the add-on container and have a brief window before the target's entrypoint
-  starts. See "Pre-Start Hooks (create events)" above.
+- Pre-start hooks (`container_created`) run in the add-on container and have a
+  brief window before the target's entrypoint starts. See "Pre-Start Hooks
+  (create events)" above.
 - Hook output is captured to per-container log files but is not buffered to the
   add-on's own log; check `<base_dir>/<container>/logs/post-start.log`
   (post-start) or `<base_dir>/<container>/logs/pre-start.log` (pre-start) for

@@ -80,7 +80,6 @@ def test_load_options_defaults_when_empty(tmp_path: Path) -> None:
     assert o.initial_sweep is True
     assert o.debounce_seconds == 2
     assert o.skip_containers == ()
-    assert o.watch_create_events is False
 
 
 def test_load_options_custom_base_dir(tmp_path: Path) -> None:
@@ -104,11 +103,6 @@ def test_load_options_parses_container_overrides(tmp_path: Path) -> None:
         ContainerOverride(container="addon_b", debounce_seconds=0),
         ContainerOverride(container="addon_c", debounce_seconds=None),
     )
-
-
-def test_load_options_watch_create_events(tmp_path: Path) -> None:
-    path = _write_options(tmp_path, watch_create_events=True)
-    assert load_options(str(path)).watch_create_events is True
 
 
 def test_load_options_uppercases_log_level(tmp_path: Path) -> None:
