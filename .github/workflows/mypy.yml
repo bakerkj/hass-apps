@@ -26,7 +26,16 @@ jobs:
           restore-keys: |
             mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
             mypy-${{ runner.os }}-
+      # Target the inner package of each addon (e.g. ``foo/foo``) so we
+      # type-check addon source only. Tests live at ``<addon>/tests``
+      # after the per-addon test relocation and are excluded — matches
+      # the prek hook scope in ``.pre-commit-config.yaml``.
       - run:
-          uv run mypy container_info_mqtt dashboard_entity_proxy
-          ffmpeg_snapshotter frigate_compressor haos_configurator
-          intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt
+          uv run mypy container_hooks/container_hooks
+          container_info_mqtt/container_info_mqtt
+          dashboard_entity_proxy/dashboard_entity_proxy
+          ffmpeg_snapshotter/ffmpeg_snapshotter
+          frigate_compressor/frigate_compressor
+          haos_configurator/haos_configurator intel_gpu_top_mqtt/intel_gpu_mqtt
+          system_resource_tuner/system_resource_tuner
+          turbostat_mqtt/turbostat_mqtt

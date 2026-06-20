@@ -290,8 +290,7 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
 # template and the test harness has historically been a source of bugs
 # that only surfaced after deploy.
 _NGINX_TEMPLATE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "dashboard_entity_proxy/rootfs/etc/nginx/nginx.conf.tmpl"
+    Path(__file__).resolve().parents[2] / "rootfs/etc/nginx/nginx.conf.tmpl"
 )
 
 
