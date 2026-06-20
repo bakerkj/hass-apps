@@ -104,6 +104,18 @@
         }
       ]
     },
+    "container_hooks": {
+      "release-type": "simple",
+      "package-name": "container_hooks",
+      "component": "container_hooks",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "system_resource_tuner": {
       "release-type": "simple",
       "package-name": "system_resource_tuner",
