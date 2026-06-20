@@ -1,0 +1,44 @@
+{
+  "name": "Container Hooks",
+  "slug": "container_hooks",
+  "description": "Per-container docker hooks: stage files, apply unified-diff patches, or run scripts at container create or start events — without forking the target image. (Create hooks are opt-in; see `watch_create_events`.)",
+  "url": "https://github.com/bakerkj/hass-apps",
+  "version": "0.0.1",
+  "image": "ghcr.io/bakerkj/{arch}-container_hooks",
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
+  "startup": "services",
+  "init": false,
+  "docker_api": true,
+  "hassio_role": "manager",
+  "map": [
+    "homeassistant_config:rw"
+  ],
+  "options": {
+    "log_level": "INFO",
+    "base_dir": "/homeassistant/container_hooks",
+    "initial_sweep": true,
+    "debounce_seconds": 2,
+    "skip_containers": [],
+    "container_overrides": [],
+    "watch_create_events": false
+  },
+  "schema": {
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "base_dir": "str",
+    "initial_sweep": "bool",
+    "debounce_seconds": "int(0,60)",
+    "skip_containers": [
+      "str"
+    ],
+    "container_overrides": [
+      {
+        "container": "str",
+        "debounce_seconds": "int(0,60)?"
+      }
+    ],
+    "watch_create_events": "bool"
+  }
+}

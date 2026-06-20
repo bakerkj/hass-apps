@@ -19,6 +19,8 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "humanfriendly>=10.0",
     "voluptuous==0.16.0",
+    "aiodocker>=0.24",
+    "patch-ng>=1.18",
     # Integration tests: drive a real headless Chrome through the proxy +
     # a HA docker container. Required only when running ``tests/integration``.
     "selenium>=4.0",
@@ -34,6 +36,7 @@ mypy_path = [
     "frigate_compressor",
     "haos_configurator",
     "intel_gpu_top_mqtt",
+    "container_hooks",
     "system_resource_tuner",
     "turbostat_mqtt",
     "tests",
@@ -58,6 +61,7 @@ pythonpath = [
     "frigate_compressor",
     "haos_configurator",
     "intel_gpu_top_mqtt",
+    "container_hooks",
     "system_resource_tuner",
     "tests",
     "turbostat_mqtt",
@@ -65,9 +69,10 @@ pythonpath = [
 # No --cov-fail-under here: the unit and integration jobs each collect only
 # part of the picture (integration exercises the real ffmpeg/ffprobe paths).
 # The threshold is enforced once on the combined total in the `coverage` CI job.
-addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=system_resource_tuner --cov=turbostat_mqtt"
+addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
     "integration: tests that run real ffmpeg/ffprobe and should not run in the unit-test job",
+    "e2e: tests that build and run a real addon image against the host dockerd",
 ]
 
 [tool.coverage.run]

@@ -1,0 +1,50 @@
+configuration:
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  base_dir:
+    name: Base directory
+    description: >-
+      Root of the per-container hook tree, from the add-on's view. Default
+      ``/homeassistant/container_hooks`` corresponds to
+      ``/config/container_hooks`` on the host (Supervisor maps
+      ``homeassistant_config:rw``); drop files at the host path. Each
+      container's config lives at ``<base_dir>/<container>/`` with conventional
+      ``scripts/`` (post-start), ``pre-start/`` (addon-container scripts),
+      ``pre-start-files/`` (put_archive tree), ``pre-start-patches/`` (unified
+      diffs), and ``logs/`` subdirectories. Files inside ``scripts/``,
+      ``pre-start/``, and ``pre-start-patches/`` are lex-sorted; use ``00-``,
+      ``10-``, ``20-`` prefixes to control order.
+  initial_sweep:
+    name: Initial sweep
+    description: >-
+      Process containers that were already running when the add-on starts.
+      Disable if you only want to react to fresh container start events.
+  debounce_seconds:
+    name: Debounce window (seconds)
+    description: >-
+      Per-container debounce window that suppresses rapid re-fires from
+      Supervisor watchdog flaps (0-60). Set to 0 to disable.
+  skip_containers:
+    name: Skip containers
+    description: >-
+      Container names whose hooks should never run. The add-on always skips its
+      own container in addition to anything listed here.
+  container_overrides:
+    name: Container overrides
+    description: >-
+      Per-container overrides for global options. Each entry takes a
+      ``container`` name and optional fields. Set ``debounce_seconds`` here to
+      override the global value for that container — e.g. ``0`` to disable
+      debounce on a chatty container, or a longer window on one that
+      watchdog-flaps a lot.
+  watch_create_events:
+    name: Watch create events (pre-start hooks)
+    description: >-
+      Also subscribe to docker container ``create`` events and run the pre-start
+      hook trio (put_archive of ``pre-start-files/``, patches in
+      ``pre-start-patches/``, scripts in ``pre-start/``) for the container
+      before Supervisor calls ``docker start``. Window between create and start
+      is typically 50-200 ms; treat it as best-effort. See the "Timing reality"
+      section of the add-on README for the full caveats and the deterministic
+      alternatives (e.g. s6 ``cont-init.d`` drops, Python ``sitecustomize``).

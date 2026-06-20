@@ -197,10 +197,77 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  container-hooks-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Mirror the pin in tests/integration/container_hooks/conftest.py.
+      # Renovate tracks via the comment so a base-image bump opens a PR
+      # on both files together.
+      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
+      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: container-hooks-e2e
+      # Cache the BUILD_FROM base image so the per-run image build skips
+      # the network leg. Keyed on the pin; renovate-bumps invalidate it.
+      - name: Cache addon base image
+        id: addon-base-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/addon-base.tar
+          key: addon-base-${{ env.ADDON_BASE_IMAGE }}
+      - name: Pull addon base image (cache miss)
+        if: steps.addon-base-cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull "$ADDON_BASE_IMAGE"
+          docker save "$ADDON_BASE_IMAGE" > ~/addon-base.tar
+      - name: Load addon base image (cache hit)
+        if: steps.addon-base-cache.outputs.cache-hit == 'true'
+        run: docker load < ~/addon-base.tar
+      # Pre-build the addon image with a GHA buildkit cache so the apk +
+      # uv install layers (~20-40 s) are reused across CI runs. Tagged
+      # ``container_hooks_e2e:ci`` and surfaced to conftest via
+      # ``CONTAINER_HOOKS_IMAGE`` so the session fixture skips its own
+      # docker build.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: ./container_hooks
+          load: true
+          tags: container_hooks_e2e:ci
+          build-args: |
+            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
+            BUILD_VERSION=e2e
+          cache-from: type=gha,scope=container-hooks-e2e
+          cache-to: type=gha,scope=container-hooks-e2e,mode=max
+      - run:
+          uv run pytest tests/integration/container_hooks/ -m e2e -v
+          --junit-xml=junit.xml
+        env:
+          CONTAINER_HOOKS_IMAGE: container_hooks_e2e:ci
+      - uses: EnricoMi/publish-unit-test-result-action@v2
+        if: ${{ !cancelled() }}
+        with:
+          check_name: "container_hooks e2e results"
+          files: junit.xml
+      - run: mv .coverage .coverage.container_hooks_e2e
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-container-hooks-e2e
+          path: .coverage.container_hooks_e2e
+          include-hidden-files: true
+          if-no-files-found: error
+
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [tests, integration-tests, integration-tests-ha]
+    needs: [tests, integration-tests, integration-tests-ha, container-hooks-e2e]
     # Report whatever coverage was produced even if a test job failed; the
     # failing job already reds the build.
     if: ${{ !cancelled() }}

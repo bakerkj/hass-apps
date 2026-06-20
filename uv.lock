@@ -3,6 +3,18 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
+name = "aiodocker"
+version = "0.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/19/f07d8532d7489ed8629847d004d0bbd286287286a76828be43aca7e6b106/aiodocker-0.27.0.tar.gz", hash = "sha256:74586f4929aee4563ee7db50996a1a39ac35e06c80701daad31f94aadb6551c7", size = 328202, upload-time = "2026-05-27T07:06:49.731Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/54/cd3aa680c9653b8708e164d610948e7a9aa50bba619705ac6169f61b0837/aiodocker-0.27.0-py3-none-any.whl", hash = "sha256:c55647bdcaf546dd4fc9b52794a9510575e126888dff478a9185f580a40dc45e", size = 55037, upload-time = "2026-05-27T07:06:48.316Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -348,9 +360,11 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiodocker" },
     { name = "aiohttp" },
     { name = "humanfriendly" },
     { name = "mypy" },
+    { name = "patch-ng" },
     { name = "prek" },
     { name = "pyjwt" },
     { name = "pytest" },
@@ -368,9 +382,11 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiodocker", specifier = ">=0.24" },
     { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "humanfriendly", specifier = ">=10.0" },
     { name = "mypy", specifier = ">=1.20.0" },
+    { name = "patch-ng", specifier = ">=1.18" },
     { name = "prek", specifier = ">=0.4.1" },
     { name = "pyjwt", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=8.3.5" },
@@ -644,6 +660,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "patch-ng"
+version = "1.19.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/b6/8ea8095f964f93567bbe28709298b30104ad418b50d4217538387bf48f7d/patch_ng-1.19.1.tar.gz", hash = "sha256:036a3cc00134ec53f37e92333958ee75e117f2e62a5ec2b85c7122e5e815c29e", size = 18525, upload-time = "2026-04-23T13:36:54.692Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/ef/c60c07b2f9d973672608815e4c176943146c353d3b60fdab914a6dcd44e8/patch_ng-1.19.1-py3-none-any.whl", hash = "sha256:d45fd47b3f74b48c3e336690341876bb26244a077a06f5f7e6e47c19c15c1ca4", size = 17601, upload-time = "2026-04-23T13:36:51.95Z" },
 ]
 
 [[package]]
