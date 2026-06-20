@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.30](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.29...system_resource_tuner-v0.0.30) (2026-06-20)
+
+
+### Miscellaneous Chores
+
+* **3.14:** drop redundant from __future__ import annotations ([#253](https://github.com/bakerkj/hass-apps/issues/253)) ([4eba832](https://github.com/bakerkj/hass-apps/commit/4eba832ce9136f7e1afc3b9ec9ecd975714eb60c))
+* **deps:** update alpine apk packages ([#176](https://github.com/bakerkj/hass-apps/issues/176)) ([92ab256](https://github.com/bakerkj/hass-apps/commit/92ab2568f56b3367b87da9f2d6ca39659c69737c))
+* **deps:** update alpine apk packages to v29.5.2-r0 ([#195](https://github.com/bakerkj/hass-apps/issues/195)) ([e685982](https://github.com/bakerkj/hass-apps/commit/e6859825824e3103291ee853b6abc1d6faafdd27))
+* **deps:** update dependency docker-cli to v29.5.1-r0 ([#184](https://github.com/bakerkj/hass-apps/issues/184)) ([0e022d1](https://github.com/bakerkj/hass-apps/commit/0e022d1c2d84efff0aef4ee65d5f0aa3cb75ebf2))
+* **deps:** update home-assistant base images to v3.24 ([#237](https://github.com/bakerkj/hass-apps/issues/237)) ([a9bf453](https://github.com/bakerkj/hass-apps/commit/a9bf4535753e15c7713530b20fbe836725184838))
+
+
+### Documentation
+
+* **system_resource_tuner:** add config screen labels and descriptions ([#166](https://github.com/bakerkj/hass-apps/issues/166)) ([b0325f9](https://github.com/bakerkj/hass-apps/commit/b0325f942ddd624473b5bfed21352ef99041dd8a))
+
+
+### Code Refactoring
+
+* per-addon test layout ([#239](https://github.com/bakerkj/hass-apps/issues/239)) ([bc5b93b](https://github.com/bakerkj/hass-apps/commit/bc5b93b60f31901d14f3bd0393289946e1eec1f2))
+
 ## [0.0.29](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.28...system_resource_tuner-v0.0.29) (2026-05-15)
 
 
