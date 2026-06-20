@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
@@ -11,14 +11,14 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-# Two apk calls in one RUN: the first uses Alpine 3.23 stable repos; the
+# Two apk calls in one RUN: the first uses Alpine 3.24 stable repos; the
 # second pulls igt-gpu-tools (provides intel_gpu_top) from Alpine
-# edge/testing because Alpine 3.23 stable doesn't package it.
+# edge/testing because Alpine 3.24 stable doesn't package it.
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      py3-paho-mqtt=1.6.1-r3 \
-      python3=3.12.13-r0 \
+      py3-paho-mqtt=1.6.1-r4 \
+      python3=3.14.5-r0 \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       igt-gpu-tools=2.3-r0

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
@@ -12,9 +12,9 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.5.2-r0 \
-  py3-paho-mqtt=1.6.1-r3 \
-  python3=3.12.13-r0
+  docker-cli=29.5.3-r0 \
+  py3-paho-mqtt=1.6.1-r4 \
+  python3=3.14.5-r0
 
 COPY run.sh /run.sh
 COPY container_info_mqtt /opt/container_info_mqtt

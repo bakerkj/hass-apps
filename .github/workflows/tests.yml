@@ -207,7 +207,7 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
       HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.6.2"
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
+      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
@@ -301,7 +301,7 @@ jobs:
       # Renovate tracks via the comment so a base-image bump opens a PR
       # on both files together.
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.23"
+      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0

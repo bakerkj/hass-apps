@@ -57,7 +57,7 @@ class WsWriter:
                     getter.cancel()
                     try:
                         await getter
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    except asyncio.CancelledError, Exception:  # noqa: BLE001
                         pass
                     continue
                 kind, payload = getter.result()

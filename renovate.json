@@ -10,10 +10,14 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images in Dockerfiles",
-      "managerFilePatterns": ["/Dockerfile$/"],
+      "description": "Home Assistant add-on base images anywhere they're pinned: Dockerfile FROM/ARG lines, workflow ADDON_BASE_IMAGE/HA_IMAGE env vars, and ADDON_BASE_IMAGE constants in integration conftests. A single manager across all three file types so a base-image bump moves every reference together in one PR (the alternative — separate per-file managers or relying on the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps across two PRs and stranded one set when the other was merged).",
+      "managerFilePatterns": [
+        "/Dockerfile$/",
+        "/\\.github/workflows/.+\\.ya?ml$/",
+        "/tests/integration/conftest\\.py$/"
+      ],
       "matchStrings": [
-        "[\\s=](?<depName>ghcr\\.io/home-assistant/[^:]+):(?<currentValue>[^\\s]+)"
+        "(?<depName>ghcr\\.io/home-assistant/[\\w.-]+):(?<currentValue>[\\w.-]+)"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
@@ -47,14 +51,14 @@
     },
     {
       "customType": "regex",
-      "description": "APK packages pinned in Alpine 3.23 Dockerfiles",
+      "description": "APK packages pinned in Alpine 3.24 Dockerfiles",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
         "\\s+(?<depName>[a-z][a-z0-9_+.-]*)=(?<currentValue>[\\d][\\w.-]+)"
       ],
       "datasourceTemplate": "repology",
       "versioningTemplate": "loose",
-      "packageNameTemplate": "alpine_3_23/{{depName}}"
+      "packageNameTemplate": "alpine_3_24/{{depName}}"
     },
     {
       "customType": "regex",
@@ -130,21 +134,27 @@
       "groupName": "apt packages"
     },
     {
-      "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.23 repo",
-      "matchPackageNames": ["alpine_3_23/igt-gpu-tools"],
+      "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.24 repo",
+      "matchPackageNames": ["alpine_3_24/igt-gpu-tools"],
       "matchDatasources": ["repology"],
       "overridePackageName": "alpine_edge/igt-gpu-tools"
     },
     {
-      "description": "onevpl-intel-gpu comes from Alpine edge/testing, not the stable Alpine 3.23 repo",
-      "matchPackageNames": ["alpine_3_23/onevpl-intel-gpu"],
+      "description": "onevpl-intel-gpu comes from Alpine edge/testing, not the stable Alpine 3.24 repo",
+      "matchPackageNames": ["alpine_3_24/onevpl-intel-gpu"],
       "matchDatasources": ["repology"],
       "overridePackageName": "alpine_edge/onevpl-intel-gpu"
     },
     {
-      "description": "Hold CI Python on the 3.12 line to match the Alpine base image runtime",
+      "description": "Avoid duplicate PRs: the custom regex manager above already handles ghcr.io/home-assistant/* FROM lines in Dockerfiles; disabling the built-in dockerfile manager for those packages keeps the regex manager as the single source so we don't get two PRs (one per datasource) on every base-image bump. The /.../ matchPackageNames is regex syntax matching any package name containing 'home-assistant' — the dockerfile manager only sees image names, so this can only hit the HA base images.",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["/home-assistant/"],
+      "enabled": false
+    },
+    {
+      "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0)",
       "matchDepNames": ["python"],
-      "allowedVersions": "<3.13"
+      "allowedVersions": "<3.15"
     }
   ]
 }

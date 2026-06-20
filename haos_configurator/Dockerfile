@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
@@ -11,12 +11,12 @@ LABEL \
     org.opencontainers.image.source="https://github.com/bakerkj/hass-apps" \
     org.opencontainers.image.licenses="MIT"
 
-# Pin every apk to a concrete Alpine 3.23 version so renovate's
+# Pin every apk to a concrete Alpine 3.24 version so renovate's
 # alpine_3_23 custom manager (see renovate.json) can bump them.
 # nsenter comes from busybox in the HA base image.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      python3=3.12.13-r0 \
-      py3-yaml=6.0.3-r0
+      python3=3.14.5-r0 \
+      py3-yaml=6.0.3-r2
 
 COPY run.sh /run.sh
 COPY haos_configurator /opt/haos_configurator
