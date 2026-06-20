@@ -6,8 +6,6 @@ scoped dashboard to ``/calendar``, the corresponding domain entities
 should appear in ``hass.states`` without a page reload.
 """
 
-from __future__ import annotations
-
 import time
 
 import pytest

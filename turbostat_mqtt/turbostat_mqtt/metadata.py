@@ -3,8 +3,6 @@
 
 """Turbostat column → HA sensor metadata (friendly names, units, icons)."""
 
-from __future__ import annotations
-
 
 def friendly_name(col: str) -> str:
     replacements = {

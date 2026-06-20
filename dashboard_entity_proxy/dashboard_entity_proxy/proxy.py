@@ -5,8 +5,6 @@
 non-API paths, and intercepts /api/websocket into a Session.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import logging

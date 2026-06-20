@@ -3,8 +3,6 @@
 
 """Entry-point orchestration: config parsing, stream offsets, retention loop."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import signal

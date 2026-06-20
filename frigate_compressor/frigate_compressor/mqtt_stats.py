@@ -7,8 +7,6 @@ Pure DB → dataclass aggregation, no MQTT/paho dependency.  Read by the
 publisher in ``mqtt.py`` and by ``benchmarks/io_repro.py``.
 """
 
-from __future__ import annotations
-
 import time
 from dataclasses import dataclass
 

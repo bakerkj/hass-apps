@@ -9,8 +9,6 @@ the configurable helper-platform list, single-domain panels, and an
 explicit "all entities" mode set by the scope-ready watchdog.
 """
 
-from __future__ import annotations
-
 import bisect
 import logging
 from dataclasses import dataclass, field

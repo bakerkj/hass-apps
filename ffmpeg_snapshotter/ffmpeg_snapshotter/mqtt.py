@@ -3,8 +3,6 @@
 
 """MQTT publisher: per-camera HA device with snapshot-rate/size/error entities."""
 
-from __future__ import annotations
-
 import json
 import re
 import threading

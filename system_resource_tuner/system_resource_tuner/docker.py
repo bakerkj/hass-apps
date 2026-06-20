@@ -3,8 +3,6 @@
 
 """Docker CLI wrappers + container-level cgroup updates."""
 
-from __future__ import annotations
-
 import json
 import logging
 import shlex

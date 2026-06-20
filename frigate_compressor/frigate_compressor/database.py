@@ -3,8 +3,6 @@
 
 """Compress DB schema, status constants, connection helpers, ``_record``."""
 
-from __future__ import annotations
-
 import sqlite3
 import time
 from pathlib import Path

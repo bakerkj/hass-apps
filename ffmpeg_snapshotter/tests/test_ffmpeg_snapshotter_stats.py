@@ -3,8 +3,6 @@
 
 """Tests for SnapshotStats — the per-camera rolling-window metrics store."""
 
-from __future__ import annotations
-
 import ffmpeg_snapshotter as fs
 
 

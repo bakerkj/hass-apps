@@ -22,8 +22,6 @@ Options:
     --no-cards               skip the card-type frequency block
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import os

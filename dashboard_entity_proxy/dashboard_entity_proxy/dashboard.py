@@ -24,8 +24,6 @@ runtime state (``state``, ``attributes``, ``last_changed``, etc.) are ignored â€
 we deliver a superset of what the card will actually render.
 """
 
-from __future__ import annotations
-
 import fnmatch
 import functools
 import re

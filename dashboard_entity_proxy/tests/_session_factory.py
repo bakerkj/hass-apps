@@ -15,8 +15,6 @@ from sync test bodies. Tests that need to drive specific behaviour
 override individual attributes or stub methods on the returned instance.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 

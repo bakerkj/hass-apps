@@ -13,8 +13,6 @@ atomic rename + symlink) is exercised without mocking.
 These tests pin behavior that the Phase-2 refactor must preserve.
 """
 
-from __future__ import annotations
-
 import shutil
 import struct
 import subprocess

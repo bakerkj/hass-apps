@@ -3,8 +3,6 @@
 
 """Entry-point: option parsing, initial apply, reconcile loop."""
 
-from __future__ import annotations
-
 import argparse
 import logging
 import signal

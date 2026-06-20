@@ -15,8 +15,6 @@ matters there ("did the file land on the host with the right hash, did
 udevadm fire") needs a real HAOS host.
 """
 
-from __future__ import annotations
-
 import hashlib
 from unittest.mock import patch
 

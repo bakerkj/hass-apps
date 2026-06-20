@@ -3,8 +3,6 @@
 
 """Tests for recording type classification, config loading, and resolution logic."""
 
-from __future__ import annotations
-
 import json
 
 import pytest

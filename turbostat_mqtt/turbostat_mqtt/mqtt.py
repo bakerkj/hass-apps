@@ -3,8 +3,6 @@
 
 """MQTT client helpers: health tracking, publish wrapper, discovery payloads."""
 
-from __future__ import annotations
-
 import time
 from typing import Any
 

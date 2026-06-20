@@ -10,8 +10,6 @@ untouched. ``auto_decompress=False`` on the proxy's upstream
 natively, no ``Brotli`` Python dep needed.
 """
 
-from __future__ import annotations
-
 import gzip
 import urllib.request
 

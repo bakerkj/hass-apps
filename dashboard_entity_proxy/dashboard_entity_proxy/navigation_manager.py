@@ -15,8 +15,6 @@ Side-effecting work (dashboard config fetch, scope re-resolution) is
 delegated to callbacks supplied by Session.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Callable
 

@@ -3,8 +3,6 @@
 
 """Per-stream Worker: grabs one snapshot per ``interval_seconds`` via ffmpeg."""
 
-from __future__ import annotations
-
 import re
 import shlex
 import signal

@@ -9,8 +9,6 @@ aiodocker client is monkeypatched throughout so no real docker daemon
 is involved.
 """
 
-from __future__ import annotations
-
 import asyncio
 import io
 import json

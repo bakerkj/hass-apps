@@ -13,8 +13,6 @@ compress_one() pipeline without mocking subprocess, verifying that:
   - scale filters (halve) produce output with expected dimensions
 """
 
-from __future__ import annotations
-
 import shutil
 import subprocess
 import time

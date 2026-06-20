@@ -6,8 +6,6 @@ path, bypassing the Python proxy entirely) surface in the status UI's
 per-client HTTP panes via the access-log tailer.
 """
 
-from __future__ import annotations
-
 import json
 import time
 import urllib.request

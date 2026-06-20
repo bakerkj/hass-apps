@@ -17,8 +17,6 @@ Modeled on adamoutler's HassOsEnableSSH for the host-namespace pattern:
     https://github.com/adamoutler/HassOSConfigurator/tree/main/HassOsEnableSSH
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import os

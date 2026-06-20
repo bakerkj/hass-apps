@@ -6,8 +6,6 @@ HTTP forwarding, WebSocket tunneling, dial failures, and the
 ``TunnelConnection`` accounting that backs the status UI.
 """
 
-from __future__ import annotations
-
 import asyncio
 from types import SimpleNamespace
 from typing import Any

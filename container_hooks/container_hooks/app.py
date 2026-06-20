@@ -15,8 +15,6 @@ Layout: everything for one container lives under
 and the conventional subdirectory names.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import contextlib

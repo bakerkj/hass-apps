@@ -17,8 +17,6 @@ correctness; cancellation paths skip it because the item was never
 observed.
 """
 
-from __future__ import annotations
-
 import asyncio
 from typing import Any, Callable
 

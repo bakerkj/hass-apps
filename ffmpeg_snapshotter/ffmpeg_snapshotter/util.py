@@ -3,8 +3,6 @@
 
 """Small utilities used across the snapshotter package."""
 
-from __future__ import annotations
-
 import os
 import re
 import time

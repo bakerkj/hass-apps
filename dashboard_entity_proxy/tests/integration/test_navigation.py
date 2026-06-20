@@ -10,8 +10,6 @@ extracted scope, and apply the cache entry whose ``url_path`` matches
 the current view.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from _wait import wait_until

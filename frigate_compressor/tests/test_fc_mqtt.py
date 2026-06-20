@@ -3,8 +3,6 @@
 
 """Tests for collect_frigate_stats, RateTracker, and MqttPublisher."""
 
-from __future__ import annotations
-
 import json
 import sqlite3
 import threading

@@ -3,8 +3,6 @@
 
 """Tests for compress DB schema, the _record upsert, and the _fmt utility."""
 
-from __future__ import annotations
-
 import sqlite3
 
 import pytest

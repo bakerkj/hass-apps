@@ -9,8 +9,6 @@ the test takes 100 ms; if it never becomes true, the test fails at the
 same deadline the old hard sleep would have walked past silently.
 """
 
-from __future__ import annotations
-
 import time
 from typing import Any, Callable, TypeVar
 

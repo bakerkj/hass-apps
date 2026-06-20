@@ -37,8 +37,6 @@ orthogonal to the phase: they track readiness of specific data, not
 the overall lifecycle.
 """
 
-from __future__ import annotations
-
 import enum
 
 

@@ -3,8 +3,6 @@
 
 """Tests for pure/utility functions in system_resource_tuner.system_resource_tuner."""
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 

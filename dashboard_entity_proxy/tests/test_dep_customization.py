@@ -3,8 +3,6 @@
 
 """Unit tests for the optional customization YAML loader."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

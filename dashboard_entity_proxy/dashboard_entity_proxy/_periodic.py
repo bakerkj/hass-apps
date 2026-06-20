@@ -9,8 +9,6 @@ the full window. Keep the tick callable synchronous and short;
 long-running work belongs in a dedicated task, not this loop.
 """
 
-from __future__ import annotations
-
 import asyncio
 from typing import Callable
 

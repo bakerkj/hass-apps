@@ -3,8 +3,6 @@
 
 """Tests for pure/utility functions in ffmpeg_snapshotter.ffmpeg_snapshotter."""
 
-from __future__ import annotations
-
 import os
 import time
 from pathlib import Path

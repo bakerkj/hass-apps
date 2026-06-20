@@ -11,8 +11,6 @@ the inflight entry past the result frame and subsequent events route
 back to the client.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from _wait import wait_for_session_ready

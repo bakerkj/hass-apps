@@ -12,8 +12,6 @@ they drain on their own thread at filesystem pace instead of competing
 with GPU work for worker slots.
 """
 
-from __future__ import annotations
-
 import time
 
 from .context import CompressorContext

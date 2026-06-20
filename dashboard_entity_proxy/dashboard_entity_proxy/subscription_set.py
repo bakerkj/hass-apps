@@ -9,8 +9,6 @@ because mirror or scope wasn't ready. Pending entries are promoted to
 live (and served their initial snapshot) when readiness flips.
 """
 
-from __future__ import annotations
-
 
 class SubscriptionSet:
     def __init__(self) -> None:

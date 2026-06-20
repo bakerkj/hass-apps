@@ -5,8 +5,6 @@
 snapshot endpoint, and the ``show_client_paths`` redaction toggle.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Any
 

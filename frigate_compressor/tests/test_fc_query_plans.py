@@ -32,8 +32,6 @@ which is several × faster than maintaining the indexes per row.  The
 DB.
 """
 
-from __future__ import annotations
-
 import sqlite3
 import time
 

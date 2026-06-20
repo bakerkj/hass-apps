@@ -8,8 +8,6 @@ higher-level ``fetch_*`` helpers funnel through them, so monkey-patching
 those two in tests is enough to stand up a fake Docker.
 """
 
-from __future__ import annotations
-
 import asyncio
 import http.client
 import json

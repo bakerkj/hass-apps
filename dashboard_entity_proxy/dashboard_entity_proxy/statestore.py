@@ -16,8 +16,6 @@ happens cooperatively on one thread and the store is only ever
 read/written at await-free points, with no data races to guard.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any
 
