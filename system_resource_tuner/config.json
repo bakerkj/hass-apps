@@ -20,7 +20,7 @@
   ],
   "apparmor": false,
   "options": {
-    "interval_seconds": 300,
+    "interval_seconds": 60,
     "apply_on_start": true,
     "dry_run": false,
     "log_level": "INFO",

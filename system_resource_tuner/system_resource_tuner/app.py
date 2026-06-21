@@ -322,7 +322,7 @@ async def main_async() -> int:
     log = logging.getLogger("system_resource_tuner")
     log.info("System Resource Tuner v%s starting", __version__)
 
-    interval_seconds = int(options.get("interval_seconds", 300))
+    interval_seconds = int(options.get("interval_seconds", 60))
     if interval_seconds < 5:
         interval_seconds = 5
 
