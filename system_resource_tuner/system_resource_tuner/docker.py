@@ -129,6 +129,31 @@ def desired_update_kwargs(target: Target, current: dict[str, Any]) -> dict[str, 
     return kwargs
 
 
+# Single source of truth for the (target attribute, kwargs key, log
+# label, CLI flag, current key) tuples. Adding a fourth tunable —
+# memory, pids, anything else docker's update endpoint accepts — is
+# one entry here, not synchronized edits across two helpers.
+_TUNABLES: tuple[tuple[str, str, str, str, str], ...] = (
+    ("cpuset_cpus", "CpusetCpus", "cpuset_cpus", "--cpuset-cpus", "cpuset_cpus"),
+    ("cpu_shares", "CpuShares", "cpu_shares", "--cpu-shares", "cpu_shares"),
+    ("blkio_weight", "BlkioWeight", "blkio_weight", "--blkio-weight", "blkio_weight"),
+)
+
+
+def _display_value(value: Any) -> str:
+    """Render a cgroup value for human-readable log output.
+
+    Empty / missing cpuset (``""`` or ``None``) renders as ``∅`` so a
+    "no constraint → constraint" change is visually distinct from a
+    "0,1 → 2,3" change. Numeric zeros render as themselves.
+    """
+    if value is None:
+        return "∅"
+    if isinstance(value, str):
+        return value or "∅"
+    return str(value)
+
+
 def _kwargs_to_cli_form(container: str, kwargs: dict[str, Any]) -> str:
     """Render an update kwargs dict as a ``docker update`` CLI line.
 
@@ -136,14 +161,38 @@ def _kwargs_to_cli_form(container: str, kwargs: dict[str, Any]) -> str:
     dict is the source of truth for the actual update body.
     """
     parts = ["docker", "update"]
-    if "CpusetCpus" in kwargs:
-        parts += ["--cpuset-cpus", str(kwargs["CpusetCpus"])]
-    if "CpuShares" in kwargs:
-        parts += ["--cpu-shares", str(kwargs["CpuShares"])]
-    if "BlkioWeight" in kwargs:
-        parts += ["--blkio-weight", str(kwargs["BlkioWeight"])]
+    for _attr, kwargs_key, _label, cli_flag, _current_key in _TUNABLES:
+        if kwargs_key in kwargs:
+            parts += [cli_flag, str(kwargs[kwargs_key])]
     parts.append(container)
     return " ".join(shlex.quote(p) for p in parts)
+
+
+def _format_target_state(
+    target: Target,
+    current: dict[str, Any],
+    kwargs: dict[str, Any],
+) -> str:
+    """Render a one-line state summary for an apply log message.
+
+    Only fields the target sets (non-``None``) appear. Fields that are
+    actually changing (present in ``kwargs``) render as ``before →
+    after``; fields that match the current state render as the plain
+    current value. The same ``_display_value`` guard runs on both
+    sides so a future "clear cpuset" config path doesn't surface a
+    dangling-arrow log line.
+    """
+    parts: list[str] = []
+    for attr, kwargs_key, label, _cli_flag, current_key in _TUNABLES:
+        if getattr(target, attr) is None:
+            continue
+        cur = _display_value(current.get(current_key))
+        if kwargs_key in kwargs:
+            after = _display_value(kwargs[kwargs_key])
+            parts.append(f"{label} {cur} → {after}")
+        else:
+            parts.append(f"{label} {cur}")
+    return ", ".join(parts)
 
 
 async def apply_target(
@@ -151,7 +200,20 @@ async def apply_target(
     target: Target,
     dry_run: bool,
     log: logging.Logger,
+    *,
+    log_no_change: bool = False,
 ) -> None:
+    """Apply container-level cgroup tuning to ``target``.
+
+    ``log_no_change``: when ``True``, surface the "already at desired
+    state" case at INFO instead of DEBUG. The startup initial-apply
+    path sets True so the operator sees a confirmation line for every
+    configured target even when the cgroup is already correct; the
+    event-driven fast path and the periodic reconcile leave it False
+    to keep the log quiet between actual changes (an event firing 49
+    times during a compose-up restart cycle would otherwise produce
+    49 noise lines per cycle).
+    """
     inspect = await docker_inspect_limits(docker, target.container, log)
     if inspect is None:
         return
@@ -159,9 +221,16 @@ async def apply_target(
 
     kwargs = desired_update_kwargs(target, current)
     if not kwargs:
-        log.debug(
-            "No container-level changes needed for container=%s", target.container
-        )
+        if log_no_change:
+            log.info(
+                "%s: %s",
+                target.container,
+                _format_target_state(target, current, kwargs),
+            )
+        else:
+            log.debug(
+                "No container-level changes needed for container=%s", target.container
+            )
         return
 
     if dry_run:
@@ -191,7 +260,11 @@ async def apply_target(
         for w in result["Warnings"]:
             log.warning("docker update warning for %s: %s", target.container, w)
 
-    log.info("docker update ok for %s", target.container)
+    log.info(
+        "%s: %s",
+        target.container,
+        _format_target_state(target, current, kwargs),
+    )
 
 
 async def apply_all(
@@ -199,9 +272,16 @@ async def apply_all(
     targets: list[Target],
     dry_run: bool,
     log: logging.Logger,
+    *,
+    log_no_change: bool = False,
 ) -> None:
+    """``log_no_change`` propagates to each ``apply_target`` call — the
+    initial-apply path in ``main_async`` sets True so the operator sees
+    startup confirmation that every configured target is already
+    correct; periodic reconcile leaves it False to keep the log quiet.
+    """
     for target in targets:
-        await apply_target(docker, target, dry_run, log)
+        await apply_target(docker, target, dry_run, log, log_no_change=log_no_change)
 
 
 async def docker_events(

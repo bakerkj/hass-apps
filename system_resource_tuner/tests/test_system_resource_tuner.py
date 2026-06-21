@@ -380,6 +380,41 @@ def test_desired_update_kwargs_only_non_none_fields_checked():
     assert srt.desired_update_kwargs(target, current) == {}
 
 
+def test_format_target_state_arrows_for_changing_fields():
+    """``_format_target_state`` uses ``before → after`` for fields in kwargs."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200)
+    current = {"cpuset_cpus": "0-3", "cpu_shares": 1024, "blkio_weight": 100}
+    kwargs = {"CpusetCpus": "9,10-17", "CpuShares": 1200}
+    out = _format_target_state(target, current, kwargs)
+    assert out == "cpuset_cpus 0-3 → 9,10-17, cpu_shares 1024 → 1200"
+    # blkio_weight not configured on this target → omitted
+    assert "blkio_weight" not in out
+
+
+def test_format_target_state_plain_values_when_no_change():
+    """Configured fields that aren't changing show current value, no arrow."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200)
+    current = {"cpuset_cpus": "9,10-17", "cpu_shares": 1200, "blkio_weight": 100}
+    kwargs: dict[str, Any] = {}
+    assert _format_target_state(target, current, kwargs) == (
+        "cpuset_cpus 9,10-17, cpu_shares 1200"
+    )
+
+
+def test_format_target_state_renders_empty_cpuset_as_unicode_marker():
+    """Going from no constraint to a constraint shows ∅ for the empty 'before'."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="0-3")
+    current = {"cpuset_cpus": "", "cpu_shares": 0, "blkio_weight": 0}
+    kwargs = {"CpusetCpus": "0-3"}
+    assert _format_target_state(target, current, kwargs) == "cpuset_cpus ∅ → 0-3"
+
+
 # ---------------------------------------------------------------------------
 # parse_process_targets / parse_host_process_targets
 # ---------------------------------------------------------------------------
@@ -733,7 +768,7 @@ class _ApplyRecorder:
         self.apply_target_calls: list[str] = []
         self.apply_process_tuning_calls: list[str] = []
 
-    async def apply_target(self, docker, target, dry_run, log):  # noqa: ANN001
+    async def apply_target(self, docker, target, dry_run, log, **_kwargs):  # noqa: ANN001
         self.apply_target_calls.append(target.container)
 
     async def apply_process_tuning(self, docker, tuning, dry_run, log):  # noqa: ANN001
