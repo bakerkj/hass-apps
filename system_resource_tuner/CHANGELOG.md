@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.32](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.31...system_resource_tuner-v0.0.32) (2026-06-21)
+
+
+### Code Refactoring
+
+* **system_resource_tuner:** tighter apply log lines + INFO at startup only ([#268](https://github.com/bakerkj/hass-apps/issues/268)) ([fc9eb50](https://github.com/bakerkj/hass-apps/commit/fc9eb50a8028fb35b8f620e126462e68eb2d3e24))
+
 ## [0.0.31](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.30...system_resource_tuner-v0.0.31) (2026-06-21)
 
 
