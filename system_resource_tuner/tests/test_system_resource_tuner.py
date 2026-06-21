@@ -351,26 +351,26 @@ def test_desired_update_kwargs_no_changes_needed():
 def test_desired_update_kwargs_cpuset_differs():
     target = _target(cpuset_cpus="0-1")
     current = {"cpuset_cpus": "0-3", "cpu_shares": 0, "blkio_weight": 0}
-    assert srt.desired_update_kwargs(target, current) == {"CpusetCpus": "0-1"}
+    assert srt.desired_update_kwargs(target, current) == {"cpuset_cpus": "0-1"}
 
 
 def test_desired_update_kwargs_cpu_shares_differs():
     target = _target(cpu_shares=1024)
     current = {"cpuset_cpus": "", "cpu_shares": 512, "blkio_weight": 0}
-    assert srt.desired_update_kwargs(target, current) == {"CpuShares": 1024}
+    assert srt.desired_update_kwargs(target, current) == {"cpu_shares": 1024}
 
 
 def test_desired_update_kwargs_blkio_differs():
     target = _target(blkio_weight=200)
     current = {"cpuset_cpus": "", "cpu_shares": 0, "blkio_weight": 100}
-    assert srt.desired_update_kwargs(target, current) == {"BlkioWeight": 200}
+    assert srt.desired_update_kwargs(target, current) == {"blkio_weight": 200}
 
 
 def test_desired_update_kwargs_cpuset_equivalent_no_update():
     # "0,1,2,3" and "0-3" are equivalent sets — no update needed
     target = _target(cpuset_cpus="0-3")
     current = {"cpuset_cpus": "0,1,2,3", "cpu_shares": 0, "blkio_weight": 0}
-    assert "CpusetCpus" not in srt.desired_update_kwargs(target, current)
+    assert "cpuset_cpus" not in srt.desired_update_kwargs(target, current)
 
 
 def test_desired_update_kwargs_only_non_none_fields_checked():
@@ -378,6 +378,60 @@ def test_desired_update_kwargs_only_non_none_fields_checked():
     target = _target(cpuset_cpus=None, cpu_shares=None, blkio_weight=None)
     current = {"cpuset_cpus": "0", "cpu_shares": 1024, "blkio_weight": 50}
     assert srt.desired_update_kwargs(target, current) == {}
+
+
+def test_format_target_state_arrows_for_changing_fields():
+    """``_format_target_state`` uses ``before → after`` for fields in kwargs."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200)
+    current = {"cpuset_cpus": "0-3", "cpu_shares": 1024, "blkio_weight": 100}
+    kwargs = {"cpuset_cpus": "9,10-17", "cpu_shares": 1200}
+    out = _format_target_state(target, current, kwargs)
+    assert out == "cpuset_cpus 0-3 → 9,10-17, cpu_shares 1024 → 1200"
+    # blkio_weight not configured on this target → omitted
+    assert "blkio_weight" not in out
+
+
+def test_format_target_state_plain_values_when_no_change():
+    """Configured fields that aren't changing show current value, no arrow."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200)
+    current = {"cpuset_cpus": "9,10-17", "cpu_shares": 1200, "blkio_weight": 100}
+    kwargs: dict[str, Any] = {}
+    assert _format_target_state(target, current, kwargs) == (
+        "cpuset_cpus 9,10-17, cpu_shares 1200"
+    )
+
+
+def test_format_target_state_renders_empty_cpuset_as_unicode_marker():
+    """Going from no constraint to a constraint shows ∅ for the empty 'before'."""
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="0-3")
+    current = {"cpuset_cpus": "", "cpu_shares": 0, "blkio_weight": 0}
+    kwargs = {"cpuset_cpus": "0-3"}
+    assert _format_target_state(target, current, kwargs) == "cpuset_cpus ∅ → 0-3"
+
+
+def test_format_target_state_mixed_change_and_no_change():
+    """Some configured fields changing (arrows), others already at target (plain).
+
+    The actual branch point inside ``_format_target_state`` — without
+    this case, a regression that omits the ``else`` branch (rendering
+    only the arrow entries and dropping plain-value entries) would
+    leave the pure-no-change test passing and the pure-change test
+    passing but produce wrong output here.
+    """
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200, blkio_weight=550)
+    current = {"cpuset_cpus": "0-19", "cpu_shares": 1024, "blkio_weight": 550}
+    kwargs = {"cpuset_cpus": "9,10-17", "cpu_shares": 1200}
+    assert _format_target_state(target, current, kwargs) == (
+        "cpuset_cpus 0-19 → 9,10-17, cpu_shares 1024 → 1200, blkio_weight 550"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +787,7 @@ class _ApplyRecorder:
         self.apply_target_calls: list[str] = []
         self.apply_process_tuning_calls: list[str] = []
 
-    async def apply_target(self, docker, target, dry_run, log):  # noqa: ANN001
+    async def apply_target(self, docker, target, dry_run, log, **_kwargs):  # noqa: ANN001
         self.apply_target_calls.append(target.container)
 
     async def apply_process_tuning(self, docker, tuning, dry_run, log):  # noqa: ANN001

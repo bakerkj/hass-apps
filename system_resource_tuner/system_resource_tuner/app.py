@@ -230,7 +230,7 @@ async def _events_loop(
             prev = in_flight.pop(container, None)
             if prev is not None and not prev.done():
                 prev.cancel()
-            log.info("event_start: applying tuning to %s", container)
+            log.debug("event_start: dispatching apply for %s", container)
             task = asyncio.create_task(
                 _apply_for_container(
                     docker,
@@ -278,6 +278,8 @@ async def _reconcile_pass(
     host_process_targets: list[ProcessTuning],
     dry_run: bool,
     log: logging.Logger,
+    *,
+    log_no_change: bool = False,
 ) -> None:
     """One full reconcile sweep, with broad-exception safety net.
 
@@ -287,9 +289,14 @@ async def _reconcile_pass(
     on the same conditions; the docker.py helpers catch the transient
     set, but this wrapper is the final guard so an unexpected
     exception class still won't kill the addon mid-loop.
+
+    ``log_no_change`` is forwarded to ``apply_all`` — the initial
+    apply at startup sets True so the operator sees a confirmation
+    line for every configured target even when the cgroup is already
+    correct. Periodic ticks leave it False to keep the log quiet.
     """
     try:
-        await apply_all(docker, targets, dry_run, log)
+        await apply_all(docker, targets, dry_run, log, log_no_change=log_no_change)
         await apply_process_tunings(docker, process_targets, dry_run, log)
         await apply_process_tunings(docker, host_process_targets, dry_run, log)
     except asyncio.CancelledError:
@@ -467,7 +474,13 @@ async def main_async() -> int:
         if apply_on_start:
             log.info("initial apply over all configured targets")
             await _reconcile_pass(
-                docker, targets, process_targets, host_process_targets, dry_run, log
+                docker,
+                targets,
+                process_targets,
+                host_process_targets,
+                dry_run,
+                log,
+                log_no_change=True,
             )
 
         events_task = asyncio.create_task(
