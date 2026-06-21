@@ -130,9 +130,13 @@ def desired_update_kwargs(target: Target, current: dict[str, Any]) -> dict[str, 
 
 
 # Single source of truth for the (target attribute, kwargs key, log
-# label, CLI flag, current key) tuples. Adding a fourth tunable —
-# memory, pids, anything else docker's update endpoint accepts — is
-# one entry here, not synchronized edits across two helpers.
+# label, CLI flag, current key) tuples consumed by
+# ``_format_target_state`` and ``_kwargs_to_cli_form``. Adding a
+# fourth tunable still requires matching changes in
+# ``desired_update_kwargs`` (each field has its own equality
+# comparator — cpuset uses ``cpuset_matches``, the others use
+# ``int()``) and in ``docker_inspect_limits`` (each field reads a
+# different ``HostConfig`` key with its own default).
 _TUNABLES: tuple[tuple[str, str, str, str, str], ...] = (
     ("cpuset_cpus", "CpusetCpus", "cpuset_cpus", "--cpuset-cpus", "cpuset_cpus"),
     ("cpu_shares", "CpuShares", "cpu_shares", "--cpu-shares", "cpu_shares"),

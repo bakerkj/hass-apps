@@ -415,6 +415,25 @@ def test_format_target_state_renders_empty_cpuset_as_unicode_marker():
     assert _format_target_state(target, current, kwargs) == "cpuset_cpus ∅ → 0-3"
 
 
+def test_format_target_state_mixed_change_and_no_change():
+    """Some configured fields changing (arrows), others already at target (plain).
+
+    The actual branch point inside ``_format_target_state`` — without
+    this case, a regression that omits the ``else`` branch (rendering
+    only the arrow entries and dropping plain-value entries) would
+    leave the pure-no-change test passing and the pure-change test
+    passing but produce wrong output here.
+    """
+    from system_resource_tuner.docker import _format_target_state
+
+    target = _target(cpuset_cpus="9,10-17", cpu_shares=1200, blkio_weight=550)
+    current = {"cpuset_cpus": "0-19", "cpu_shares": 1024, "blkio_weight": 550}
+    kwargs = {"CpusetCpus": "9,10-17", "CpuShares": 1200}
+    assert _format_target_state(target, current, kwargs) == (
+        "cpuset_cpus 0-19 → 9,10-17, cpu_shares 1024 → 1200, blkio_weight 550"
+    )
+
+
 # ---------------------------------------------------------------------------
 # parse_process_targets / parse_host_process_targets
 # ---------------------------------------------------------------------------
