@@ -668,3 +668,310 @@ def test_apply_process_nice_does_not_redo_already_seen_tids(monkeypatch):
     # Each TID should have setpriority called exactly once, not on every
     # re-scan iteration.
     assert sorted(stub.setpriority_calls) == [(100, 5), (101, 5)]
+
+
+# ---------------------------------------------------------------------------
+# PR2: per-container apply chain, retry ladder, events fast-path
+# ---------------------------------------------------------------------------
+
+
+import asyncio  # noqa: E402
+
+from system_resource_tuner.app import (  # noqa: E402
+    _DEFAULT_POST_START_RETRY_SECONDS,
+    _apply_for_container,
+    _bucket_by_container,
+    _events_loop,
+    _parse_retry_ladder,
+)
+
+
+def test_parse_retry_ladder_default_when_none():
+    assert _parse_retry_ladder(None, _LOG) == _DEFAULT_POST_START_RETRY_SECONDS
+
+
+def test_parse_retry_ladder_default_when_not_list():
+    assert _parse_retry_ladder("0,1,3", _LOG) == _DEFAULT_POST_START_RETRY_SECONDS
+
+
+def test_parse_retry_ladder_filters_non_int_and_negative():
+    assert _parse_retry_ladder([0, "1", "x", -2, 5], _LOG) == (0, 1, 5)
+
+
+def test_parse_retry_ladder_empty_list_returns_empty():
+    """``[]`` is the user's explicit "no retries" intent — honor it."""
+    assert _parse_retry_ladder([], _LOG) == ()
+
+
+def test_parse_retry_ladder_empty_after_filter_returns_empty():
+    """A list whose entries are all invalid empties out → empty tuple, not default.
+
+    The user typed something other than ``None``; respect that intent.
+    Per-entry warnings already surfaced via ``log.warning``.
+    """
+    assert _parse_retry_ladder(["x", -1], _LOG) == ()
+
+
+def test_bucket_by_container_groups_targets_and_processes():
+    t1 = srt.Target(container="alpha", cpu_shares=512)
+    t2 = srt.Target(container="beta", cpu_shares=1024)
+    p1 = srt.ProcessTuning(container="alpha", process_match_regex="x", nice=5)
+    p2 = srt.ProcessTuning(container="gamma", process_match_regex="y", nice=10)
+    p_host = srt.ProcessTuning(container=None, process_match_regex="z", nice=0)
+
+    by_t, by_p, watch = _bucket_by_container([t1, t2], [p1, p2, p_host])
+
+    assert by_t == {"alpha": [t1], "beta": [t2]}
+    assert by_p == {"alpha": [p1], "gamma": [p2]}  # host_pid tuning excluded
+    assert watch == {"alpha", "beta", "gamma"}
+
+
+class _ApplyRecorder:
+    """Captures calls to apply_target and apply_process_tuning."""
+
+    def __init__(self) -> None:
+        self.apply_target_calls: list[str] = []
+        self.apply_process_tuning_calls: list[str] = []
+
+    async def apply_target(self, docker, target, dry_run, log):  # noqa: ANN001
+        self.apply_target_calls.append(target.container)
+
+    async def apply_process_tuning(self, docker, tuning, dry_run, log):  # noqa: ANN001
+        self.apply_process_tuning_calls.append(tuning.container or "host")
+
+
+def _install_apply_recorder(monkeypatch, rec: _ApplyRecorder) -> None:
+    # Patch the names as resolved inside app.py so _apply_for_container
+    # uses the recorder.
+    monkeypatch.setattr("system_resource_tuner.app.apply_target", rec.apply_target)
+    monkeypatch.setattr(
+        "system_resource_tuner.app.apply_process_tuning", rec.apply_process_tuning
+    )
+
+
+async def test_apply_for_container_runs_target_once_and_processes_n_plus_one(
+    monkeypatch,
+):
+    """Ladder of N entries → N+1 process-tuning passes; target runs once."""
+    rec = _ApplyRecorder()
+    _install_apply_recorder(monkeypatch, rec)
+    # Ladder uses 0-second delays so the test doesn't actually sleep
+    # — ``asyncio.sleep(0)`` just yields the loop.
+
+    t = srt.Target(container="x", cpu_shares=512)
+    pt = srt.ProcessTuning(container="x", process_match_regex="p", nice=5)
+    await _apply_for_container(
+        docker=None,
+        container="x",
+        container_targets=[t],
+        container_processes=[pt],
+        retry_ladder=(0, 0, 0),
+        retry_max_seconds=60,
+        dry_run=False,
+        log=_LOG,
+    )
+
+    assert rec.apply_target_calls == ["x"]
+    # Initial pass + 3 ladder retries = 4 passes
+    assert rec.apply_process_tuning_calls == ["x", "x", "x", "x"]
+
+
+async def test_apply_for_container_skips_ladder_when_no_processes(monkeypatch):
+    rec = _ApplyRecorder()
+    _install_apply_recorder(monkeypatch, rec)
+
+    t = srt.Target(container="x", cpu_shares=512)
+    await _apply_for_container(
+        docker=None,
+        container="x",
+        container_targets=[t],
+        container_processes=[],
+        retry_ladder=(1, 2, 3),
+        retry_max_seconds=60,
+        dry_run=False,
+        log=_LOG,
+    )
+
+    assert rec.apply_target_calls == ["x"]
+    assert rec.apply_process_tuning_calls == []
+
+
+async def test_apply_for_container_ladder_caps_at_retry_max_seconds(monkeypatch):
+    """A ladder whose cumulative delay exceeds retry_max_seconds stops early.
+
+    Use the real ``asyncio.sleep`` so the cap is checked against real
+    monotonic time; keep ladder entries as 0.05s floats so the test
+    stays fast.
+    """
+    rec = _ApplyRecorder()
+    _install_apply_recorder(monkeypatch, rec)
+
+    pt = srt.ProcessTuning(container="x", process_match_regex="p", nice=5)
+    # Initial pass runs unconditionally (one apply). Ladder iter 1
+    # sleeps 0.05s, elapsed (~0.05) > cap (0.03), so the ladder bails
+    # before its first apply. Expected: one process-tuning call.
+    await _apply_for_container(
+        docker=None,
+        container="x",
+        container_targets=[],
+        container_processes=[pt],
+        retry_ladder=(0.05, 0.05, 0.05),  # type: ignore[arg-type]
+        retry_max_seconds=0.03,  # type: ignore[arg-type]
+        dry_run=False,
+        log=_LOG,
+    )
+
+    # Without the cap we'd see 4 calls (initial + 3 ladder steps).
+    assert rec.apply_process_tuning_calls == ["x"]
+
+
+class _FakeEventStream:
+    """Yields events from a queue then blocks until cancel.
+
+    Mimics the shape of ``docker_events`` (an async generator yielding
+    container event dicts) without touching aiodocker.
+    """
+
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        for e in events:
+            self._queue.put_nowait(e)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        item = await self._queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    async def aclose(self) -> None:
+        return None
+
+    def push(self, event: dict[str, Any]) -> None:
+        self._queue.put_nowait(event)
+
+    def end(self) -> None:
+        self._queue.put_nowait(None)
+
+
+def _start_event(container: str) -> dict[str, Any]:
+    return {
+        "Type": "container",
+        "Action": "start",
+        "Actor": {"Attributes": {"name": container}},
+    }
+
+
+async def test_events_loop_dispatches_only_for_watched_containers(monkeypatch):
+    """Start events for containers not in watch_set are ignored."""
+    rec = _ApplyRecorder()
+    _install_apply_recorder(monkeypatch, rec)
+
+    stream = _FakeEventStream(
+        [
+            _start_event("watched"),
+            _start_event("ignored"),
+        ]
+    )
+    monkeypatch.setattr(
+        "system_resource_tuner.app.docker_events", lambda *a, **kw: stream
+    )
+
+    stop = asyncio.Event()
+    in_flight: dict[str, asyncio.Task[None]] = {}
+    t = srt.Target(container="watched", cpu_shares=512)
+    pt = srt.ProcessTuning(container="watched", process_match_regex="p", nice=5)
+    task = asyncio.create_task(
+        _events_loop(
+            docker=None,
+            watch_set={"watched"},
+            targets_by_container={"watched": [t]},
+            process_by_container={"watched": [pt]},
+            retry_ladder=(0,),
+            retry_max_seconds=60,
+            dry_run=False,
+            in_flight=in_flight,
+            stop=stop,
+            log=_LOG,
+        )
+    )
+
+    # Wait until the events loop has finished spawning the apply chain
+    # for "watched". 50 yields is enough headroom for the multi-yield
+    # asyncio.wait dance per event without burning real wall-time.
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if rec.apply_target_calls:
+            break
+    # Drain the spawned apply chain.
+    if in_flight:
+        await asyncio.gather(*in_flight.values(), return_exceptions=True)
+
+    stop.set()
+    stream.end()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert rec.apply_target_calls == ["watched"]
+    # The "ignored" container never produces an apply.
+    assert "ignored" not in rec.apply_process_tuning_calls
+
+
+async def test_events_loop_supersedes_in_flight_on_repeat_start(monkeypatch):
+    """Second start event for the same container cancels the first ladder.
+
+    The first ladder is parked in ``asyncio.sleep`` (we keep the real
+    sleep here) when the second event arrives; the cancel should
+    propagate and the first chain never finishes the retry pass.
+    """
+    rec = _ApplyRecorder()
+    _install_apply_recorder(monkeypatch, rec)
+
+    stream = _FakeEventStream([_start_event("repeat")])
+    monkeypatch.setattr(
+        "system_resource_tuner.app.docker_events", lambda *a, **kw: stream
+    )
+
+    stop = asyncio.Event()
+    in_flight: dict[str, asyncio.Task[None]] = {}
+    t = srt.Target(container="repeat", cpu_shares=512)
+    pt = srt.ProcessTuning(container="repeat", process_match_regex="p", nice=5)
+    # Long ladder so the first chain is still sleeping when we push
+    # the second event.
+    task = asyncio.create_task(
+        _events_loop(
+            docker=None,
+            watch_set={"repeat"},
+            targets_by_container={"repeat": [t]},
+            process_by_container={"repeat": [pt]},
+            retry_ladder=(10, 10, 10),
+            retry_max_seconds=60,
+            dry_run=False,
+            in_flight=in_flight,
+            stop=stop,
+            log=_LOG,
+        )
+    )
+
+    # Wait for the first apply chain to spawn and start sleeping.
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if "repeat" in in_flight:
+            break
+    first_task = in_flight["repeat"]
+
+    # Push second event; the events loop should cancel first_task.
+    stream.push(_start_event("repeat"))
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if first_task.cancelled() or first_task.done():
+            break
+
+    assert first_task.cancelled() or first_task.done()
+    # The second chain replaced the slot.
+    assert in_flight.get("repeat") is not first_task
+
+    stop.set()
+    stream.end()
+    await asyncio.wait_for(task, timeout=1.0)
