@@ -1,34 +1,79 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Entry-point: option parsing, initial apply, reconcile loop."""
+"""Entry-point: option parsing, initial apply, reconcile loop.
+
+Runs on a single ``asyncio`` event loop. Daemon I/O (``docker
+update``, ``docker top``) goes through ``aiodocker`` against the unix
+socket. CPU-bound bits (``os.setpriority``, ``os.sched_setaffinity``,
+``/proc`` walks, the host ``ps`` subprocess) are kept synchronous and
+pushed to a worker thread via ``asyncio.to_thread`` so the loop stays
+responsive while a large thread list is being walked.
+
+Reconcile cadence is unchanged from the pre-async version: one initial
+apply if ``apply_on_start`` is set, then ``interval_seconds`` between
+full reconcile passes. SIGTERM and SIGINT set an ``asyncio.Event``
+that's awaited as the loop's sleep mechanism, so signal latency is
+near-zero rather than up to one full interval.
+"""
 
 import argparse
+import asyncio
+import contextlib
 import logging
 import signal
-import time
+
+import aiodocker
+import aiohttp
+from aiodocker.exceptions import DockerError
 
 from . import __version__
 from .config import (
+    ProcessTuning,
+    Target,
     load_options,
     parse_bool,
     parse_host_process_targets,
     parse_process_targets,
     parse_targets,
 )
-from .docker import apply_all, cmd_error, run_cmd
+from .docker import apply_all, docker_url
 from .process import apply_process_tunings
 
+# Hard cap on the startup probe so a daemon that's reachable but hung
+# (HA Supervisor mid-restart is a known case) doesn't block ``main_async``
+# indefinitely with SIGTERM unreachable.
+_DOCKER_PROBE_TIMEOUT_SECONDS = 10.0
 
-def main() -> int:
-    stop = {"v": False}
 
-    def _handle_sig(_sig: int, _frame: object) -> None:
-        stop["v"] = True
+async def _reconcile_pass(
+    docker: aiodocker.Docker,
+    targets: list[Target],
+    process_targets: list[ProcessTuning],
+    host_process_targets: list[ProcessTuning],
+    dry_run: bool,
+    log: logging.Logger,
+) -> None:
+    """One full reconcile sweep, with broad-exception safety net.
 
-    signal.signal(signal.SIGTERM, _handle_sig)
-    signal.signal(signal.SIGINT, _handle_sig)
+    Pre-refactor the subprocess shim returned a non-zero rc instead of
+    raising on daemon hiccups, so the reconcile loop could keep going.
+    aiodocker raises ``aiohttp.ClientError`` / ``asyncio.TimeoutError``
+    on the same conditions; the docker.py helpers catch the transient
+    set, but this wrapper is the final guard so an unexpected
+    exception class still won't kill the addon mid-loop.
+    """
+    try:
+        await apply_all(docker, targets, dry_run, log)
+        await apply_process_tunings(docker, process_targets, dry_run, log)
+        await apply_process_tunings(docker, host_process_targets, dry_run, log)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — reconcile must survive any transient surface
+        log.exception("reconcile pass failed; will retry next tick")
 
+
+async def main_async() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--options", default="/data/options.json")
     args = parser.parse_args()
@@ -110,36 +155,72 @@ def main() -> int:
             )
     log.info("\n".join(_cfg_lines))
 
-    proc = run_cmd(["docker", "info"])
-    if proc.returncode != 0:
-        err = cmd_error(proc).lower()
-        if (
-            "docker.sock" in err
-            or "connect" in err
-            or "permission denied" in err
-            or "no such file" in err
-        ):
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+
+    docker = aiodocker.Docker(url=docker_url())
+    try:
+        try:
+            await asyncio.wait_for(
+                docker.system.info(), timeout=_DOCKER_PROBE_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            # MUST come before the ``OSError`` clause below: in CPython
+            # 3.3+ ``TimeoutError`` is a subclass of ``OSError``, so the
+            # broader handler would otherwise eat ``asyncio.wait_for``'s
+            # timeout signal and misclassify it as a socket failure.
             log.error(
-                "Cannot connect to the Docker API at unix:///var/run/docker.sock. "
+                "Docker API check timed out after %.0fs; daemon reachable but not "
+                "responding. Aborting so Supervisor can restart us.",
+                _DOCKER_PROBE_TIMEOUT_SECONDS,
+            )
+            return 1
+        except aiohttp.ClientError, OSError:
+            # Socket-level errors mean the daemon isn't reachable at all
+            # — the most common HA-addon failure mode is Protection Mode
+            # blocking the docker.sock bind mount. ``DockerError`` covers
+            # daemon-returned HTTP errors (a different failure mode), so
+            # the helpful guidance branch keys off the transport-error
+            # class rather than string-matching the message.
+            log.error(
+                "Cannot connect to the Docker API at the unix socket. "
                 "Disable Protection Mode for this addon in the Home Assistant UI "
                 "(Addon → Info → Protection mode) and restart."
             )
-        else:
-            log.error("Docker API check failed: %s", cmd_error(proc))
-        return 1
+            return 1
+        except DockerError as e:
+            log.error("Docker API check failed: %s", e)
+            return 1
+        except Exception as e:  # noqa: BLE001 — final safety net
+            log.error("Docker API check failed: %s", e)
+            return 1
 
-    if apply_on_start:
-        apply_all(targets, dry_run, log)
-        apply_process_tunings(process_targets, dry_run, log)
-        apply_process_tunings(host_process_targets, dry_run, log)
+        if apply_on_start:
+            await _reconcile_pass(
+                docker, targets, process_targets, host_process_targets, dry_run, log
+            )
 
-    while not stop["v"]:
-        time.sleep(interval_seconds)
-        if stop["v"]:
-            break
-        apply_all(targets, dry_run, log)
-        apply_process_tunings(process_targets, dry_run, log)
-        apply_process_tunings(host_process_targets, dry_run, log)
+        while not stop.is_set():
+            # ``wait_for`` returns when the event is set (signal) and
+            # raises ``TimeoutError`` when ``interval_seconds`` has elapsed
+            # — the timeout is the "tick" path. Either way we loop and
+            # the top-of-loop check decides whether to apply again or
+            # exit.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+            if stop.is_set():
+                break
+            await _reconcile_pass(
+                docker, targets, process_targets, host_process_targets, dry_run, log
+            )
+    finally:
+        await docker.close()
 
     log.info("Shutting down")
     return 0
+
+
+def main() -> int:
+    return asyncio.run(main_async())

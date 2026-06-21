@@ -8,12 +8,10 @@ package level.
 """
 
 import os  # noqa: F401 — exposed so tests can patch via system_resource_tuner.os
-import subprocess  # noqa: F401 — exposed so tests can patch via system_resource_tuner.subprocess
-import time  # noqa: F401 — exposed so tests can patch via system_resource_tuner.time
 
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
-from .app import main  # noqa: E402,F401
+from .app import main, main_async  # noqa: E402,F401
 from .config import (  # noqa: E402,F401
     ProcessTuning,
     Target,
@@ -29,11 +27,10 @@ from .config import (  # noqa: E402,F401
 from .docker import (  # noqa: E402,F401
     apply_all,
     apply_target,
-    cmd_error,
-    desired_update_args,
+    desired_update_kwargs,
     docker_inspect_limits,
     docker_top_processes,
-    run_cmd,
+    docker_url,
 )
 from .process import (  # noqa: E402,F401
     apply_process_cpuset,

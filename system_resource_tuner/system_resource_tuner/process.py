@@ -1,24 +1,49 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Process & thread discovery + nice/cpuset application."""
+"""Process & thread discovery + nice/cpuset application.
 
+The discovery layer (PID enumeration in containers + on the host) is
+async because the in-container path goes through aiodocker's events
+socket. The application layer (``apply_process_nice``,
+``apply_process_cpuset``, ``apply_tuning_to_pid``) is intentionally
+synchronous — it's pure ``os.setpriority`` / ``os.sched_setaffinity``
+/ ``/proc`` reads, fast on typical thread counts, and easy to unit-test
+with monkeypatch.
+"""
+
+import asyncio
 import logging
 import os
 import re
+import subprocess
 from pathlib import Path
 
+import aiodocker
+
 from .config import ProcessTuning, parse_cpuset_expression
-from .docker import docker_top_processes, run_cmd
+from .docker import docker_top_processes
 
 
 def host_top_processes(log: logging.Logger) -> list[tuple[int, str]]:
-    cmd = ["ps", "-eo", "pid,args"]
-    proc = run_cmd(cmd)
-    if proc.returncode != 0:
-        from .docker import cmd_error
+    """``ps -eo pid,args`` on the addon's host PID namespace.
 
-        log.warning("Failed to list host processes: %s", cmd_error(proc))
+    Sync subprocess call: process enumeration off the busybox ``ps``
+    binary is fast (single-digit ms even on hosts with thousands of
+    PIDs). The async callers wrap this in ``asyncio.to_thread`` so the
+    event loop stays responsive while ``ps`` runs.
+    """
+    proc = subprocess.run(
+        ["ps", "-eo", "pid,args"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        log.warning(
+            "Failed to list host processes: %s",
+            (proc.stderr or proc.stdout or "").strip(),
+        )
         return []
 
     rows: list[tuple[int, str]] = []
@@ -54,7 +79,8 @@ def find_matching_host_pids(
     return out
 
 
-def find_matching_pids(
+async def find_matching_pids(
+    docker: aiodocker.Docker,
     container: str,
     process_match_regex: str,
     log: logging.Logger,
@@ -66,7 +92,7 @@ def find_matching_pids(
         return []
 
     out: list[int] = []
-    for host_pid, cmdline in docker_top_processes(container, log):
+    for host_pid, cmdline in await docker_top_processes(docker, container, log):
         if matcher.search(cmdline):
             out.append(host_pid)
 
@@ -417,7 +443,8 @@ def apply_tuning_to_pid(
         apply_process_cpuset(tuning, host_pid, dry_run, log)
 
 
-def apply_process_tuning(
+async def apply_process_tuning(
+    docker: aiodocker.Docker,
     tuning: ProcessTuning,
     dry_run: bool,
     log: logging.Logger,
@@ -426,7 +453,9 @@ def apply_process_tuning(
         return
 
     if tuning.is_host:
-        host_pids = find_matching_host_pids(tuning.process_match_regex, log)
+        host_pids = await asyncio.to_thread(
+            find_matching_host_pids, tuning.process_match_regex, log
+        )
         if not host_pids:
             log.warning(
                 "No host process matched regex '%s'",
@@ -435,21 +464,24 @@ def apply_process_tuning(
             return
 
         for pid in host_pids:
-            apply_tuning_to_pid(tuning, pid, dry_run, log)
+            await asyncio.to_thread(apply_tuning_to_pid, tuning, pid, dry_run, log)
         return
 
-    for pid in find_matching_pids(
+    pids = await find_matching_pids(
+        docker,
         tuning.container,  # type: ignore[arg-type]  # str: is_host was False
         tuning.process_match_regex,
         log,
-    ):
-        apply_tuning_to_pid(tuning, pid, dry_run, log)
+    )
+    for pid in pids:
+        await asyncio.to_thread(apply_tuning_to_pid, tuning, pid, dry_run, log)
 
 
-def apply_process_tunings(
+async def apply_process_tunings(
+    docker: aiodocker.Docker,
     tunings: list[ProcessTuning],
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
     for tuning in tunings:
-        apply_process_tuning(tuning, dry_run, log)
+        await apply_process_tuning(docker, tuning, dry_run, log)
