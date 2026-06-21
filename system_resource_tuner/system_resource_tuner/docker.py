@@ -22,7 +22,6 @@ crash-and-respawn) doesn't crash the reconcile loop.
 
 import asyncio
 import logging
-import shlex
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -99,77 +98,39 @@ async def docker_inspect_limits(
 
 
 def desired_update_kwargs(target: Target, current: dict[str, Any]) -> dict[str, Any]:
-    """Build the JSON body for ``POST /containers/{id}/update``.
+    """Build ``{field: new_value}`` for fields that differ from ``current``.
 
-    Only includes fields that differ from ``current`` — sending a
-    no-change kwargs dict to the daemon would still bump cgroup state,
-    so the per-field diff check keeps the round-trip a true no-op when
-    everything matches.
-
-    Keys are CamelCase to match the docker engine API directly; the
-    DRY RUN log line synthesizes a CLI rendering from this dict.
+    Keys are the same snake_case names used everywhere else in this
+    module (``Target`` attributes, the ``current`` dict from
+    ``docker_inspect_limits``, the schema in ``config.json``). The
+    only spot the docker engine's CamelCase form appears is at the
+    ``_query_json`` boundary in ``apply_target`` — see ``_to_api_key``.
     """
-    kwargs: dict[str, Any] = {}
+    out: dict[str, Any] = {}
 
     if target.cpuset_cpus is not None and not cpuset_matches(
         str(current.get("cpuset_cpus", "")), target.cpuset_cpus
     ):
-        kwargs["CpusetCpus"] = target.cpuset_cpus
+        out["cpuset_cpus"] = target.cpuset_cpus
 
     if target.cpu_shares is not None and int(current.get("cpu_shares", 0)) != int(
         target.cpu_shares
     ):
-        kwargs["CpuShares"] = int(target.cpu_shares)
+        out["cpu_shares"] = int(target.cpu_shares)
 
     if target.blkio_weight is not None and int(current.get("blkio_weight", 0)) != int(
         target.blkio_weight
     ):
-        kwargs["BlkioWeight"] = int(target.blkio_weight)
+        out["blkio_weight"] = int(target.blkio_weight)
 
-    return kwargs
-
-
-# Single source of truth for the (target attribute, kwargs key, log
-# label, CLI flag, current key) tuples consumed by
-# ``_format_target_state`` and ``_kwargs_to_cli_form``. Adding a
-# fourth tunable still requires matching changes in
-# ``desired_update_kwargs`` (each field has its own equality
-# comparator — cpuset uses ``cpuset_matches``, the others use
-# ``int()``) and in ``docker_inspect_limits`` (each field reads a
-# different ``HostConfig`` key with its own default).
-_TUNABLES: tuple[tuple[str, str, str, str, str], ...] = (
-    ("cpuset_cpus", "CpusetCpus", "cpuset_cpus", "--cpuset-cpus", "cpuset_cpus"),
-    ("cpu_shares", "CpuShares", "cpu_shares", "--cpu-shares", "cpu_shares"),
-    ("blkio_weight", "BlkioWeight", "blkio_weight", "--blkio-weight", "blkio_weight"),
-)
+    return out
 
 
-def _display_value(value: Any) -> str:
-    """Render a cgroup value for human-readable log output.
-
-    Empty / missing cpuset (``""`` or ``None``) renders as ``∅`` so a
-    "no constraint → constraint" change is visually distinct from a
-    "0,1 → 2,3" change. Numeric zeros render as themselves.
-    """
-    if value is None:
-        return "∅"
-    if isinstance(value, str):
-        return value or "∅"
-    return str(value)
-
-
-def _kwargs_to_cli_form(container: str, kwargs: dict[str, Any]) -> str:
-    """Render an update kwargs dict as a ``docker update`` CLI line.
-
-    Used only for the human-readable DRY RUN log message. The kwargs
-    dict is the source of truth for the actual update body.
-    """
-    parts = ["docker", "update"]
-    for _attr, kwargs_key, _label, cli_flag, _current_key in _TUNABLES:
-        if kwargs_key in kwargs:
-            parts += [cli_flag, str(kwargs[kwargs_key])]
-    parts.append(container)
-    return " ".join(shlex.quote(p) for p in parts)
+def _to_api_key(snake: str) -> str:
+    """``cpu_shares`` → ``CpuShares``. The one spot the engine API's
+    CamelCase form needs to appear: encoding the update body for the
+    daemon. Everywhere else uses snake_case."""
+    return "".join(part.title() for part in snake.split("_"))
 
 
 def _format_target_state(
@@ -179,23 +140,30 @@ def _format_target_state(
 ) -> str:
     """Render a one-line state summary for an apply log message.
 
-    Only fields the target sets (non-``None``) appear. Fields that are
-    actually changing (present in ``kwargs``) render as ``before →
-    after``; fields that match the current state render as the plain
-    current value. The same ``_display_value`` guard runs on both
-    sides so a future "clear cpuset" config path doesn't surface a
-    dangling-arrow log line.
+    Fields the target doesn't set are skipped. Fields actually
+    changing (present in ``kwargs``) render as ``before → after``;
+    fields already at the target value render as the plain current
+    value. Empty cpuset renders as ``∅`` on both sides.
     """
     parts: list[str] = []
-    for attr, kwargs_key, label, _cli_flag, current_key in _TUNABLES:
-        if getattr(target, attr) is None:
-            continue
-        cur = _display_value(current.get(current_key))
-        if kwargs_key in kwargs:
-            after = _display_value(kwargs[kwargs_key])
-            parts.append(f"{label} {cur} → {after}")
+    if target.cpuset_cpus is not None:
+        cur = current.get("cpuset_cpus", "") or "∅"
+        if "cpuset_cpus" in kwargs:
+            parts.append(f"cpuset_cpus {cur} → {kwargs['cpuset_cpus'] or '∅'}")
         else:
-            parts.append(f"{label} {cur}")
+            parts.append(f"cpuset_cpus {cur}")
+    if target.cpu_shares is not None:
+        cur = current.get("cpu_shares", 0)
+        if "cpu_shares" in kwargs:
+            parts.append(f"cpu_shares {cur} → {kwargs['cpu_shares']}")
+        else:
+            parts.append(f"cpu_shares {cur}")
+    if target.blkio_weight is not None:
+        cur = current.get("blkio_weight", 0)
+        if "blkio_weight" in kwargs:
+            parts.append(f"blkio_weight {cur} → {kwargs['blkio_weight']}")
+        else:
+            parts.append(f"blkio_weight {cur}")
     return ", ".join(parts)
 
 
@@ -238,7 +206,11 @@ async def apply_target(
         return
 
     if dry_run:
-        log.info("DRY RUN: %s", _kwargs_to_cli_form(target.container, kwargs))
+        log.info(
+            "DRY RUN: %s: %s",
+            target.container,
+            _format_target_state(target, current, kwargs),
+        )
         return
 
     try:
@@ -246,10 +218,11 @@ async def apply_target(
         # call the engine API directly via the low-level ``_query_json``.
         # Reuses the ``DockerContainer`` resolved by docker_inspect_limits
         # so we don't pay a second ``containers.get`` round-trip per pass.
+        # ``_to_api_key`` is the one spot snake_case becomes CamelCase.
         result = await docker._query_json(
             f"containers/{ctr.id}/update",
             method="POST",
-            data=kwargs,
+            data={_to_api_key(k): v for k, v in kwargs.items()},
         )
     except _TRANSIENT_DAEMON_ERRORS as e:
         log.error("docker update failed for %s: %s", target.container, e)
