@@ -101,10 +101,11 @@ def desired_update_kwargs(target: Target, current: dict[str, Any]) -> dict[str, 
     """Build ``{field: new_value}`` for fields that differ from ``current``.
 
     Keys are the same snake_case names used everywhere else in this
-    module (``Target`` attributes, the ``current`` dict from
-    ``docker_inspect_limits``, the schema in ``config.json``). The
-    only spot the docker engine's CamelCase form appears is at the
-    ``_query_json`` boundary in ``apply_target`` — see ``_to_api_key``.
+    module (``Target`` attributes, the ``current`` dict, the schema
+    in ``config.json``). The docker engine's CamelCase form only
+    crosses the daemon wire — outbound via ``_to_api_key`` at the
+    ``_query_json`` boundary in ``apply_target``, inbound via the
+    ``HostConfig`` reads in ``docker_inspect_limits``.
     """
     out: dict[str, Any] = {}
 
@@ -192,10 +193,16 @@ async def apply_target(
     ctr, current = inspect
 
     kwargs = desired_update_kwargs(target, current)
+    # The ``DRY RUN:`` prefix tracks the ``dry_run`` flag, not whether
+    # anything actually changed — an operator scanning logs in dry-run
+    # mode needs the prefix even on no-op lines, otherwise an already-
+    # at-target line is indistinguishable from a real apply.
+    prefix = "DRY RUN: " if dry_run else ""
     if not kwargs:
         if log_no_change:
             log.info(
-                "%s: %s",
+                "%s%s: %s",
+                prefix,
                 target.container,
                 _format_target_state(target, current, kwargs),
             )
@@ -207,7 +214,8 @@ async def apply_target(
 
     if dry_run:
         log.info(
-            "DRY RUN: %s: %s",
+            "%s%s: %s",
+            prefix,
             target.container,
             _format_target_state(target, current, kwargs),
         )
