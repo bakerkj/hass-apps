@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.31](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.30...system_resource_tuner-v0.0.31) (2026-06-21)
+
+
+### Features
+
+* **system_resource_tuner:** event-driven fast-path + decoupled reconcile ([#267](https://github.com/bakerkj/hass-apps/issues/267)) ([857610a](https://github.com/bakerkj/hass-apps/commit/857610ab6d18d51fb256a208267f3e409a9c53b0))
+
+
+### Code Refactoring
+
+* **system_resource_tuner:** convert reconcile loop to async + aiodocker ([#263](https://github.com/bakerkj/hass-apps/issues/263)) ([5eb5a35](https://github.com/bakerkj/hass-apps/commit/5eb5a35e66676985144841ded47b0f36b3583763))
+
 ## [0.0.30](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.29...system_resource_tuner-v0.0.30) (2026-06-20)
 
 
