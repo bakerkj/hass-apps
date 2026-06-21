@@ -211,10 +211,14 @@ async def docker_events(
 ) -> AsyncIterator[dict]:
     """Async iterator yielding matching container lifecycle events.
 
-    Filters by ``Action`` in Python because docker treats multiple
-    ``event=`` filter values as a logical AND, not OR. Auto-reconnects
-    with exponential backoff on socket / daemon hiccups. The caller is
-    expected to handle its own shutdown signal and stop awaiting.
+    Subscribes without daemon-side filters and does the action filter
+    in Python. Daemon-side filters would work, but lifecycle event
+    volume is low and the Python filter keeps the call shape identical
+    to the ``container_hooks`` source this was lifted from.
+
+    Auto-reconnects with exponential backoff on socket / daemon
+    hiccups. The caller is expected to handle its own shutdown signal
+    and stop awaiting.
     """
     wanted = set(events)
     backoff = _RECONNECT_BACKOFF_INITIAL_SECONDS
@@ -244,6 +248,11 @@ async def docker_events(
                 if action in wanted:
                     yield event
         except asyncio.CancelledError:
+            # Drop the subscriber before re-raising so its queue is
+            # detached from the channel immediately on shutdown
+            # rather than waiting for the next GC cycle.
+            if subscriber is not None:
+                del subscriber
             raise
         except Exception as e:  # noqa: BLE001 — aiohttp.ClientError must also retry
             log.warning(

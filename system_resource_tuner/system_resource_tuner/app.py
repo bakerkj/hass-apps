@@ -144,15 +144,19 @@ async def _apply_for_container(
             return
         start = time.monotonic()
         for delay in retry_ladder:
-            if delay > 0:
-                await asyncio.sleep(delay)
-            if time.monotonic() - start > retry_max_seconds:
+            # Check the cap BEFORE sleeping rather than after — a
+            # ladder entry of e.g. 8s with cap=1s would otherwise still
+            # tie up the apply chain for the full 8 seconds before
+            # bailing.
+            if time.monotonic() + delay - start > retry_max_seconds:
                 log.debug(
                     "post-start retry for %s capped at %ds",
                     container,
                     retry_max_seconds,
                 )
                 return
+            if delay > 0:
+                await asyncio.sleep(delay)
             for pt in container_processes:
                 await apply_process_tuning(docker, pt, dry_run, log)
     except asyncio.CancelledError:
