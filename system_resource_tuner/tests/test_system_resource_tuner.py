@@ -698,8 +698,18 @@ def test_parse_retry_ladder_filters_non_int_and_negative():
     assert _parse_retry_ladder([0, "1", "x", -2, 5], _LOG) == (0, 1, 5)
 
 
-def test_parse_retry_ladder_empty_after_filter_returns_default():
-    assert _parse_retry_ladder(["x", -1], _LOG) == _DEFAULT_POST_START_RETRY_SECONDS
+def test_parse_retry_ladder_empty_list_returns_empty():
+    """``[]`` is the user's explicit "no retries" intent — honor it."""
+    assert _parse_retry_ladder([], _LOG) == ()
+
+
+def test_parse_retry_ladder_empty_after_filter_returns_empty():
+    """A list whose entries are all invalid empties out → empty tuple, not default.
+
+    The user typed something other than ``None``; respect that intent.
+    Per-entry warnings already surfaced via ``log.warning``.
+    """
+    assert _parse_retry_ladder(["x", -1], _LOG) == ()
 
 
 def test_bucket_by_container_groups_targets_and_processes():

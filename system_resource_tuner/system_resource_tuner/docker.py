@@ -230,7 +230,17 @@ async def docker_events(
                 if event.get("Type") != "container":
                     continue
                 saw_event = True
+                # Trace every container event so an operator who flips
+                # ``log_level: DEBUG`` can confirm the stream is live
+                # without adding temporary instrumentation. Matches the
+                # container_hooks docker.py source pattern this was
+                # lifted from.
                 action = event.get("Action")
+                log.debug(
+                    "rx event Action=%s name=%s",
+                    action,
+                    event.get("Actor", {}).get("Attributes", {}).get("name", ""),
+                )
                 if action in wanted:
                     yield event
         except asyncio.CancelledError:

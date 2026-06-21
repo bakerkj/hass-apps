@@ -57,7 +57,21 @@ _DEFAULT_POST_START_RETRY_MAX_SECONDS: int = 30
 
 
 def _parse_retry_ladder(raw: Any, log: logging.Logger) -> tuple[int, ...]:
-    """Normalize ``post_start_retry_seconds`` to a tuple of non-negative ints."""
+    """Normalize ``post_start_retry_seconds`` to a tuple of non-negative ints.
+
+    Three distinct shapes:
+
+    * ``None`` (option absent) → built-in default ladder.
+    * Non-list (string, dict, scalar) → warning + default ladder. The
+      user almost certainly meant a list and would prefer the safety
+      belt over silent no-retries.
+    * Any list — including empty, or one that empties out after
+      filtering — → tuple of validated ints, possibly empty. An empty
+      tuple means "no retry passes; only the initial apply runs",
+      which is the intent a user expresses by writing ``[]``. The
+      previous behaviour (silent fallback to default for ``[]``) made
+      that intent un-expressible.
+    """
     if raw is None:
         return _DEFAULT_POST_START_RETRY_SECONDS
     if not isinstance(raw, list):
@@ -77,8 +91,6 @@ def _parse_retry_ladder(raw: Any, log: logging.Logger) -> tuple[int, ...]:
             log.warning("post_start_retry_seconds entry %d is negative; skipping", n)
             continue
         out.append(n)
-    if not out:
-        return _DEFAULT_POST_START_RETRY_SECONDS
     return tuple(out)
 
 
