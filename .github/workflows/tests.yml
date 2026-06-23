@@ -144,7 +144,7 @@ jobs:
       # of dependencies. Keyed on the pin so a renovate bump busts it. A
       # user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
@@ -197,7 +197,7 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: ffmpeg-snapshotter-e2e
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
@@ -258,7 +258,7 @@ jobs:
       # busts the cache automatically.
       - name: Cache HA image
         id: ha-image-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/ha-image.tar
           key: ha-image-${{ env.HA_IMAGE }}
@@ -276,7 +276,7 @@ jobs:
       # this base on every job adds tens of seconds of network latency.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
@@ -351,7 +351,7 @@ jobs:
       # the network leg. Keyed on the pin; renovate-bumps invalidate it.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
