@@ -462,10 +462,26 @@ def main() -> int:
                 )
 
             if publish_raw:
+                # Keys in `_raw` are the aliased canonical names (matching
+                # the regular sensor topics); apply COLUMN_SCALES here so
+                # the value scale matches the unit the key implies, same as
+                # the main publish loop. `_raw_line` stays verbatim — it's
+                # the literal turbostat output, pre-alias and pre-rescale.
+                def _raw_value(col: str) -> str:
+                    scale = COLUMN_SCALES.get(col)
+                    if scale is None:
+                        return values[col]
+                    try:
+                        return str(float(values[col]) * scale)
+                    except ValueError:
+                        return values[col]
+
                 raw_payload = {
                     "_ts_ms": int(now * 1000),
                     "_raw": {
-                        cols_map[c]: values[c] for c in values.keys() if c in cols_map
+                        cols_map[c]: _raw_value(c)
+                        for c in values.keys()
+                        if c in cols_map
                     },
                     "_raw_header": header,
                     "_raw_line": raw_line,

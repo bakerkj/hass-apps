@@ -780,6 +780,20 @@ def test_missing_expected_columns_empty_header():
     assert sorted(tm.missing_expected_columns([])) == sorted(tm.EXPECTED_COLS)
 
 
+def test_column_renames_derive_consistent_alias_and_scale_maps():
+    """Every rename must round-trip: old_name → COLUMN_ALIASES → canonical,
+    and that canonical must have a corresponding scale in COLUMN_SCALES.
+    Drift here means values published under the canonical (kilo-scale)
+    entity ID would silently come out at the wrong magnitude — caught the
+    pre-fix /raw_sample regression where the alias was applied but the
+    scale was forgotten."""
+    from turbostat_mqtt.metadata import COLUMN_ALIASES, COLUMN_RENAMES, COLUMN_SCALES
+
+    for old, (canonical, scale) in COLUMN_RENAMES.items():
+        assert COLUMN_ALIASES[old] == canonical
+        assert COLUMN_SCALES[canonical] == scale
+
+
 def test_expected_cols_subset_of_friendly_name():
     """Every column we expect must have a friendly_name mapping, or else the
     discovery filter would silently drop it even when present."""
