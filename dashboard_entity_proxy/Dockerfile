@@ -12,9 +12,9 @@ LABEL \
   org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  nginx=1.30.2-r1 \
-  nginx-mod-http-brotli=1.30.2-r1 \
-  nginx-mod-http-zstd=1.30.2-r1 \
+  nginx=1.30.3-r0 \
+  nginx-mod-http-brotli=1.30.3-r0 \
+  nginx-mod-http-zstd=1.30.3-r0 \
   python3=3.14.5-r0 \
   py3-aiohttp=3.13.5-r0 \
   py3-humanfriendly=10.0-r7 \
