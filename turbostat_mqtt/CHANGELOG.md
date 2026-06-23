@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.35](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.34...turbostat_mqtt-v0.0.35) (2026-06-23)
+
+
+### Bug Fixes
+
+* **turbostat_mqtt:** restore LLC/L2 cache columns after upstream rename ([#270](https://github.com/bakerkj/hass-apps/issues/270)) ([b0057d9](https://github.com/bakerkj/hass-apps/commit/b0057d93b6ea464134b19371cfee78e743c5aa20))
+
 ## [0.0.34](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.33...turbostat_mqtt-v0.0.34) (2026-06-20)
 
 
