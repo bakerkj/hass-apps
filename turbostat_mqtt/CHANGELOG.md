@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.36](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.35...turbostat_mqtt-v0.0.36) (2026-06-23)
+
+
+### Bug Fixes
+
+* **turbostat_mqtt:** publish LLC/L2 cache references in M/s instead of 1/s ([#274](https://github.com/bakerkj/hass-apps/issues/274)) ([ec155e3](https://github.com/bakerkj/hass-apps/commit/ec155e3b8c65da0a99f8fd0bebcb0140b0cf3215))
+
 ## [0.0.35](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.34...turbostat_mqtt-v0.0.35) (2026-06-23)
 
 
