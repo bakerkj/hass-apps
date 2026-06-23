@@ -14,7 +14,12 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from . import __version__
-from .metadata import COLUMN_SCALES, friendly_name, missing_expected_columns
+from .metadata import (
+    COLUMN_ALIASES,
+    COLUMN_SCALES,
+    friendly_name,
+    missing_expected_columns,
+)
 from .mqtt import (
     MqttHealth,
     build_discovery_payloads,
@@ -476,6 +481,10 @@ def main() -> int:
                     except ValueError:
                         return values[col]
 
+                # Reverse the parser alias so `_raw_header` lines up with
+                # `_raw_line` (both pre-alias mega-unit names + values);
+                # zipping them gives a consistent name→value mapping.
+                _unalias = {new: old for old, new in COLUMN_ALIASES.items()}
                 raw_payload = {
                     "_ts_ms": int(now * 1000),
                     "_raw": {
@@ -483,7 +492,7 @@ def main() -> int:
                         for c in values.keys()
                         if c in cols_map
                     },
-                    "_raw_header": header,
+                    "_raw_header": [_unalias.get(c, c) for c in header],
                     "_raw_line": raw_line,
                 }
                 mqtt_publish(
