@@ -42,11 +42,12 @@ COLUMN_RENAMES: dict[str, tuple[str, float]] = {
     "L2kRPS": ("L2kRPS", 0.001),
 }
 
-# Override the rps-suffix default ("1/s") for these columns: the value scale
-# above lands in mega-refs/sec, so the displayed unit must match.
-COLUMN_UNIT_OVERRIDES: dict[str, str] = {
-    "LLCkRPS": "M/s",
-    "L2kRPS": "M/s",
+# Override the rps-suffix default ("1/s", precision 0) for these columns:
+# the parser-side rescale above lands in mega-refs/sec, so the displayed
+# unit and precision must match. Each entry: (unit, suggested_display_precision).
+COLUMN_UNIT_OVERRIDES: dict[str, tuple[str, int]] = {
+    "LLCkRPS": ("M/s", 2),
+    "L2kRPS": ("M/s", 2),
 }
 
 
@@ -112,7 +113,8 @@ def guess_meta(original_col: str) -> tuple[str | None, str | None, str, int]:
 
     override = COLUMN_UNIT_OVERRIDES.get(col)
     if override is not None:
-        return override, None, "mdi:chart-line", 2
+        unit, sdp = override
+        return unit, None, "mdi:chart-line", sdp
 
     if "%" in col or col in ("CPU%", "GFX%"):
         return "%", None, "mdi:percent", 1

@@ -792,19 +792,24 @@ def test_missing_expected_columns_empty_header():
     assert sorted(tm.missing_expected_columns([])) == sorted(tm.EXPECTED_COLS)
 
 
-def test_column_renames_canonical_has_unit_override():
-    """Every COLUMN_RENAMES canonical landing point that gets rescaled
-    (scale != 1.0) must have a matching COLUMN_UNIT_OVERRIDES entry; the
-    rescaled value would otherwise be published with the rps-suffix
-    default ("1/s") and silently mislabel its magnitude."""
+def test_rps_suffix_canonicals_have_unit_override():
+    """Any COLUMN_RENAMES canonical that ends in 'rps' would silently
+    fall through guess_meta's rps-suffix branch to '1/s'. A rename only
+    exists because the column's unit scale needs translating, so every
+    such canonical must have an explicit COLUMN_UNIT_OVERRIDES entry to
+    express the actual published unit — keying on scale != 1.0 alone
+    misses the scale=1.0 mega-input path (caught by PR #274 review)."""
     from turbostat_mqtt.metadata import COLUMN_RENAMES, COLUMN_UNIT_OVERRIDES
 
-    rescaled_canonicals = {
-        canonical for canonical, scale in COLUMN_RENAMES.values() if scale != 1.0
+    rps_canonicals = {
+        canonical
+        for canonical, _ in COLUMN_RENAMES.values()
+        if canonical.lower().endswith("rps")
     }
-    for canonical in rescaled_canonicals:
+    for canonical in rps_canonicals:
         assert canonical in COLUMN_UNIT_OVERRIDES, (
-            f"{canonical} is rescaled but has no unit override"
+            f"{canonical} ends in 'rps' (would default to '1/s') but "
+            f"has no COLUMN_UNIT_OVERRIDES entry"
         )
 
 
