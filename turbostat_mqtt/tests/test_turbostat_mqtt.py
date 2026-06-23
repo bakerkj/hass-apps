@@ -135,8 +135,20 @@ def test_guess_meta_joule():
     assert unit == "J"
 
 
-def test_guess_meta_rps():
+def test_guess_meta_rps_llc_overridden_to_megaref():
+    """LLCkRPS / L2kRPS have explicit unit overrides because the parser
+    scales the value into mega-refs/sec; the rps-suffix default ("1/s")
+    would mislabel the magnitude."""
     unit, dc, icon, sdp = tm.guess_meta("LLCkRPS")
+    assert unit == "M/s"
+    assert sdp == 2
+    unit, _, _, _ = tm.guess_meta("L2kRPS")
+    assert unit == "M/s"
+
+
+def test_guess_meta_rps_default_for_other_columns():
+    """Non-overridden rps-suffix columns still get the generic 1/s."""
+    unit, _, _, _ = tm.guess_meta("SomeRPS")
     assert unit == "1/s"
 
 
@@ -780,18 +792,20 @@ def test_missing_expected_columns_empty_header():
     assert sorted(tm.missing_expected_columns([])) == sorted(tm.EXPECTED_COLS)
 
 
-def test_column_renames_derive_consistent_alias_and_scale_maps():
-    """Every rename must round-trip: old_name → COLUMN_ALIASES → canonical,
-    and that canonical must have a corresponding scale in COLUMN_SCALES.
-    Drift here means values published under the canonical (kilo-scale)
-    entity ID would silently come out at the wrong magnitude — caught the
-    pre-fix /raw_sample regression where the alias was applied but the
-    scale was forgotten."""
-    from turbostat_mqtt.metadata import COLUMN_ALIASES, COLUMN_RENAMES, COLUMN_SCALES
+def test_column_renames_canonical_has_unit_override():
+    """Every COLUMN_RENAMES canonical landing point that gets rescaled
+    (scale != 1.0) must have a matching COLUMN_UNIT_OVERRIDES entry; the
+    rescaled value would otherwise be published with the rps-suffix
+    default ("1/s") and silently mislabel its magnitude."""
+    from turbostat_mqtt.metadata import COLUMN_RENAMES, COLUMN_UNIT_OVERRIDES
 
-    for old, (canonical, scale) in COLUMN_RENAMES.items():
-        assert COLUMN_ALIASES[old] == canonical
-        assert COLUMN_SCALES[canonical] == scale
+    rescaled_canonicals = {
+        canonical for canonical, scale in COLUMN_RENAMES.values() if scale != 1.0
+    }
+    for canonical in rescaled_canonicals:
+        assert canonical in COLUMN_UNIT_OVERRIDES, (
+            f"{canonical} is rescaled but has no unit override"
+        )
 
 
 def test_expected_cols_subset_of_friendly_name():
@@ -919,13 +933,61 @@ def test_parser_aliases_mega_to_kilo_in_replacement_header():
     assert p.header == ["LLCkRPS", "L2kRPS", "Busy%"]
 
 
-def test_parser_data_row_keys_use_aliased_names():
+def test_parser_data_row_keys_use_aliased_names_mega_input_unscaled():
+    """New turbostat emits LLCMRPS — already in mega-refs/sec — so the
+    parser aliases the name to LLCkRPS for entity ID continuity but
+    leaves the value alone (scale=1.0)."""
     p = tm.TurbostatParser()
     p.parse_line("LLCMRPS L2MRPS\n")
     result = p.parse_line("54.19 73.5\n")
     assert result is not None
     _, values, _ = result
     assert values == {"LLCkRPS": "54.19", "L2kRPS": "73.5"}
+
+
+def test_parser_data_row_kilo_input_rescaled_to_megaref():
+    """Pre-rename turbostat emits LLCkRPS natively (in thousands-of-refs);
+    parser converges to the canonical mega scale by dividing by 1000.
+    Regression guard: catches drift back to no-op identity for kilo input,
+    which would publish 1000× too large given the M/s unit override."""
+    p = tm.TurbostatParser()
+    p.parse_line("LLCkRPS L2kRPS\n")
+    result = p.parse_line("54194 73500\n")
+    assert result is not None
+    _, values, _ = result
+    assert values == {"LLCkRPS": "54.194", "L2kRPS": "73.5"}
+
+
+def test_parser_kilo_rescale_suppresses_binary_float_noise():
+    """Many integer kilo inputs produce ugly binary-float noise after the
+    ×0.001 scale (e.g. 50495 * 0.001 = 50.495000000000005). The parser
+    rounds before stringifying so MQTT JSON and downstream consumers see
+    clean values."""
+    p = tm.TurbostatParser()
+    p.parse_line("LLCkRPS\n")
+    result = p.parse_line("50495\n")
+    assert result is not None
+    _, values, _ = result
+    assert values["LLCkRPS"] == "50.495"
+
+
+def test_parser_exposes_original_header_for_raw_consumers():
+    """parser.original_header preserves the pre-alias names so callers
+    that zip it against the verbatim turbostat line (e.g. _raw_header
+    against _raw_line) get consistent name→value pairs without a
+    reverse-alias map."""
+    p = tm.TurbostatParser()
+    p.parse_line("IPC LLCMRPS L2MRPS\n")
+    assert p.header == ["IPC", "LLCkRPS", "L2kRPS"]
+    assert p.original_header == ["IPC", "LLCMRPS", "L2MRPS"]
+
+
+def test_parser_reset_clears_original_header_and_scales():
+    p = tm.TurbostatParser()
+    p.parse_line("LLCMRPS\n")
+    assert p.original_header is not None
+    p.reset()
+    assert p.original_header is None
 
 
 # ---------------------------------------------------------------------------
