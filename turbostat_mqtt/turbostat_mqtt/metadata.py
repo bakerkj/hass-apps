@@ -26,19 +26,28 @@ EXPECTED_COLS: frozenset[str] = frozenset(
 )
 
 
-# Upstream turbostat column renames we transparently absorb so HA entity IDs
-# and value scales stay stable across the rename. Each entry: old_name → new
-# canonical name + value scale factor (mega → kilo for LLC/L2 needs ×1000).
-# Single source of truth; the parser and publisher both derive from this so
-# adding a future rename touches one place.
+# Source-name → (canonical-name, scale-to-canonical-unit) for the columns
+# whose upstream naming or unit drifted. The canonical name keeps the
+# historical HA entity ID stable across the rename — even though the slug
+# still says "kRPS" the published unit is mega/s (see guess_meta override
+# below); the slug is name continuity, the unit is honest display.
+#   - LLCMRPS native (new turbostat): name → LLCkRPS, value already M/s → ×1
+#   - LLCkRPS native (old turbostat): name unchanged, value k/s → ÷1000 → M/s
+# Both inputs converge on canonical name + M/s scale, so the publisher needs
+# zero unit/scale logic — the parser delivers the right number.
 COLUMN_RENAMES: dict[str, tuple[str, float]] = {
-    "LLCMRPS": ("LLCkRPS", 1000.0),
-    "L2MRPS": ("L2kRPS", 1000.0),
+    "LLCMRPS": ("LLCkRPS", 1.0),
+    "LLCkRPS": ("LLCkRPS", 0.001),
+    "L2MRPS": ("L2kRPS", 1.0),
+    "L2kRPS": ("L2kRPS", 0.001),
 }
 
-COLUMN_ALIASES: dict[str, str] = {old: new for old, (new, _) in COLUMN_RENAMES.items()}
-COLUMN_SCALES: dict[str, float] = {
-    new: scale for _, (new, scale) in COLUMN_RENAMES.items()
+# Override the rps-suffix default ("1/s", precision 0) for these columns:
+# the parser-side rescale above lands in mega-refs/sec, so the displayed
+# unit and precision must match. Each entry: (unit, suggested_display_precision).
+COLUMN_UNIT_OVERRIDES: dict[str, tuple[str, int]] = {
+    "LLCkRPS": ("M/s", 2),
+    "L2kRPS": ("M/s", 2),
 }
 
 
@@ -101,6 +110,11 @@ def friendly_name(col: str) -> str:
 
 def guess_meta(original_col: str) -> tuple[str | None, str | None, str, int]:
     col = original_col.strip()
+
+    override = COLUMN_UNIT_OVERRIDES.get(col)
+    if override is not None:
+        unit, sdp = override
+        return unit, None, "mdi:chart-line", sdp
 
     if "%" in col or col in ("CPU%", "GFX%"):
         return "%", None, "mdi:percent", 1
