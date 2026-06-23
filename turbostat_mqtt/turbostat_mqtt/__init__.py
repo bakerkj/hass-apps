@@ -20,6 +20,11 @@ from .mqtt import (  # noqa: E402,F401
     connect_mqtt_with_retry,
     mqtt_publish,
 )
-from .metadata import friendly_name, guess_meta  # noqa: E402,F401
+from .metadata import (  # noqa: E402,F401
+    EXPECTED_COLS,
+    friendly_name,
+    guess_meta,
+    missing_expected_columns,
+)
 from .parser import TurbostatParser, start_turbostat  # noqa: E402,F401
 from .util import log, sanitize_key  # noqa: E402,F401

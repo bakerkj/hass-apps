@@ -14,7 +14,12 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from . import __version__
-from .metadata import friendly_name
+from .metadata import (
+    COLUMN_ALIASES,
+    COLUMN_SCALES,
+    friendly_name,
+    missing_expected_columns,
+)
 from .mqtt import (
     MqttHealth,
     build_discovery_payloads,
@@ -366,14 +371,29 @@ def main() -> int:
                     for c, k in all_cols_map.items()
                     if c not in skip_cols and c not in cols_map
                 }
+                missing = missing_expected_columns(header)
+                if missing:
+                    log(
+                        "WARNING",
+                        f"turbostat is not emitting expected column(s): "
+                        f"{missing}. Likely an upstream rename or kernel "
+                        "change; HA entities for these will go unavailable. "
+                        "Update EXPECTED_COLS and the friendly_name() "
+                        "mapping in turbostat_mqtt/metadata.py if the "
+                        "column moved.",
+                        log_level,
+                    )
 
             payload: dict[str, Any] = {}
             for col, val in values.items():
                 if col not in cols_map:
                     continue
                 key = cols_map.get(col) or sanitize_key(col)
+                scale = COLUMN_SCALES.get(col)
                 try:
-                    if re.fullmatch(r"[-+]?\d+", val):
+                    if scale is not None:
+                        payload[key] = float(val) * scale
+                    elif re.fullmatch(r"[-+]?\d+", val):
                         payload[key] = int(val)
                     else:
                         payload[key] = float(val)
@@ -447,12 +467,32 @@ def main() -> int:
                 )
 
             if publish_raw:
+                # Keys in `_raw` are the aliased canonical names (matching
+                # the regular sensor topics); apply COLUMN_SCALES here so
+                # the value scale matches the unit the key implies, same as
+                # the main publish loop. `_raw_line` stays verbatim — it's
+                # the literal turbostat output, pre-alias and pre-rescale.
+                def _raw_value(col: str) -> str:
+                    scale = COLUMN_SCALES.get(col)
+                    if scale is None:
+                        return values[col]
+                    try:
+                        return str(float(values[col]) * scale)
+                    except ValueError:
+                        return values[col]
+
+                # Reverse the parser alias so `_raw_header` lines up with
+                # `_raw_line` (both pre-alias mega-unit names + values);
+                # zipping them gives a consistent name→value mapping.
+                _unalias = {new: old for old, new in COLUMN_ALIASES.items()}
                 raw_payload = {
                     "_ts_ms": int(now * 1000),
                     "_raw": {
-                        cols_map[c]: values[c] for c in values.keys() if c in cols_map
+                        cols_map[c]: _raw_value(c)
+                        for c in values.keys()
+                        if c in cols_map
                     },
-                    "_raw_header": header,
+                    "_raw_header": [_unalias.get(c, c) for c in header],
                     "_raw_line": raw_line,
                 }
                 mqtt_publish(

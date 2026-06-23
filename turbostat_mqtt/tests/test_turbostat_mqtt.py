@@ -761,6 +761,48 @@ def test_friendly_name_llc():
     assert tm.friendly_name("LLC%hit") == "CPU Last-Level Cache Hit Rate"
 
 
+def test_friendly_name_l2():
+    assert tm.friendly_name("L2kRPS") == "CPU L2 Cache References"
+    assert tm.friendly_name("L2%hit") == "CPU L2 Cache Hit Rate"
+
+
+def test_missing_expected_columns_all_present():
+    header = sorted(tm.EXPECTED_COLS) + ["Extra1", "Extra2"]
+    assert tm.missing_expected_columns(header) == []
+
+
+def test_missing_expected_columns_flags_dropped():
+    header = [c for c in sorted(tm.EXPECTED_COLS) if c not in {"LLCkRPS", "L2kRPS"}]
+    assert tm.missing_expected_columns(header) == ["L2kRPS", "LLCkRPS"]
+
+
+def test_missing_expected_columns_empty_header():
+    assert sorted(tm.missing_expected_columns([])) == sorted(tm.EXPECTED_COLS)
+
+
+def test_column_renames_derive_consistent_alias_and_scale_maps():
+    """Every rename must round-trip: old_name → COLUMN_ALIASES → canonical,
+    and that canonical must have a corresponding scale in COLUMN_SCALES.
+    Drift here means values published under the canonical (kilo-scale)
+    entity ID would silently come out at the wrong magnitude — caught the
+    pre-fix /raw_sample regression where the alias was applied but the
+    scale was forgotten."""
+    from turbostat_mqtt.metadata import COLUMN_ALIASES, COLUMN_RENAMES, COLUMN_SCALES
+
+    for old, (canonical, scale) in COLUMN_RENAMES.items():
+        assert COLUMN_ALIASES[old] == canonical
+        assert COLUMN_SCALES[canonical] == scale
+
+
+def test_expected_cols_subset_of_friendly_name():
+    """Every column we expect must have a friendly_name mapping, or else the
+    discovery filter would silently drop it even when present."""
+    unmapped = [c for c in tm.EXPECTED_COLS if tm.friendly_name(c) == f"Turbostat {c}"]
+    assert unmapped == [], (
+        f"EXPECTED_COLS entries missing from friendly_name: {unmapped}"
+    )
+
+
 def test_friendly_name_totl_any_cpugfx():
     assert tm.friendly_name("Totl%C0") == "CPU Total C0 (Active)"
     assert tm.friendly_name("Any%C0") == "CPU Any Core C0 (Active)"
@@ -858,6 +900,32 @@ def test_parser_plus_sign_number():
     p.parse_line("A\n")
     result = p.parse_line("+3.14\n")
     assert result is not None
+
+
+def test_parser_aliases_mega_to_kilo_in_first_header():
+    """Upstream turbostat renamed LLCkRPS→LLCMRPS and L2kRPS→L2MRPS;
+    the parser aliases them back so downstream code keys on the historical
+    names and HA entity IDs stay stable across the rename."""
+    p = tm.TurbostatParser()
+    result = p.parse_line("IPC LLCMRPS LLC%hit L2MRPS L2%hit\n")
+    assert result is None
+    assert p.header == ["IPC", "LLCkRPS", "LLC%hit", "L2kRPS", "L2%hit"]
+
+
+def test_parser_aliases_mega_to_kilo_in_replacement_header():
+    p = tm.TurbostatParser()
+    p.parse_line("A B C\n")
+    p.parse_line("LLCMRPS L2MRPS Busy%\n")
+    assert p.header == ["LLCkRPS", "L2kRPS", "Busy%"]
+
+
+def test_parser_data_row_keys_use_aliased_names():
+    p = tm.TurbostatParser()
+    p.parse_line("LLCMRPS L2MRPS\n")
+    result = p.parse_line("54.19 73.5\n")
+    assert result is not None
+    _, values, _ = result
+    assert values == {"LLCkRPS": "54.19", "L2kRPS": "73.5"}
 
 
 # ---------------------------------------------------------------------------
