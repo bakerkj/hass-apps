@@ -6,6 +6,8 @@
 import re
 import subprocess
 
+from .metadata import COLUMN_ALIASES
+
 
 def start_turbostat(interval_s: float) -> subprocess.Popen:
     cmd = [
@@ -47,11 +49,11 @@ class TurbostatParser:
 
         if self.header is None:
             if all((not is_number(p)) for p in parts):
-                self.header = parts
+                self.header = [COLUMN_ALIASES.get(p, p) for p in parts]
             return None
 
         if all((not is_number(p)) for p in parts):
-            self.header = parts
+            self.header = [COLUMN_ALIASES.get(p, p) for p in parts]
             return None
 
         if len(parts) != len(self.header):

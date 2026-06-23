@@ -1,7 +1,51 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Turbostat column → HA sensor metadata (friendly names, units, icons)."""
+"""Turbostat column → HA sensor metadata (friendly names, units, icons),
+plus the curated set of columns we treat as load-bearing."""
+
+# Columns that should appear on every supported platform — turbostat without
+# any of these is a strong signal of an upstream rename or kernel regression.
+# Deliberately conservative: GFX/ACPI/POLL/CPU%c* are platform-conditional
+# (iGPU presence, BIOS C-state exposure, CPUidle config) so they're not
+# enforced — only entered here when a column's absence would always be a bug.
+EXPECTED_COLS: frozenset[str] = frozenset(
+    {
+        "PkgWatt",
+        "CorWatt",
+        "Busy%",
+        "Bzy_MHz",
+        "Avg_MHz",
+        "TSC_MHz",
+        "IPC",
+        "LLCkRPS",
+        "LLC%hit",
+        "L2kRPS",
+        "L2%hit",
+    }
+)
+
+
+# Upstream turbostat column renames we transparently absorb so HA entity IDs
+# and value scales stay stable across the rename. Each entry: old_name → new
+# canonical name + value scale factor (mega → kilo for LLC/L2 needs ×1000).
+# Single source of truth; the parser and publisher both derive from this so
+# adding a future rename touches one place.
+COLUMN_RENAMES: dict[str, tuple[str, float]] = {
+    "LLCMRPS": ("LLCkRPS", 1000.0),
+    "L2MRPS": ("L2kRPS", 1000.0),
+}
+
+COLUMN_ALIASES: dict[str, str] = {old: new for old, (new, _) in COLUMN_RENAMES.items()}
+COLUMN_SCALES: dict[str, float] = {
+    new: scale for _, (new, scale) in COLUMN_RENAMES.items()
+}
+
+
+def missing_expected_columns(header: list[str]) -> list[str]:
+    """Members of ``EXPECTED_COLS`` that aren't in this header. A non-empty
+    result is how we catch upstream silently dropping a column we publish."""
+    return sorted(EXPECTED_COLS - set(header))
 
 
 def friendly_name(col: str) -> str:
@@ -45,6 +89,8 @@ def friendly_name(col: str) -> str:
         "LLCkRPS": "CPU Last-Level Cache References",
         "LLC%hi": "CPU Last-Level Cache Hit Rate",
         "LLC%hit": "CPU Last-Level Cache Hit Rate",
+        "L2kRPS": "CPU L2 Cache References",
+        "L2%hit": "CPU L2 Cache Hit Rate",
         "IRQ": "Interrupt Rate",
         "NMI": "Non-maskable Interrupt Rate",
         "SMI": "System Management Interrupt Rate",
