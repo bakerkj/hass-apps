@@ -19,7 +19,7 @@ LABEL \
 # the edge repos to the second apk call only, so future stable updates
 # can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      ffmpeg=8.1.1-r0 \
+      ffmpeg=8.1.2-r0 \
       intel-media-driver=26.2.1-r0 \
       libva=2.23.0-r0 \
       libva-utils=2.23.0-r0 \
