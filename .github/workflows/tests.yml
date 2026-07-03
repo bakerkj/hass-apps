@@ -144,7 +144,7 @@ jobs:
       # of dependencies. Keyed on the pin so a renovate bump busts it. A
       # user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
-      - uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
@@ -197,7 +197,7 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: ffmpeg-snapshotter-e2e
-      - uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.apt-archives
           key: apt-ffmpeg-${{ env.FFMPEG_APT_VERSION }}
@@ -258,7 +258,7 @@ jobs:
       # busts the cache automatically.
       - name: Cache HA image
         id: ha-image-cache
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/ha-image.tar
           key: ha-image-${{ env.HA_IMAGE }}
@@ -276,7 +276,7 @@ jobs:
       # this base on every job adds tens of seconds of network latency.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
@@ -293,8 +293,8 @@ jobs:
       # reused across CI runs. ``DEP_PROXY_IMAGE`` tells conftest's
       # ``addon_image`` fixture to use this prebuilt tag instead of
       # invoking its own ``docker buildx build``.
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./dashboard_entity_proxy
           load: true
@@ -351,7 +351,7 @@ jobs:
       # the network leg. Keyed on the pin; renovate-bumps invalidate it.
       - name: Cache addon base image
         id: addon-base-cache
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/addon-base.tar
           key: addon-base-${{ env.ADDON_BASE_IMAGE }}
@@ -368,8 +368,8 @@ jobs:
       # ``container_hooks_e2e:ci`` and surfaced to conftest via
       # ``CONTAINER_HOOKS_IMAGE`` so the session fixture skips its own
       # docker build.
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./container_hooks
           load: true
