@@ -13,7 +13,7 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   coreutils=9.11-r0 \
-  ffmpeg=8.1.1-r0 \
+  ffmpeg=8.1.2-r0 \
   findutils=4.10.0-r1 \
   intel-media-driver=26.2.1-r0 \
   libva=2.23.0-r0 \
