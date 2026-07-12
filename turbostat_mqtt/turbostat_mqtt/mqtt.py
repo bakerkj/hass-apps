@@ -8,7 +8,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
-from .metadata import friendly_name, guess_meta
+from .metadata import DIAGNOSTIC_COLS, friendly_name, guess_meta
 from .util import log
 
 
@@ -107,6 +107,8 @@ def build_discovery_payloads(
             payload["unit_of_measurement"] = unit
         if device_class is not None:
             payload["device_class"] = device_class
+        if original_col in DIAGNOSTIC_COLS:
+            payload["enabled_by_default"] = False
 
         disc_topic = f"{discovery_prefix}/sensor/{device_id}/{json_key}/config"
         out[disc_topic] = payload

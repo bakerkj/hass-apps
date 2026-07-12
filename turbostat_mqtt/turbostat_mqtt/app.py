@@ -355,6 +355,14 @@ def main() -> int:
                     "Pk%pc10",
                     "CPU%LPI",
                     "SYS%LPI",
+                    # turbostat internal / topology columns (always emitted
+                    # under --enable all, no HA value): keep them out of the
+                    # unmapped-warning path so we're not chatty at every
+                    # restart just because turbostat still prints them.
+                    "usec",
+                    "Time_Of_Day_Seconds",
+                    "APIC",
+                    "X2APIC",
                 }
                 cols_map = {
                     c: k
@@ -435,7 +443,15 @@ def main() -> int:
                         t,
                         json.dumps(cfg, separators=(",", ":")),
                         qos=1,
-                        retain=False,
+                        # retain=True so an HA restart re-reads the current
+                        # discovery config from the broker on subscribe.
+                        # Without this, HA can silently revert to whatever
+                        # ancient config was retained by some older addon
+                        # version (e.g. LLCkRPS with unit=1/s from before
+                        # the M/s rescale) — invisible until HA restarts.
+                        # The cleanup path above already uses retain=True
+                        # for the same reason.
+                        retain=True,
                         log_level=log_level,
                         health=health,
                     )

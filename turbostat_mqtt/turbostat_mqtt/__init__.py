@@ -21,7 +21,11 @@ from .mqtt import (  # noqa: E402,F401
     mqtt_publish,
 )
 from .metadata import (  # noqa: E402,F401
+    COLUMNS,
+    COUNT_COLS,
+    DIAGNOSTIC_COLS,
     EXPECTED_COLS,
+    ColMeta,
     friendly_name,
     guess_meta,
     missing_expected_columns,
