@@ -3,7 +3,7 @@
   "slug": "turbostat_mqtt",
   "description": "Runs turbostat and publishes to MQTT.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.0.37",
+  "version": "0.0.38",
   "image": "ghcr.io/bakerkj/{arch}-turbostat_mqtt",
   "arch": [
     "amd64"
