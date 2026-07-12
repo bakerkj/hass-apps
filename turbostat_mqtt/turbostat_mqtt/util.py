@@ -17,6 +17,16 @@ def log(level: str, msg: str, min_level: str = "INFO") -> None:
 
 def sanitize_key(k: str) -> str:
     k = k.strip()
+    # cpuidle counters end in - or + to distinguish the two governor
+    # misprediction directions from the base entry count (turbostat.8:
+    # ``-`` = should have been shallower, ``+`` = should have been deeper).
+    # Preserve the distinction as suffixes before the generic -/+ scrubbing
+    # below folds them all into a single ``_``, which would otherwise
+    # silently overwrite two of every three variants sharing the same key.
+    if k.endswith("-"):
+        k = k[:-1] + "_shallow"
+    elif k.endswith("+"):
+        k = k[:-1] + "_deep"
     k = k.replace("%", "_pct")
     k = k.replace("/", "_per_")
     k = k.replace("-", "_")

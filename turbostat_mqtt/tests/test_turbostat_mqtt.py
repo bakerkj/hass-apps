@@ -57,6 +57,33 @@ def test_sanitize_key_numeric_retained():
     assert tm.sanitize_key("CPU%c1") == "cpu_pctc1"
 
 
+def test_sanitize_key_trailing_minus_becomes_shallow():
+    # cpuidle mispredict column: trailing ``-`` = should-have-been-shallower
+    assert tm.sanitize_key("C1ACPI-") == "c1acpi_shallow"
+
+
+def test_sanitize_key_trailing_plus_becomes_deep():
+    # cpuidle mispredict column: trailing ``+`` = should-have-been-deeper
+    assert tm.sanitize_key("C1ACPI+") == "c1acpi_deep"
+
+
+def test_sanitize_key_cpuidle_variants_are_distinct():
+    # The three-way distinction between base, ``-`` and ``+`` cannot collapse:
+    # each variant's row-value is different, and losing them to the same key
+    # would silently overwrite in the payload dict.
+    keys = {
+        tm.sanitize_key("C1ACPI"),
+        tm.sanitize_key("C1ACPI-"),
+        tm.sanitize_key("C1ACPI+"),
+    }
+    assert len(keys) == 3, keys
+
+
+def test_sanitize_key_internal_dash_unchanged():
+    # The trailing-only ``-`` rewrite must not touch mid-string dashes.
+    assert tm.sanitize_key("Pkg-Tmp") == "pkg_tmp"
+
+
 # ---------------------------------------------------------------------------
 # friendly_name
 # ---------------------------------------------------------------------------
@@ -92,6 +119,22 @@ def test_friendly_name_all_mapped_keys_do_not_start_with_turbostat():
         "IRQ",
     ]
     for key in known:
+        name = tm.friendly_name(key)
+        assert not name.startswith("Turbostat "), f"{key!r} -> {name!r}"
+
+
+def test_friendly_name_cpuidle_variants_are_distinct():
+    # If any two variants collapse to the same name, the diagnostic sensors
+    # become indistinguishable in the HA UI.
+    keys = ["C1ACPI", "C1ACPI-", "C1ACPI+", "POLL", "POLL-"]
+    names = {tm.friendly_name(k) for k in keys}
+    assert len(names) == len(keys), sorted(names)
+
+
+def test_friendly_name_cpuidle_all_mapped():
+    # Every DIAGNOSTIC_COLS entry must have a real friendly name so we don't
+    # end up publishing diagnostic sensors called "Turbostat C1ACPI-".
+    for key in tm.DIAGNOSTIC_COLS:
         name = tm.friendly_name(key)
         assert not name.startswith("Turbostat "), f"{key!r} -> {name!r}"
 
@@ -169,6 +212,51 @@ def test_guess_meta_unknown_falls_back():
     assert unit is None
     assert dc is None
     assert sdp == 2
+
+
+def test_guess_meta_count_col_is_integer_count():
+    # COUNT_COLS members get 0-decimal display and a counter icon so HA
+    # doesn't render "898.00" for a value that arrives as int 898.
+    for col in tm.COUNT_COLS:
+        unit, dc, icon, sdp = tm.guess_meta(col)
+        assert unit is None, col
+        assert dc is None, col
+        assert sdp == 0, col
+        assert icon == "mdi:counter", col
+
+
+def test_count_cols_and_diagnostic_cols_are_independent_concepts():
+    # Today they happen to hold the same members, but the sets exist for
+    # orthogonal reasons: DIAGNOSTIC_COLS drives ``enabled_by_default: false``
+    # (should this sensor be opt-in?), COUNT_COLS drives 0-decimal display
+    # (is the value an integer?). Assert we're not silently aliasing them.
+    assert tm.COUNT_COLS is not tm.DIAGNOSTIC_COLS
+
+
+def test_expected_cols_contains_historical_set():
+    # Guard against future refactors accidentally dropping a column from
+    # EXPECTED_COLS — the whole point of that set is to fire
+    # ``missing_expected_columns`` when a supported column vanishes from
+    # turbostat's output, so silently narrowing it defeats the check.
+    # (Caught by pre-push review: the metadata consolidation initially
+    # forgot ``expected=True`` on the IPC entry.)
+    historical = {
+        "PkgWatt",
+        "CorWatt",
+        "Busy%",
+        "Bzy_MHz",
+        "Avg_MHz",
+        "TSC_MHz",
+        "IPC",
+        "LLCkRPS",
+        "LLC%hit",
+        "L2kRPS",
+        "L2%hit",
+    }
+    assert historical.issubset(tm.EXPECTED_COLS), (
+        f"EXPECTED_COLS lost historical members: "
+        f"{sorted(historical - tm.EXPECTED_COLS)}"
+    )
 
 
 def test_guess_meta_cpu_percent_special():
@@ -296,6 +384,26 @@ def test_build_discovery_payloads_expire_after_minimum():
     )
     p = list(payloads.values())[0]
     assert p["expire_after"] == 60
+
+
+def test_build_discovery_payloads_diagnostic_col_disabled_by_default():
+    # Diagnostic sensors (cpuidle counters + governor mispredicts) get
+    # ``enabled_by_default: false`` so they're opt-in per-sensor.
+    cols = {"C1ACPI-": "c1acpi_shallow", "PkgWatt": "pkgwatt"}
+    payloads = tm.build_discovery_payloads(
+        discovery_prefix="ha",
+        device_id="ts",
+        device_name="TS",
+        base_topic="ts",
+        availability_topic="ts/avail",
+        cols=cols,
+        expire_after_s=120,
+    )
+    diag = payloads["ha/sensor/ts/c1acpi_shallow/config"]
+    assert diag.get("enabled_by_default") is False
+    # A non-diagnostic column must not gain the flag (HA defaults to True).
+    prod = payloads["ha/sensor/ts/pkgwatt/config"]
+    assert "enabled_by_default" not in prod
 
 
 def test_build_discovery_payloads_no_unit_for_unknown():
@@ -680,10 +788,13 @@ def test_guess_meta_joule_single_j():
 
 
 def test_guess_meta_nmi():
-    # "nmi" doesn't have "irq" in it but is otherwise unknown
+    # NMI and SMI are interrupt counts, semantically the same as IRQ. Give
+    # them the same sdp=0 treatment via an explicit COLUMNS entry so we
+    # don't inherit a stale sdp=2 from the pre-consolidation heuristic
+    # (only "irq" matched a count-like branch back then).
     unit, dc, icon, sdp = tm.guess_meta("NMI")
     assert unit is None
-    assert sdp == 2
+    assert sdp == 0
 
 
 # ---------------------------------------------------------------------------
@@ -796,10 +907,10 @@ def test_rps_suffix_canonicals_have_unit_override():
     """Any COLUMN_RENAMES canonical that ends in 'rps' would silently
     fall through guess_meta's rps-suffix branch to '1/s'. A rename only
     exists because the column's unit scale needs translating, so every
-    such canonical must have an explicit COLUMN_UNIT_OVERRIDES entry to
-    express the actual published unit — keying on scale != 1.0 alone
-    misses the scale=1.0 mega-input path (caught by PR #274 review)."""
-    from turbostat_mqtt.metadata import COLUMN_RENAMES, COLUMN_UNIT_OVERRIDES
+    such canonical must have an explicit COLUMNS entry with a non-None
+    unit to express the actual published unit — keying on scale != 1.0
+    alone misses the scale=1.0 mega-input path (caught by PR #274 review)."""
+    from turbostat_mqtt.metadata import COLUMN_RENAMES, COLUMNS
 
     rps_canonicals = {
         canonical
@@ -807,9 +918,9 @@ def test_rps_suffix_canonicals_have_unit_override():
         if canonical.lower().endswith("rps")
     }
     for canonical in rps_canonicals:
-        assert canonical in COLUMN_UNIT_OVERRIDES, (
+        assert canonical in COLUMNS and COLUMNS[canonical].unit is not None, (
             f"{canonical} ends in 'rps' (would default to '1/s') but "
-            f"has no COLUMN_UNIT_OVERRIDES entry"
+            f"has no explicit COLUMNS entry with a unit"
         )
 
 
