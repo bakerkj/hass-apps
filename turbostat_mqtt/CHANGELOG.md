@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.38](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.37...turbostat_mqtt-v0.0.38) (2026-07-12)
+
+
+### Features
+
+* **turbostat_mqtt:** publish cpuidle diagnostic counters and consolidate column metadata ([#300](https://github.com/bakerkj/hass-apps/issues/300)) ([7737513](https://github.com/bakerkj/hass-apps/commit/7737513ff72ec0e5761718ed5c5cd19ccd3d7380))
+
 ## [0.0.37](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.36...turbostat_mqtt-v0.0.37) (2026-07-12)
 
 
