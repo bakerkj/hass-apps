@@ -8,6 +8,7 @@ README.md
 
 # HA Supervisor metadata (Supervisor reads these separately from the build)
 config.json
+icon.png
 translations/
 
 # Tests — never run inside the image
