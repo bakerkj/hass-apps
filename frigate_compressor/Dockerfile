@@ -33,6 +33,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       onevpl-intel-gpu=25.4.6-r1
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 COPY frigate_compressor /opt/frigate_compressor
 

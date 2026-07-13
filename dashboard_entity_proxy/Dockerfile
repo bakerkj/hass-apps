@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
   py3-voluptuous=0.15.2-r1 \
   py3-yaml=6.0.3-r2
 
+COPY LICENSE.md /LICENSE
 COPY rootfs/ /
 COPY dashboard_entity_proxy /opt/dashboard_entity_proxy
 # Ship the customization example alongside the package so operators can

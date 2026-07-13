@@ -1,10 +1,12 @@
-# Only files referenced by COPY lines in the Dockerfile enter the image.
+# Only files referenced by COPY lines in the Dockerfile enter the image
+# (rootfs/, dashboard_entity_proxy/, customization.example.yaml).
 # Everything below is either HA Supervisor metadata (read before the
 # build), docs, or dev-host artifacts.
 
 # Docs (LICENSE.md is kept — COPY'd into the image at /LICENSE)
 CHANGELOG.md
 README.md
+ARCHITECTURE.md
 
 # HA Supervisor metadata (Supervisor reads these separately from the build)
 config.json
@@ -14,15 +16,13 @@ translations/
 # Tests — never run inside the image
 tests/
 
-# Benchmarks / repro harnesses — dev-only
-benchmarks/
+# Dev tooling — not consumed by the image
+scripts/
 
 # Dev-host caches — never present in CI, but guard local `docker build`
 # and preempt stale-bytecode leakage from wrong-Python-version hosts.
 **/__pycache__
 **/*.pyc
-.mypy_cache
-.pytest_cache
 
 # Meta
 .gitignore
