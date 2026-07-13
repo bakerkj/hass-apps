@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
   uv pip install --system --break-system-packages \
     aiodocker==0.27.0
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 COPY system_resource_tuner /opt/system_resource_tuner
 

@@ -14,15 +14,10 @@ translations/
 # Tests — never run inside the image
 tests/
 
-# Benchmarks / repro harnesses — dev-only
-benchmarks/
-
 # Dev-host caches — never present in CI, but guard local `docker build`
 # and preempt stale-bytecode leakage from wrong-Python-version hosts.
 **/__pycache__
 **/*.pyc
-.mypy_cache
-.pytest_cache
 
 # Meta
 .gitignore

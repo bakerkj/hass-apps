@@ -23,6 +23,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       igt-gpu-tools=2.3-r0
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 COPY intel_gpu_mqtt /opt/intel_gpu_mqtt
 

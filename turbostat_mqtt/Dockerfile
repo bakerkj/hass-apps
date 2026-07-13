@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.14.5-r0 \
       util-linux=2.42.1-r0
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 
 COPY turbostat_mqtt /opt/turbostat_mqtt

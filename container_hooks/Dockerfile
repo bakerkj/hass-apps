@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     aiodocker==0.27.0 \
     patch-ng==1.19.1
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 COPY container_hooks /opt/container_hooks
 

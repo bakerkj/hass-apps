@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/var/cache/apk set -eux; \
         ffmpeg=8.1.2-r0 \
         go2rtc=1.9.14-r4
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 

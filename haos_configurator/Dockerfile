@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.14.5-r0 \
       py3-yaml=6.0.3-r2
 
+COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
 COPY haos_configurator /opt/haos_configurator
 
