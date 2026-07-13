@@ -32,41 +32,41 @@ readonly TMPL=/etc/nginx/nginx.conf.tmpl
 readonly OUT=/etc/nginx/nginx.conf
 readonly OPTS=/data/options.json
 
-[[ -f "$TMPL" ]] || { echo "missing template: $TMPL" >&2; exit 1; }
-[[ -f "$OPTS" ]] || { echo "missing options: $OPTS" >&2; exit 1; }
+[[ -f "${TMPL}" ]] || { echo "missing template: ${TMPL}" >&2; exit 1; }
+[[ -f "${OPTS}" ]] || { echo "missing options: ${OPTS}" >&2; exit 1; }
 
-ha_url=$(jq -r '.homeassistant_url // "http://homeassistant:8123"' "$OPTS")
-transparent=$(jq -r '.transparent // true' "$OPTS")
-log_level=$(jq -r '.log_level // "INFO"' "$OPTS" | tr '[:lower:]' '[:upper:]')
+ha_url=$(jq -r '.homeassistant_url // "http://homeassistant:8123"' "${OPTS}")
+transparent=$(jq -r '.transparent // true' "${OPTS}")
+log_level=$(jq -r '.log_level // "INFO"' "${OPTS}" | tr '[:lower:]' '[:upper:]')
 
 # Validate scheme. Reject anything that isn't a plain http(s) URL before
 # parsing — keeps malformed/injected values (newlines, ``};``, etc.) from
 # leaking into the rendered nginx.conf via the sed substitution below.
-if [[ "$ha_url" == http://* ]]; then
+if [[ "${ha_url}" == http://* ]]; then
   host_port="${ha_url#http://}"
-elif [[ "$ha_url" == https://* ]]; then
+elif [[ "${ha_url}" == https://* ]]; then
   host_port="${ha_url#https://}"
 else
   echo "invalid homeassistant_url (scheme must be http:// or https://): ${ha_url}" >&2
   exit 1
 fi
 host_port="${host_port%%/*}"
-if [[ "$host_port" == *":"* ]]; then
+if [[ "${host_port}" == *":"* ]]; then
   ha_host="${host_port%%:*}"
   ha_port="${host_port##*:}"
 else
-  ha_host="$host_port"
+  ha_host="${host_port}"
   ha_port=8123
 fi
 
 # Whitelist host/port shape. nginx directives are terminated by ``;`` and
 # ``{}``; refusing anything outside a conservative DNS/IP charset blocks
 # config injection through a crafted homeassistant_url.
-if [[ ! "$ha_host" =~ ^[A-Za-z0-9._-]+$ ]]; then
+if [[ ! "${ha_host}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "invalid homeassistant_url host: ${ha_host}" >&2
   exit 1
 fi
-if [[ ! "$ha_port" =~ ^[0-9]+$ ]]; then
+if [[ ! "${ha_port}" =~ ^[0-9]+$ ]]; then
   echo "invalid homeassistant_url port: ${ha_port}" >&2
   exit 1
 fi
@@ -74,7 +74,7 @@ fi
 # Transparent mode (HA treats nginx as a direct client): no
 # X-Forwarded-*. Non-transparent: forward identity headers so HA's
 # trusted_proxies config can attribute the request.
-if [[ "$transparent" == "true" ]]; then
+if [[ "${transparent}" == "true" ]]; then
   xfwd_block=""
 else
   xfwd_block=$(cat <<'EOF'
@@ -90,9 +90,12 @@ fi
 # covered by the Python aiohttp.access logger (and the /api/sessions
 # poll) drop out; plain HTTP requests (nginx → HA direct) still log.
 # At DEBUG, log unconditionally so every request is visible.
-if [[ "$log_level" == "DEBUG" ]]; then
+if [[ "${log_level}" == "DEBUG" ]]; then
   stderr_access_log='access_log /dev/stderr combined;'
 else
+  # $nginx_loggable is an nginx variable, not a shell one — single-quote
+  # is deliberate so nginx sees it verbatim.
+  # shellcheck disable=SC2016
   stderr_access_log='access_log /dev/stderr combined if=$nginx_loggable;'
 fi
 
@@ -103,12 +106,12 @@ echo "nginx config: ha_backend=${ha_host}:${ha_port} transparent=${transparent} 
 sed -e "s|__HA_HOST__|${ha_host}|g" \
     -e "s|__HA_PORT__|${ha_port}|g" \
     -e "s|__STDERR_ACCESS_LOG__|${stderr_access_log}|g" \
-    "$TMPL" > "${OUT}.in"
+    "${TMPL}" > "${OUT}.in"
 
-XFWD_BLOCK="$xfwd_block" python3 -c '
+XFWD_BLOCK="${xfwd_block}" python3 -c '
 import os, sys
 src = open(sys.argv[1]).read()
 sys.stdout.write(src.replace("__XFWD_BLOCK__", os.environ["XFWD_BLOCK"]))
-' "${OUT}.in" > "$OUT"
+' "${OUT}.in" > "${OUT}"
 
 rm -f "${OUT}.in"

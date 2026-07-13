@@ -10,8 +10,8 @@
 set -euo pipefail
 
 OPTIONS="/data/options.json"
-if [[ ! -f "$OPTIONS" ]]; then
-  echo "Missing $OPTIONS (add-on options)."
+if [[ ! -f "${OPTIONS}" ]]; then
+  echo "Missing ${OPTIONS} (add-on options)."
   exit 1
 fi
 
