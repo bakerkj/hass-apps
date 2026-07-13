@@ -87,6 +87,9 @@ esac
   echo "  ${STREAM_NAME}: '${STREAM_SPEC}'"
 } >"${CONFIG_PATH}"
 
+password_state="(none)"
+[[ -n "${PASSWORD}" ]] && password_state="(set)"
+
 bashio::log.info "Configuration:
   alsa_device:         ${AUDIO_DEVICE}
   api_port:            ${API_PORT}
@@ -99,7 +102,7 @@ bashio::log.info "Configuration:
   input_format:        ${INPUT_FORMAT}
   mixer_control:       ${MIXER_CONTROL:-(none)}
   mixer_volume:        ${MIXER_VOLUME:-(none)}
-  password:            $([ -n "${PASSWORD}" ] && echo '(set)' || echo '(none)')
+  password:            ${password_state}
   rtsp_port:           ${RTSP_PORT}
   rtsp_url:            rtsp://<host>:${RTSP_PORT}/${STREAM_NAME}
   sample_rate:         ${SAMPLE_RATE} Hz

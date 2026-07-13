@@ -44,8 +44,29 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        files: \.sh$
-        args: ["-S", "warning", "-e", "SC1091"]
+        # Match .sh scripts and the extensionless shell entries under
+        # rootfs/ that are actually scripts: s6-rc.d service scripts
+        # (run, finish, up, down), cont-init.d oneshots (which have no
+        # extension either), and anything under rootfs/usr/bin/. Skip
+        # the s6 config files (``type``, ``dependencies.d/*``,
+        # ``contents.d/*``) which aren't shell — they'd trip SC2148.
+        # Each shell entry carries ``# shellcheck shell=bash`` so the
+        # ``#!/command/with-contenv bash`` shebang doesn't trip SC1008
+        # and abort the whole check.
+        # ``up``/``down`` files under s6-rc.d/ are execline scripts,
+        # not shell — leave them out.
+        files: (\.sh$|/rootfs/etc/s6-overlay/s6-rc\.d/[^/]+/(run|finish)$|/rootfs/etc/s6-overlay/scripts/[^/]+$|/rootfs/etc/cont-init\.d/[^/]+$|/rootfs/usr/bin/[^/]+$)
+        # Undo the default ``types: [shell]`` filter — otherwise the
+        # extensionless files above are dropped by the type-detector
+        # before the regex ever runs.
+        types: [file]
+        # -S style -o all is the maximum-signal gate: severity ``style``
+        # is the lowest floor and ``-o all`` enables every optional
+        # off-by-default check (SC2250 brace-vars, SC2249 case-default,
+        # SC2292/SC2310/SC2312 set-e family). SC1091 (can't follow
+        # non-constant source) is genuinely unhelpful — everything
+        # else earns fixes.
+        args: ["-S", "style", "-o", "all", "-e", "SC1091"]
 
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.13.0-1
