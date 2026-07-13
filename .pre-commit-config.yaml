@@ -46,15 +46,14 @@ repos:
       - id: shellcheck
         # Match .sh scripts and the extensionless shell entries under
         # rootfs/ that are actually scripts: s6-rc.d service scripts
-        # (run, finish, up, down), cont-init.d oneshots (which have no
-        # extension either), and anything under rootfs/usr/bin/. Skip
-        # the s6 config files (``type``, ``dependencies.d/*``,
-        # ``contents.d/*``) which aren't shell — they'd trip SC2148.
+        # (run, finish), cont-init.d oneshots (which have no extension
+        # either), and anything under rootfs/usr/bin/. Skip the s6
+        # config files (``type``, ``dependencies.d/*``, ``contents.d/*``)
+        # which aren't shell — they'd trip SC2148. Also skip ``up`` and
+        # ``down`` under s6-rc.d/, which are execline, not shell.
         # Each shell entry carries ``# shellcheck shell=bash`` so the
         # ``#!/command/with-contenv bash`` shebang doesn't trip SC1008
         # and abort the whole check.
-        # ``up``/``down`` files under s6-rc.d/ are execline scripts,
-        # not shell — leave them out.
         files: (\.sh$|/rootfs/etc/s6-overlay/s6-rc\.d/[^/]+/(run|finish)$|/rootfs/etc/s6-overlay/scripts/[^/]+$|/rootfs/etc/cont-init\.d/[^/]+$|/rootfs/usr/bin/[^/]+$)
         # Undo the default ``types: [shell]`` filter — otherwise the
         # extensionless files above are dropped by the type-detector
