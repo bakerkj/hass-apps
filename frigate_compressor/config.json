@@ -1,6 +1,6 @@
 {
   "name": "Frigate Compressor",
-  "version": "0.0.54",
+  "version": "0.0.55",
   "slug": "frigate_compressor",
   "image": "ghcr.io/bakerkj/{arch}-frigate_compressor",
   "description": "Compresses old Frigate NVR recordings using Intel QSV (or NVENC/CPU fallback). Two-tier compression based on age. Tracks state in a local SQLite database.",
