@@ -51,14 +51,14 @@
     },
     {
       "customType": "regex",
-      "description": "APK packages pinned in Alpine 3.24 Dockerfiles",
+      "description": "APK packages pinned in Alpine 3.24 Dockerfiles. Version lookups go through a custom datasource that reads Alpine's own APKINDEX for the pinned suites and returns a Renovate-shaped release list. Replaces the previous Repology datasource (see #6).",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
         "\\s+(?<depName>[a-z][a-z0-9_+.-]*)=(?<currentValue>[\\d][\\w.-]+)"
       ],
-      "datasourceTemplate": "repology",
+      "datasourceTemplate": "custom.aports",
       "versioningTemplate": "loose",
-      "packageNameTemplate": "alpine_3_24/{{depName}}"
+      "packageNameTemplate": "3.24-stable/{{depName}}"
     },
     {
       "customType": "regex",
@@ -96,6 +96,12 @@
       "versioningTemplate": "pep440"
     }
   ],
+  "customDatasources": {
+    "aports": {
+      "defaultRegistryUrlTemplate": "https://github-apk-helper.keneli.org/{{packageName}}",
+      "format": "json"
+    }
+  },
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -120,7 +126,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchDatasources": ["repology"],
+      "matchDatasources": ["custom.aports"],
       "groupName": "alpine apk packages"
     },
     {
@@ -135,16 +141,16 @@
       "groupName": "apt packages"
     },
     {
-      "description": "igt-gpu-tools comes from Alpine edge/testing, not the stable Alpine 3.24 repo",
-      "matchPackageNames": ["alpine_3_24/igt-gpu-tools"],
-      "matchDatasources": ["repology"],
-      "overridePackageName": "alpine_edge/igt-gpu-tools"
+      "description": "igt-gpu-tools comes from Alpine edge (master branch of aports), not the 3.24-stable branch. The proxy tries main → community → testing under whichever branch we point at.",
+      "matchPackageNames": ["3.24-stable/igt-gpu-tools"],
+      "matchDatasources": ["custom.aports"],
+      "overridePackageName": "master/igt-gpu-tools"
     },
     {
-      "description": "onevpl-intel-gpu comes from Alpine edge/testing, not the stable Alpine 3.24 repo",
-      "matchPackageNames": ["alpine_3_24/onevpl-intel-gpu"],
-      "matchDatasources": ["repology"],
-      "overridePackageName": "alpine_edge/onevpl-intel-gpu"
+      "description": "onevpl-intel-gpu comes from Alpine edge (master branch of aports), not the 3.24-stable branch.",
+      "matchPackageNames": ["3.24-stable/onevpl-intel-gpu"],
+      "matchDatasources": ["custom.aports"],
+      "overridePackageName": "master/onevpl-intel-gpu"
     },
     {
       "description": "Avoid duplicate PRs: the custom regex manager above already handles ghcr.io/home-assistant/* FROM lines in Dockerfiles; disabling the built-in dockerfile manager for those packages keeps the regex manager as the single source so we don't get two PRs (one per datasource) on every base-image bump. The /.../ matchPackageNames is regex syntax matching any package name containing 'home-assistant' — the dockerfile manager only sees image names, so this can only hit the HA base images.",
