@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.14](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.13...ffmpeg_snapshotter-v0.8.14) (2026-07-17)
+
+
+### Miscellaneous Chores
+
+* add per-addon .dockerignore and ship LICENSE in each image ([#302](https://github.com/bakerkj/hass-apps/issues/302)) ([b74f977](https://github.com/bakerkj/hass-apps/commit/b74f977af0ac684e864a88d9fdf64d5f62cef853))
+* **deps:** update dependency ffmpeg to v8.1.2-r0 ([#281](https://github.com/bakerkj/hass-apps/issues/281)) ([133a954](https://github.com/bakerkj/hass-apps/commit/133a954456aae439165bcbefacfbe2fae43b6978))
+* harden shellcheck config and fix uncovered findings ([#310](https://github.com/bakerkj/hass-apps/issues/310)) ([868e4f2](https://github.com/bakerkj/hass-apps/commit/868e4f26a6a9bbb1d54fdb67e1d187ccec22bc8f))
+
+
+### Continuous Integration
+
+* **tests:** unify per-addon test jobs under the e2e marker ([#255](https://github.com/bakerkj/hass-apps/issues/255)) ([1cdcd72](https://github.com/bakerkj/hass-apps/commit/1cdcd725b314347777612df3c8ea2473825d5d2c))
+
 ## [0.8.13](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.12...ffmpeg_snapshotter-v0.8.13) (2026-06-20)
 
 
