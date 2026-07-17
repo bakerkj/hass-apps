@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.18](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.17...birdnet_audio_stream-v0.1.18) (2026-07-17)
+
+
+### Miscellaneous Chores
+
+* add per-addon .dockerignore and ship LICENSE in each image ([#302](https://github.com/bakerkj/hass-apps/issues/302)) ([b74f977](https://github.com/bakerkj/hass-apps/commit/b74f977af0ac684e864a88d9fdf64d5f62cef853))
+* **deps:** update dependency ffmpeg to v8.1.2-r0 ([#281](https://github.com/bakerkj/hass-apps/issues/281)) ([133a954](https://github.com/bakerkj/hass-apps/commit/133a954456aae439165bcbefacfbe2fae43b6978))
+* harden shellcheck config and fix uncovered findings ([#310](https://github.com/bakerkj/hass-apps/issues/310)) ([868e4f2](https://github.com/bakerkj/hass-apps/commit/868e4f26a6a9bbb1d54fdb67e1d187ccec22bc8f))
+
 ## [0.1.17](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.16...birdnet_audio_stream-v0.1.17) (2026-06-20)
 
 
