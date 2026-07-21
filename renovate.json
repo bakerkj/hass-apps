@@ -79,7 +79,7 @@
     {
       "customType": "regex",
       "description": "frenck/action-addon-linter schema URLs in pre-commit config",
-      "managerFilePatterns": ["/\\.pre-commit-config\\.ya?ml$/"],
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/"],
       "matchStrings": ["frenck/action-addon-linter/(?<currentValue>v[\\d.]+)/"],
       "depNameTemplate": "frenck/action-addon-linter",
       "datasourceTemplate": "github-tags"
