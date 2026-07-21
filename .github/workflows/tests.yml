@@ -18,7 +18,7 @@ jobs:
       addons: ${{ steps.scope.outputs.addons }}
       mode: ${{ steps.scope.outputs.mode }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: scope
@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
@@ -131,7 +131,7 @@ jobs:
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
@@ -192,7 +192,7 @@ jobs:
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
@@ -247,7 +247,7 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
@@ -342,7 +342,7 @@ jobs:
       # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
       ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
@@ -418,7 +418,7 @@ jobs:
     # one artifact to combine.
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           cache-dependency-glob: "uv.lock"
