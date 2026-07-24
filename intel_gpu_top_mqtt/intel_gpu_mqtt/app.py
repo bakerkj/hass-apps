@@ -201,7 +201,7 @@ def main() -> int:
         try:
             client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
             break
-        except OSError as e:
+        except (OSError, ValueError) as e:
             log.warning(
                 "Cannot connect to MQTT broker %s:%d: %s — retrying in %ds",
                 args.mqtt_host,
