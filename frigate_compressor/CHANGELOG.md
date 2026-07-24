@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.56](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.55...frigate_compressor-v0.0.56) (2026-07-24)
+
+
+### Miscellaneous Chores
+
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.16.0 ([#331](https://github.com/bakerkj/hass-apps/issues/331)) ([6cc91f4](https://github.com/bakerkj/hass-apps/commit/6cc91f47b7c17f2b428b41288c403a9a1a3cdac5))
+
 ## [0.0.55](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.54...frigate_compressor-v0.0.55) (2026-07-17)
 
 
