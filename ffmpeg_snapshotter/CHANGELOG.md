@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.15](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.14...ffmpeg_snapshotter-v0.8.15) (2026-07-24)
+
+
+### Miscellaneous Chores
+
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.16.0 ([#331](https://github.com/bakerkj/hass-apps/issues/331)) ([6cc91f4](https://github.com/bakerkj/hass-apps/commit/6cc91f47b7c17f2b428b41288c403a9a1a3cdac5))
+
 ## [0.8.14](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.13...ffmpeg_snapshotter-v0.8.14) (2026-07-17)
 
 
