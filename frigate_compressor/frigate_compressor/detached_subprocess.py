@@ -138,6 +138,7 @@ def _manager_main(
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         payload = json.dumps(
             {
@@ -147,7 +148,7 @@ def _manager_main(
         ).encode("utf-8")
     except subprocess.TimeoutExpired:
         payload = json.dumps({"timeout": True}).encode("utf-8")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — manager reports any failure via status pipe
         payload = json.dumps({"error": f"{type(e).__name__}: {e}"}).encode("utf-8")
     try:
         os.write(status_w, payload)

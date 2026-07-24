@@ -18,7 +18,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -136,13 +136,13 @@ def classify_target(uri: str, referer: str = "") -> str:
         return f"addon: {_strip_install_hash(m.group(1))}"
     if uri.startswith("/api/"):
         return "ha-rest"
-    if uri.startswith("/static/") or uri.startswith("/frontend_latest/"):
+    if uri.startswith(("/static/", "/frontend_latest/")):
         return "ha-frontend"
     if uri.startswith("/local/"):
         return "local-assets"
     if uri.startswith("/auth/"):
         return "auth"
-    if uri.startswith("/lovelace") or uri.startswith("/dashboard"):
+    if uri.startswith(("/lovelace", "/dashboard")):
         head = uri.lstrip("/").split("/", 1)[0]
         return f"dashboard: {head}" if head else "dashboard"
     if uri == "/" or uri == "":
@@ -188,7 +188,7 @@ class _HttpClient:
         # Fixed at construction so SessionRegistry sort order is stable
         # for this card (a new client joins the bottom of the list and
         # stays put until it expires).
-        self._connected_at = datetime.now(timezone.utc)
+        self._connected_at = datetime.now(UTC)
         # Most recent observed activity, retained independently of
         # ``_rows`` so ``status()`` can report a meaningful ``last_seen``
         # even if the status snapshot races with row expiry (rows pruned
@@ -207,7 +207,7 @@ class _HttpClient:
         referer: str = "",
     ) -> None:
         target = classify_target(uri, referer)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         row = self._rows.get(target)
         if row is None:
             row = _HttpRow(target=target, first_seen=now, last_seen=now)
@@ -222,7 +222,7 @@ class _HttpClient:
         self._last_activity_at = now
 
     def _prune(self) -> None:
-        cutoff = datetime.now(timezone.utc).timestamp() - self._retention
+        cutoff = datetime.now(UTC).timestamp() - self._retention
         self._rows = {
             k: r for k, r in self._rows.items() if r.last_seen.timestamp() > cutoff
         }
@@ -380,7 +380,11 @@ async def tail_access_log(
             if stat_size < pos:
                 pos = 0  # truncated/rotated externally
             if pos < stat_size:
-                with open(path) as f:
+                # Background tailer polling every ``poll_interval``; the
+                # entire read loop below is sync, so wrapping just ``open``
+                # in ``to_thread`` would add per-poll thread overhead
+                # without releasing the loop during the actual reads.
+                with open(path) as f:  # noqa: ASYNC230
                     f.seek(pos)
                     for line in f:
                         parsed = parse_line(line.rstrip("\n"))
@@ -402,7 +406,7 @@ async def tail_access_log(
             tracker.expire()
         except FileNotFoundError:
             pos = 0
-        except Exception as exc:  # noqa: BLE001 - tailer must not die
+        except Exception as exc:
             log.warning("access-log tailer error: %r", exc, exc_info=True)
         try:
             await asyncio.wait_for(
@@ -410,5 +414,5 @@ async def tail_access_log(
                 timeout=poll_interval,
             )
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue

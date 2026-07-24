@@ -3,6 +3,7 @@
 
 """Per-recording compression worker (``compress_one``)."""
 
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -14,14 +15,14 @@ from .database import (
     STATUS_ERROR,
     STATUS_OK,
     STATUS_SEGMENT_UPDATE_FAILED,
-    _record_failure,
     _record,
+    _record_failure,
 )
 from .detached_subprocess import DetachedResult, run_detached
 from .ffmpeg import (
+    _TEMP_PREFIX,
     FFMPEG_STDERR_MAX_LEN,
     FFMPEG_TIMEOUT_SEC,
-    _TEMP_PREFIX,
     _probe,
     build_direct_ffmpeg_cmd,
     build_ffmpeg_cmd,
@@ -239,7 +240,11 @@ def compress_one(
                 )
             else:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                    check=False,
                 )
         except subprocess.TimeoutExpired:
             duration = time.monotonic() - t_start
@@ -249,7 +254,7 @@ def compress_one(
                 f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
             )
             return fail(f"timeout after {FFMPEG_TIMEOUT_SEC}s")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — catch-all for unexpected ffmpeg failures
             duration = time.monotonic() - t_start
             log(
                 "ERROR",
@@ -371,7 +376,7 @@ def compress_one(
         )
         try:
             tmpfile.replace(filepath)
-        except Exception as e:
+        except OSError as e:
             log(
                 "ERROR",
                 f"[{camera}] failed to replace original after {duration:.1f}s: {e}",
@@ -432,7 +437,7 @@ def compress_one(
                     "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                     (new_size_mb, recording_id),
                 )
-            except Exception as e:
+            except sqlite3.Error as e:
                 # The segment UPDATE didn't apply (sqlite3 raises before
                 # the change lands in the implicit transaction).  We
                 # mark ``segment_update_failed`` so housekeeping retries
@@ -639,7 +644,11 @@ def compress_direct(
                 )
             else:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                    check=False,
                 )
         except subprocess.TimeoutExpired:
             duration = time.monotonic() - t_start
@@ -649,7 +658,7 @@ def compress_direct(
                 f"(limit {FFMPEG_TIMEOUT_SEC}s): {_display_path(filepath)}",
             )
             return fail_both(f"timeout after {FFMPEG_TIMEOUT_SEC}s")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — catch-all for unexpected ffmpeg failures
             duration = time.monotonic() - t_start
             log(
                 "ERROR",
@@ -726,7 +735,7 @@ def compress_direct(
         sib = sibling_path(filepath)
         try:
             t1_tmp.replace(filepath)
-        except Exception as e:
+        except OSError as e:
             log(
                 "ERROR",
                 f"[{camera}] failed to replace original after direct encode "
@@ -737,7 +746,7 @@ def compress_direct(
         t2_replace_failed: str | None = None
         try:
             t2_tmp.replace(sib)
-        except Exception as e:
+        except OSError as e:
             t2_replace_failed = str(e)
             log(
                 "WARNING",
@@ -811,7 +820,7 @@ def compress_direct(
                     "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                     (new_size_mb, recording_id),
                 )
-            except Exception as e:
+            except sqlite3.Error as e:
                 seg_status = STATUS_SEGMENT_UPDATE_FAILED
                 seg_error = str(e)
                 log(
@@ -1032,7 +1041,7 @@ def swap_t2(
         t1_size = filepath.stat().st_size
         t2_size = sib.stat().st_size
         sib.replace(filepath)
-    except Exception as e:
+    except OSError as e:
         log(
             "ERROR",
             f"[{camera}] sibling→primary rename failed: {e}",
@@ -1104,7 +1113,7 @@ def swap_t2(
                     "UPDATE frigate.recordings SET segment_size = ? WHERE id = ?",
                     (new_size_mb, recording_id),
                 )
-            except Exception as e:
+            except sqlite3.Error as e:
                 seg_status = STATUS_SEGMENT_UPDATE_FAILED
                 seg_error = str(e)
                 log(

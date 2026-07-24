@@ -11,7 +11,7 @@ predicate, and a ``widen_to_all`` action.
 
 import asyncio
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 
 class ScopeWatchdog:
@@ -39,7 +39,7 @@ class ScopeWatchdog:
         try:
             await asyncio.wait_for(self._done.wait(), timeout=self._timeout)
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         # The session could have closed during the same event-loop tick
         # the wait_for timed out on. Re-check before invoking the widen

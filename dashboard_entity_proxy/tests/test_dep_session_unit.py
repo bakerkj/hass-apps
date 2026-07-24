@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
+from datetime import UTC
 from typing import Any
 
 from _session_factory import build_session_for_test
@@ -108,7 +109,7 @@ def test_session_registry_sorts_by_raw_datetime_not_iso_string():
     timezone-naive (or otherwise lexically-misordered) ISO string while
     carrying the correct raw ``datetime`` must still sort correctly.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     class _DoubleFmtConn:
         def __init__(self, remote: str, dt, iso_override: str | None = None) -> None:
@@ -123,7 +124,7 @@ def test_session_registry_sorts_by_raw_datetime_not_iso_string():
                 "connected_at": self._iso,
             }
 
-    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     # ``earlier`` has the smaller raw datetime but its ISO string (tz-naive,
     # offset-stripped) sorts AFTER the tz-aware ISO of ``later`` lexically.
     earlier = _DoubleFmtConn(
@@ -203,7 +204,7 @@ def test_session_registry_sort_handles_mixed_live_and_recent_by_datetime():
     list, ordered by the raw ``datetime`` regardless of which bucket they
     came from.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     class _Conn:
         def __init__(self, remote: str, dt) -> None:
@@ -217,7 +218,7 @@ def test_session_registry_sort_handles_mixed_live_and_recent_by_datetime():
                 "connected_at": self._connected_at.isoformat(),
             }
 
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     older = _Conn("192.0.2.1", base)
     middle = _Conn("192.0.2.2", base + timedelta(seconds=1))
     newer = _Conn("192.0.2.3", base + timedelta(seconds=2))
@@ -1259,7 +1260,7 @@ async def test_scope_watchdog_no_op_if_done_set_during_timeout(monkeypatch):
 
     async def _immediate_timeout(coro, timeout):
         coro.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(asyncio, "wait_for", _immediate_timeout)
 
@@ -1293,7 +1294,7 @@ async def test_scope_watchdog_widens_when_not_ready_and_done_unset(monkeypatch):
 
     async def _immediate_timeout(coro, timeout):
         coro.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(asyncio, "wait_for", _immediate_timeout)
 
@@ -2044,10 +2045,10 @@ def test_session_registry_snapshot_forwards_detail_to_session():
             captured.append(detail)
             return {"kind": "intercept", "remote_addr": "x", "connected_at": "z"}
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     c = _Conn()
-    c._connected_at = datetime.now(timezone.utc)
+    c._connected_at = datetime.now(UTC)
     reg = SessionRegistry(retention_seconds=0)
     reg.add(c)
 
@@ -2069,10 +2070,10 @@ def test_session_registry_snapshot_falls_back_for_status_without_detail():
         def status(self) -> dict:
             return {"kind": "tunnel", "remote_addr": "y", "connected_at": "z"}
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     c = _LegacyConn()
-    c._connected_at = datetime.now(timezone.utc)
+    c._connected_at = datetime.now(UTC)
     reg = SessionRegistry(retention_seconds=0)
     reg.add(c)
 

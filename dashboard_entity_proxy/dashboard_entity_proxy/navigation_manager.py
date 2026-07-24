@@ -16,7 +16,7 @@ delegated to callbacks supplied by Session.
 """
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from .dashboard_cache import DashboardCache
 from .navigation import View, ViewKind, classify_path
@@ -71,9 +71,12 @@ class NavigationManager:
         self.current_view = view
         if path is not None:
             self.current_path = path
-        if view.kind is ViewKind.DASHBOARD:
-            if view.key not in self._dashboard_cache and allow_inject:
-                self._inject_config_fetch(view.key)
+        if (
+            view.kind is ViewKind.DASHBOARD
+            and view.key not in self._dashboard_cache
+            and allow_inject
+        ):
+            self._inject_config_fetch(view.key)
         self._resolve_current_view()
 
     def navigate_from_browser_mod(self, path: str) -> None:

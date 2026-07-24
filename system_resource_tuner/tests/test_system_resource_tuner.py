@@ -185,12 +185,12 @@ def test_parse_targets_invalid_cpuset_raises():
 
 
 def test_parse_targets_not_a_list_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         srt.parse_targets({"container": "myapp"}, _LOG)
 
 
 def test_parse_targets_item_not_dict_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         srt.parse_targets(["not-a-dict"], _LOG)
 
 
@@ -272,7 +272,7 @@ def test_parse_process_tuning_configured_without_container_raises():
 
 
 def test_parse_process_tuning_not_dict_raises():
-    with pytest.raises(ValueError, match="must be an object"):
+    with pytest.raises(TypeError, match="must be an object"):
         srt.parse_process_tuning("string", "blk")
 
 
@@ -457,7 +457,7 @@ def test_parse_process_targets_valid():
 
 
 def test_parse_process_targets_not_list_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         srt.parse_process_targets({"key": "val"}, _LOG)
 
 
@@ -729,9 +729,9 @@ def test_apply_process_nice_does_not_redo_already_seen_tids(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-import asyncio  # noqa: E402
+import asyncio
 
-from system_resource_tuner.app import (  # noqa: E402
+from system_resource_tuner.app import (
     _DEFAULT_POST_START_RETRY_SECONDS,
     _apply_for_container,
     _bucket_by_container,
@@ -787,10 +787,10 @@ class _ApplyRecorder:
         self.apply_target_calls: list[str] = []
         self.apply_process_tuning_calls: list[str] = []
 
-    async def apply_target(self, docker, target, dry_run, log, **_kwargs):  # noqa: ANN001
+    async def apply_target(self, docker, target, dry_run, log, **_kwargs):
         self.apply_target_calls.append(target.container)
 
-    async def apply_process_tuning(self, docker, tuning, dry_run, log):  # noqa: ANN001
+    async def apply_process_tuning(self, docker, tuning, dry_run, log):
         self.apply_process_tuning_calls.append(tuning.container or "host")
 
 

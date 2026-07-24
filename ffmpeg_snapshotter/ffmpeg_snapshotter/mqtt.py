@@ -14,7 +14,6 @@ from .config import MqttConfig, MqttHealth
 from .stats import SnapshotStats
 from .util import log
 
-
 # Sensor descriptor:
 #  key, friendly name, unit, device_class (or None), icon
 # A sensor with ``device_class == 'problem'`` is routed to HA's
@@ -114,15 +113,15 @@ class MqttPublisher:
                 qos=1,
                 retain=True,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
         try:
             client.loop_stop()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
         try:
             client.disconnect()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
 
     # ── connection ───────────────────────────────────────────────────────
@@ -136,7 +135,7 @@ class MqttPublisher:
                     self.mqtt_cfg.host, self.mqtt_cfg.port, keepalive=60
                 )
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # retry loop must survive any failure
                 log(
                     "WARNING",
                     f"MQTT connect to {self.mqtt_cfg.host}:{self.mqtt_cfg.port}"
@@ -178,7 +177,7 @@ class MqttPublisher:
     def _on_message(self, _client, _userdata, msg) -> None:
         try:
             payload = msg.payload.decode("utf-8", errors="replace").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001  # mqtt callback: never propagate
             return
         if payload == "online":
             log("INFO", "HA birth message received — will republish discovery")
@@ -194,7 +193,7 @@ class MqttPublisher:
             t0 = time.monotonic()
             try:
                 self.publish_once()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # supervisor loop: log and continue
                 log("ERROR", f"MQTT publish failed: {e}")
             if self._check_watchdogs(time.time()):
                 return
@@ -286,7 +285,7 @@ class MqttPublisher:
                     "WARNING",
                     f"MQTT image publish rc={info.rc} topic={topic}",
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # best-effort image publish
             log("WARNING", f"MQTT image publish failed for {camera_name}: {e}")
 
     # ── discovery + state helpers ────────────────────────────────────────
@@ -344,7 +343,7 @@ class MqttPublisher:
                         f"MQTT discovery publish rc={info.rc} topic={config_topic}",
                     )
                     published = False
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # best-effort per-sensor discovery
                 log("WARNING", f"MQTT discovery publish failed for {key}: {e}")
                 published = False
         if published:
@@ -392,7 +391,7 @@ class MqttPublisher:
                     f"MQTT camera discovery publish rc={info.rc} topic={config_topic}",
                 )
                 return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # best-effort discovery publish
             log(
                 "WARNING",
                 f"MQTT camera discovery publish failed for {camera_name}: {e}",
@@ -436,5 +435,5 @@ class MqttPublisher:
                     self.health.last_state_publish_ok = time.time()
                 else:
                     log("WARNING", f"MQTT state publish rc={info.rc} topic={topic}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # best-effort per-key state publish
                 log("WARNING", f"MQTT state publish failed for {key}: {e}")

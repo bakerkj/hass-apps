@@ -15,7 +15,8 @@ the burst-threshold promotion rule.
 """
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import entity_index
 from ._debounce import _TrailingDebouncer
@@ -23,7 +24,6 @@ from ._msg_utils import result_index, subscription_frame
 from .const import REGISTRY_DEBOUNCE_INTERVAL
 from .entity_index import EntityIndex
 from .inflight_types import DeviceList, EntityGet, EntityList
-
 
 # Type alias for the ``send_ha_command`` callback Session supplies.
 SendHaCommand = Callable[..., int]

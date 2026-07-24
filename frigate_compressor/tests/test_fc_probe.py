@@ -7,9 +7,6 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import (
     _insert_recording,
     _make_config,
@@ -17,6 +14,7 @@ from fc_helpers import (
     _open_compress_db,
 )
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # _probe

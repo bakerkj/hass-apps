@@ -71,19 +71,19 @@ def source_mp4(tmp_path_factory) -> Path:
 
 def _make_worker(tmp_path: Path, url: str, **overrides) -> fs.Worker:
     """Build a Worker pointed at a given URL (file path works for FFmpeg)."""
-    cfg_kwargs: dict[str, Any] = dict(
-        name="integration_cam",
-        url=url,
-        interval_seconds=1,
-        output_dir=tmp_path,
-        filename_format="%Y%m%d-%H%M%S-%f.jpg",
-        date_dir_format="%Y/%m/%d",
-        latest_name="latest.jpg",
-        retain_count=0,
-        retain_days=0,
-        extra_input_args="",
-        extra_output_args="",
-    )
+    cfg_kwargs: dict[str, Any] = {
+        "name": "integration_cam",
+        "url": url,
+        "interval_seconds": 1,
+        "output_dir": tmp_path,
+        "filename_format": "%Y%m%d-%H%M%S-%f.jpg",
+        "date_dir_format": "%Y/%m/%d",
+        "latest_name": "latest.jpg",
+        "retain_count": 0,
+        "retain_days": 0,
+        "extra_input_args": "",
+        "extra_output_args": "",
+    }
     cfg_kwargs.update(overrides)
     cfg = fs.StreamCfg(**cfg_kwargs)
     ffmpeg_cfg = {

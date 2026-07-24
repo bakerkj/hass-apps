@@ -193,9 +193,9 @@ def main() -> int:
                     proc.terminate()
                     try:
                         proc.wait(timeout=3)
-                    except Exception:
+                    except subprocess.TimeoutExpired:
                         proc.kill()
-            except Exception as e:
+            except OSError as e:
                 log("WARNING", f"Error stopping turbostat: {e}", log_level)
 
             parser.reset()
@@ -397,7 +397,7 @@ def main() -> int:
                         payload[key] = int(val)
                     else:
                         payload[key] = float(val)
-                except Exception:
+                except ValueError:
                     payload[key] = val
 
             if not discovered and health.connected:
@@ -482,9 +482,7 @@ def main() -> int:
                 # consistent pre-alias name→raw-value pairs.
                 raw_payload = {
                     "_ts_ms": int(now * 1000),
-                    "_raw": {
-                        cols_map[c]: values[c] for c in values.keys() if c in cols_map
-                    },
+                    "_raw": {cols_map[c]: values[c] for c in values if c in cols_map},
                     "_raw_header": parser.original_header,
                     "_raw_line": raw_line,
                 }
@@ -521,7 +519,7 @@ def main() -> int:
                     log_level,
                 )
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 supervisor safety net
         log("ERROR", f"Main loop exception: {e}", log_level)
         return 14
     finally:
@@ -537,19 +535,19 @@ def main() -> int:
                 health=health,
             )
             time.sleep(0.2)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 shutdown best-effort
             pass
 
         try:
             client.loop_stop()
             client.disconnect()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 shutdown best-effort
             pass
 
         try:
             if proc is not None and proc.poll() is None:
                 proc.terminate()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 shutdown best-effort
             pass
 
     return 0

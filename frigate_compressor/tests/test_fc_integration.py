@@ -19,15 +19,14 @@ import time
 from pathlib import Path
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import (
     _insert_recording,
     _make_frigate_db,
     _make_options,
     _open_compress_db,
 )
+
+import frigate_compressor as fc
 
 # ---------------------------------------------------------------------------
 # Skip entire module when ffmpeg/ffprobe are absent.

@@ -27,18 +27,19 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 import websockets
 from aiohttp import web
+from dashboard_entity_proxy.customization import Customization
+from dashboard_entity_proxy.session import SessionRegistry
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 from dashboard_entity_proxy import proxy as proxy_mod
-from dashboard_entity_proxy.customization import Customization
-from dashboard_entity_proxy.session import SessionRegistry
 
 # Pinned HA version so the integration suite stays deterministic across
 # upstream releases. Renovate tracks this via the digest comment below;
@@ -59,9 +60,11 @@ ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
 def _docker_available() -> bool:
     """True if a working docker daemon is reachable."""
     try:
-        r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+        r = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=5, check=False
+        )
         return r.returncode == 0
-    except Exception:
+    except OSError, subprocess.SubprocessError:
         return False
 
 
@@ -89,7 +92,7 @@ USER = {
 }
 
 
-from _aiohttp_helpers import _free_port  # noqa: E402
+from _aiohttp_helpers import _free_port
 
 
 def _wait_for_ha(url: str, deadline: float) -> None:
@@ -98,7 +101,7 @@ def _wait_for_ha(url: str, deadline: float) -> None:
         try:
             urllib.request.urlopen(url + "/", timeout=2)
             return
-        except Exception:
+        except OSError:
             time.sleep(1)
     raise TimeoutError(f"HA at {url} did not become ready in time")
 
@@ -264,7 +267,9 @@ def ha() -> Iterator[dict[str, str]]:
             "container": container,
         }
     finally:
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+        subprocess.run(
+            ["docker", "rm", "-f", container], capture_output=True, check=False
+        )
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
@@ -275,7 +280,7 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return
-        except OSError, socket.timeout:
+        except TimeoutError, OSError:
             time.sleep(0.5)
     raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
 
@@ -361,7 +366,7 @@ def addon_image() -> Iterator[str]:
         capture_output=True,
     )
     yield tag
-    subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+    subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, check=False)
 
 
 @pytest.fixture(scope="session")
@@ -412,7 +417,7 @@ def proxy_url(addon_image: str, ha: dict[str, str]) -> Iterator[str]:
     render_noop_path.chmod(0o755)
 
     container = f"dep_int_addon_{addon_port}"
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
     subprocess.run(
         [
             "docker",
@@ -441,7 +446,9 @@ def proxy_url(addon_image: str, ha: dict[str, str]) -> Iterator[str]:
         _wait_for_port("127.0.0.1", addon_port, ADDON_BOOT_TIMEOUT)
         yield f"http://127.0.0.1:{addon_port}"
     finally:
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+        subprocess.run(
+            ["docker", "rm", "-f", container], capture_output=True, check=False
+        )
         options_path.unlink(missing_ok=True)
         render_noop_path.unlink(missing_ok=True)
         nginx_conf_path.unlink(missing_ok=True)

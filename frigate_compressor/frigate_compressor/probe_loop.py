@@ -219,7 +219,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
         try:
             with compress_db_lock:
                 unprobed = _get_unprobed_recordings(compress_db, cursor)
-        except Exception as e:
+        except sqlite3.Error as e:
             log("ERROR", f"Probe loop: failed to query unprobed recordings: {e}")
             stopping.wait(timeout=PROBE_SLEEP_SEC)
             continue
@@ -235,7 +235,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                 try:
                     with compress_db_lock:
                         mx = _max_recording_start_time(compress_db)
-                except Exception as e:
+                except sqlite3.Error as e:
                     log("WARNING", f"Probe loop: MAX(start_time) failed: {e}")
                     mx = None
                 if mx is not None:
@@ -275,8 +275,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                     "DEBUG",
                     f"[{rec['camera']}] Probe failed, skipping: {rec['path']}",
                 )
-            if rec["start_time"] > max_observed:
-                max_observed = rec["start_time"]
+            max_observed = max(max_observed, rec["start_time"])
 
         for i in range(0, len(probe_results), _PROBE_STORE_CHUNK_SIZE):
             chunk = probe_results[i : i + _PROBE_STORE_CHUNK_SIZE]
@@ -301,7 +300,7 @@ def run_probe_loop(ctx: CompressorContext, stopping: threading.Event) -> None:
                     # otherwise a chunk that rolls back overstates the
                     # final ``Probed N`` log line.
                     probed += len(chunk)
-            except Exception as e:
+            except sqlite3.Error as e:
                 log("ERROR", f"Probe loop: store chunk failed: {e}")
                 # Continue with the next chunk; partially-stored rows
                 # from previous chunks remain committed.

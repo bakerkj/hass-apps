@@ -11,7 +11,8 @@ on rather than raise; these helpers return ``None`` / empty dict so
 callers can guard with a single ``if`` line.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 def subscription_frame(

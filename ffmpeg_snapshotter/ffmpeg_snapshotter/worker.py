@@ -74,12 +74,12 @@ class Worker:
     def stop(self, sig=signal.SIGTERM) -> None:
         try:
             self.stop_event.set()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
         if self.thread and self.thread.is_alive():
             try:
                 self.thread.join(timeout=2.0)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # best-effort shutdown
                 pass
 
     def _is_vaapi(self) -> bool:
@@ -174,20 +174,20 @@ class Worker:
             if self.image_sink is not None:
                 try:
                     self.image_sink(self.cfg.name, final_path.read_bytes())
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # never let image sink break snapshotting
                     log("WARNING", f"[{self.cfg.name}] image publish failed: {e}")
             return 0
         except subprocess.TimeoutExpired:
             if proc is not None:
                 try:
                     proc.kill()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # best-effort kill of timed-out proc
                     pass
             log("WARNING", f"[{self.cfg.name}] ffmpeg timed out")
             if self.stats is not None:
                 self.stats.record_error()
             return 124
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # guard snapshot loop from unknown errors
             log("WARNING", f"[{self.cfg.name}] snapshot failed: {e}")
             if self.stats is not None:
                 self.stats.record_error()
@@ -196,7 +196,7 @@ class Worker:
             try:
                 if tmp_path.exists():
                     tmp_path.unlink()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # best-effort tmp cleanup
                 pass
 
     def _run(self) -> None:
@@ -204,9 +204,8 @@ class Worker:
         while not self.stop_event.is_set():
             now = time.monotonic()
             delay = self.next_due - now
-            if delay > 0:
-                if self.stop_event.wait(delay):
-                    break
+            if delay > 0 and self.stop_event.wait(delay):
+                break
 
             # Resync if we fell behind significantly.
             now = time.monotonic()

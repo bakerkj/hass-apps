@@ -16,7 +16,6 @@ uses a real HA + real Chrome + real proxy to ensure the
 """
 
 import pytest
-
 from _wait import wait_until
 
 E2E = pytest.mark.e2e

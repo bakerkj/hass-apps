@@ -7,11 +7,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import _make_config
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # _build_scale_filter

@@ -27,7 +27,7 @@ import asyncio
 import os
 import sys
 from collections import Counter
-from typing import Any
+from typing import Any, Self
 
 import aiohttp
 
@@ -36,7 +36,7 @@ import aiohttp
 # in-tree package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dashboard_entity_proxy.dashboard import (  # noqa: E402
+from dashboard_entity_proxy.dashboard import (
     FRONTEND_BASELINE,
     ExtractResult,
     apply_filters,
@@ -44,11 +44,10 @@ from dashboard_entity_proxy.dashboard import (  # noqa: E402
     extract_scope,
     is_strategy,
 )
-from dashboard_entity_proxy.navigation import (  # noqa: E402
+from dashboard_entity_proxy.navigation import (
     ViewKind,
     classify_path,
 )
-
 
 _PROXY_OBSERVE_TIMEOUT = 20.0
 
@@ -85,7 +84,7 @@ class HAClient:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._id = 0
 
-    async def __aenter__(self) -> HAClient:
+    async def __aenter__(self) -> Self:
         scheme = "wss" if self._url.startswith("https://") else "ws"
         host = self._url.split("://", 1)[1]
         ws_url = f"{scheme}://{host}/api/websocket"
@@ -101,7 +100,7 @@ class HAClient:
             raise RuntimeError(f"auth failed: {ack}")
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
+    async def __aexit__(self, *exc: object) -> None:
         if self._ws is not None:
             await self._ws.close()
 
@@ -385,7 +384,7 @@ async def run_proxy_panel_test(
             try:
                 async with HAClient(session, proxy_url, token) as client:
                     actual = await client.observe_path_scope(path)
-            except (RuntimeError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+            except (TimeoutError, RuntimeError, aiohttp.ClientError) as e:
                 entry["error"] = f"{type(e).__name__}: {e}"
                 results.append(entry)
                 continue
@@ -429,7 +428,7 @@ async def run_proxy_test(
             try:
                 async with HAClient(session, proxy_url, token) as client:
                     actual = await client.observe_scope(url_path)
-            except (RuntimeError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+            except (TimeoutError, RuntimeError, aiohttp.ClientError) as e:
                 entry["error"] = f"{type(e).__name__}: {e}"
                 results.append(entry)
                 continue
@@ -456,9 +455,7 @@ def render_report(
 
     out: list[str] = ["# DEP-py sweep report", ""]
     total_views = sum(
-        len((cfg.get("views") or []))
-        for cfg in configs.values()
-        if isinstance(cfg, dict)
+        len(cfg.get("views") or []) for cfg in configs.values() if isinstance(cfg, dict)
     )
     out.append(f"- Entities in HA: **{len(mirror)}**")
     out.append(f"- Dashboards: **{len(dashboards)}**")
@@ -734,9 +731,11 @@ async def main() -> int:
         print("HA_URL and HA_TOKEN must be set in the environment.", file=sys.stderr)
         return 2
 
-    async with aiohttp.ClientSession() as session:
-        async with HAClient(session, url, token) as client:
-            snapshot = await fetch_snapshot(client)
+    async with (
+        aiohttp.ClientSession() as session,
+        HAClient(session, url, token) as client,
+    ):
+        snapshot = await fetch_snapshot(client)
 
     if args.dashboard is not None:
         wanted = args.dashboard

@@ -43,7 +43,7 @@ def _display_path(filepath: Path) -> str:
     return filepath.name
 
 
-def _fmt(n: int | float | None, width: int = 0) -> str:
+def _fmt(n: float | None, width: int = 0) -> str:
     """Human-readable byte size string, optionally right-justified to *width*."""
     if n is None:
         s = "N/A"

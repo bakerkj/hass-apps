@@ -12,19 +12,15 @@ from typing import Any
 
 import aiohttp
 import pytest
+
+# ---- helpers ---------------------------------------------------------------
+from _aiohttp_helpers import _free_port, _start_app
 from aiohttp import web
+from dashboard_entity_proxy.customization import Customization
+from dashboard_entity_proxy.session import SessionRegistry
 from multidict import CIMultiDict, CIMultiDictProxy
 
 from dashboard_entity_proxy import proxy
-from dashboard_entity_proxy.customization import Customization
-from dashboard_entity_proxy.session import SessionRegistry
-
-
-# ---- helpers ---------------------------------------------------------------
-
-
-from _aiohttp_helpers import _free_port, _start_app
-
 
 # ---- header / URL helpers (pure functions) ---------------------------------
 
@@ -321,8 +317,9 @@ async def test_reverse_http_forwards_method_path_body_and_strips_hop_by_hop() ->
     ha_runner, ha_url = await _start_app(await _fake_http_app(captured))
     proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
     try:
-        async with aiohttp.ClientSession() as cs:
-            async with cs.post(
+        async with (
+            aiohttp.ClientSession() as cs,
+            cs.post(
                 f"{proxy_url}/api/states/light.kitchen",
                 data=b'{"state":"on"}',
                 headers={
@@ -331,16 +328,17 @@ async def test_reverse_http_forwards_method_path_body_and_strips_hop_by_hop() ->
                     "Connection": "keep-alive",
                     "Keep-Alive": "timeout=5",
                 },
-            ) as resp:
-                body = await resp.read()
-                assert resp.status == 201
-                assert body == b'{"ok":true}'
-                # Hop-by-hop stripped from response; Content-Encoding
-                # passes through (the proxy forwards bytes verbatim
-                # rather than re-encoding).
-                assert "Connection" not in resp.headers
-                assert resp.headers.get("Content-Encoding") == "identity"
-                assert resp.headers["X-Upstream-Echo"] == "hello"
+            ) as resp,
+        ):
+            body = await resp.read()
+            assert resp.status == 201
+            assert body == b'{"ok":true}'
+            # Hop-by-hop stripped from response; Content-Encoding
+            # passes through (the proxy forwards bytes verbatim
+            # rather than re-encoding).
+            assert "Connection" not in resp.headers
+            assert resp.headers.get("Content-Encoding") == "identity"
+            assert resp.headers["X-Upstream-Echo"] == "hello"
 
         # Upstream received only the surviving headers / body / path.
         assert captured["method"] == "POST"
@@ -410,10 +408,12 @@ async def test_reverse_http_returns_502_on_upstream_failure() -> None:
     ha_url = f"http://127.0.0.1:{closed_port}"
     proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
     try:
-        async with aiohttp.ClientSession() as cs:
-            async with cs.get(f"{proxy_url}/anything") as resp:
-                assert resp.status == 502
-                assert (await resp.text()) == "Bad Gateway"
+        async with (
+            aiohttp.ClientSession() as cs,
+            cs.get(f"{proxy_url}/anything") as resp,
+        ):
+            assert resp.status == 502
+            assert (await resp.text()) == "Bad Gateway"
     finally:
         await proxy_runner.cleanup()
 
@@ -450,27 +450,29 @@ async def test_tunnel_ws_passes_text_and_binary_and_counts() -> None:
         proxy.create_app(_opts(ha_url, registry=registry))
     )
     try:
-        async with aiohttp.ClientSession() as cs:
+        async with (
+            aiohttp.ClientSession() as cs,
             # /custom/ws is NOT /api/websocket so this goes through _tunnel_ws,
             # not _intercept.
-            async with cs.ws_connect(proxy_url + "/custom/ws") as ws:
-                await ws.send_str("hello")
-                msg = await ws.receive(timeout=2.0)
-                assert msg.type == aiohttp.WSMsgType.TEXT
-                assert msg.data == "echo:hello"
+            cs.ws_connect(proxy_url + "/custom/ws") as ws,
+        ):
+            await ws.send_str("hello")
+            msg = await ws.receive(timeout=2.0)
+            assert msg.type == aiohttp.WSMsgType.TEXT
+            assert msg.data == "echo:hello"
 
-                await ws.send_bytes(b"world")
-                msg = await ws.receive(timeout=2.0)
-                assert msg.type == aiohttp.WSMsgType.BINARY
-                assert msg.data == b"echo:world"
+            await ws.send_bytes(b"world")
+            msg = await ws.receive(timeout=2.0)
+            assert msg.type == aiohttp.WSMsgType.BINARY
+            assert msg.data == b"echo:world"
 
-                # Verify the TunnelConnection is registered while open.
-                snap = registry.snapshot()
-                assert len(snap) == 1
-                assert snap[0]["kind"] == "tunnel"
-                assert snap[0]["target_path"] == "/custom/ws"
+            # Verify the TunnelConnection is registered while open.
+            snap = registry.snapshot()
+            assert len(snap) == 1
+            assert snap[0]["kind"] == "tunnel"
+            assert snap[0]["target_path"] == "/custom/ws"
 
-                await ws.close()
+            await ws.close()
 
         # After close the connection is removed from the live set; it
         # lingers in the recent set for the retention window.
@@ -545,7 +547,7 @@ async def test_tunnel_ws_closes_upstream_on_prepare_failure() -> None:
             side_effect=RuntimeError("client dropped"),
         ):
             async with aiohttp.ClientSession() as cs:
-                with pytest.raises(Exception):
+                with pytest.raises(aiohttp.ClientError):
                     await cs.ws_connect(proxy_url + "/custom/ws")
     finally:
         await proxy_runner.cleanup()
@@ -692,15 +694,17 @@ async def test_tunnel_ws_negotiates_subprotocol_end_to_end() -> None:
         proxy_app = proxy.create_app(_opts(upstream_url))
         proxy_runner, proxy_url = await _start_app(proxy_app)
         try:
-            async with aiohttp.ClientSession() as cs:
-                async with cs.ws_connect(
+            async with (
+                aiohttp.ClientSession() as cs,
+                cs.ws_connect(
                     proxy_url + "/api/hassio_ingress/abc/events",
                     protocols=("esphome-events", "other-proto"),
-                ) as ws:
-                    # Upstream's choice must have round-tripped back through
-                    # the proxy's response to the client.
-                    assert ws.protocol == "esphome-events"
-                    await ws.receive(timeout=2.0)
+                ) as ws,
+            ):
+                # Upstream's choice must have round-tripped back through
+                # the proxy's response to the client.
+                assert ws.protocol == "esphome-events"
+                await ws.receive(timeout=2.0)
         finally:
             await proxy_runner.cleanup()
     finally:
@@ -728,28 +732,30 @@ async def test_tunnel_ws_propagates_close_code() -> None:
     ha_runner, ha_url = await _start_app(ha_app)
     proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
     try:
-        async with aiohttp.ClientSession() as cs:
-            async with cs.ws_connect(proxy_url + "/custom/ws") as ws:
-                await ws.send_str("hi")
-                # Drain until we observe the CLOSE frame; aiohttp surfaces
-                # the upstream close code/reason via ``msg.data`` /
-                # ``msg.extra`` on the WSMessage of type CLOSE.
-                close_code: int | None = None
-                close_reason: str | None = None
-                for _ in range(4):
-                    msg = await ws.receive(timeout=2.0)
-                    if msg.type in (
-                        aiohttp.WSMsgType.CLOSE,
-                        aiohttp.WSMsgType.CLOSING,
-                        aiohttp.WSMsgType.CLOSED,
-                    ):
-                        if isinstance(msg.data, int):
-                            close_code = msg.data
-                        if isinstance(msg.extra, str):
-                            close_reason = msg.extra
-                        break
-                assert close_code == 1011
-                assert close_reason == "internal"
+        async with (
+            aiohttp.ClientSession() as cs,
+            cs.ws_connect(proxy_url + "/custom/ws") as ws,
+        ):
+            await ws.send_str("hi")
+            # Drain until we observe the CLOSE frame; aiohttp surfaces
+            # the upstream close code/reason via ``msg.data`` /
+            # ``msg.extra`` on the WSMessage of type CLOSE.
+            close_code: int | None = None
+            close_reason: str | None = None
+            for _ in range(4):
+                msg = await ws.receive(timeout=2.0)
+                if msg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSED,
+                ):
+                    if isinstance(msg.data, int):
+                        close_code = msg.data
+                    if isinstance(msg.extra, str):
+                        close_reason = msg.extra
+                    break
+            assert close_code == 1011
+            assert close_reason == "internal"
     finally:
         await proxy_runner.cleanup()
         await ha_runner.cleanup()
@@ -782,10 +788,12 @@ async def test_tunnel_ws_propagates_close_code_from_client_to_ha() -> None:
     ha_runner, ha_url = await _start_app(ha_app)
     proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
     try:
-        async with aiohttp.ClientSession() as cs:
-            async with cs.ws_connect(proxy_url + "/custom/ws") as ws:
-                await ws.send_str("hi")
-                await ws.close(code=4000, message=b"client-quit")
+        async with (
+            aiohttp.ClientSession() as cs,
+            cs.ws_connect(proxy_url + "/custom/ws") as ws,
+        ):
+            await ws.send_str("hi")
+            await ws.close(code=4000, message=b"client-quit")
         # Give the proxy a moment to propagate the close.
         for _ in range(20):
             if "code" in seen_close:
@@ -831,10 +839,12 @@ async def test_http_forward_returns_504_on_upstream_timeout() -> None:
     try:
         proxy_runner, proxy_url = await _start_app(proxy.create_app(_opts(ha_url)))
         try:
-            async with aiohttp.ClientSession() as cs:
-                async with cs.get(f"{proxy_url}/api/slow") as resp:
-                    assert resp.status == 504
-                    assert (await resp.text()) == "Gateway Timeout"
+            async with (
+                aiohttp.ClientSession() as cs,
+                cs.get(f"{proxy_url}/api/slow") as resp,
+            ):
+                assert resp.status == 504
+                assert (await resp.text()) == "Gateway Timeout"
         finally:
             await proxy_runner.cleanup()
     finally:
@@ -858,15 +868,17 @@ async def test_passthrough_all_routes_api_websocket_through_tunnel() -> None:
         proxy.create_app(_opts(ha_url, registry=registry, passthrough_all=True))
     )
     try:
-        async with aiohttp.ClientSession() as cs:
-            async with cs.ws_connect(proxy_url + "/api/websocket") as ws:
-                await ws.send_str("ping")
-                msg = await ws.receive(timeout=2.0)
-                assert msg.data == "echo:ping"
-                snap = registry.snapshot()
-                assert len(snap) == 1
-                assert snap[0]["kind"] == "passthrough"
-                await ws.close()
+        async with (
+            aiohttp.ClientSession() as cs,
+            cs.ws_connect(proxy_url + "/api/websocket") as ws,
+        ):
+            await ws.send_str("ping")
+            msg = await ws.receive(timeout=2.0)
+            assert msg.data == "echo:ping"
+            snap = registry.snapshot()
+            assert len(snap) == 1
+            assert snap[0]["kind"] == "passthrough"
+            await ws.close()
     finally:
         await proxy_runner.cleanup()
         await ha_runner.cleanup()

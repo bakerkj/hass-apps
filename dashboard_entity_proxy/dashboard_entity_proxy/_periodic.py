@@ -10,7 +10,7 @@ long-running work belongs in a dedicated task, not this loop.
 """
 
 import asyncio
-from typing import Callable
+from collections.abc import Callable
 
 
 class PeriodicTask:
@@ -32,6 +32,6 @@ class PeriodicTask:
             try:
                 await asyncio.wait_for(self._done.wait(), timeout=self._interval)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             self._tick()

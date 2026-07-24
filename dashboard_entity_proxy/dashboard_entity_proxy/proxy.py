@@ -9,8 +9,9 @@ import asyncio
 import contextlib
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
@@ -90,7 +91,7 @@ class TunnelConnection:
         self._passthrough = passthrough
         self._subprotocol = subprotocol
         self._addon_slug = addon_slug
-        self._connected_at = datetime.now(timezone.utc)
+        self._connected_at = datetime.now(UTC)
         self._last_msg_at: datetime | None = None
         # Set by ``_tunnel_ws`` once both pumps return and the close
         # meta is known. Surfaced in the snapshot so the disconnect
@@ -112,7 +113,7 @@ class TunnelConnection:
         spot tunnels that established cleanly but then went silent
         (the symptom mode of the pre-Origin-rewrite ESPHome bug).
         """
-        self._last_msg_at = datetime.now(timezone.utc)
+        self._last_msg_at = datetime.now(UTC)
 
     def mark_closed(self, code: int, reason: str) -> None:
         """Record the close code / reason captured by ``_tunnel_ws`` so
@@ -200,8 +201,7 @@ _HEADERS_NOT_FORWARDED = frozenset(
 # Shared with ``session.Options`` — see ``options.py``. Re-exported
 # here so existing ``from dashboard_entity_proxy.proxy import Options``
 # callers keep working without churn.
-from .options import Options  # noqa: E402  (post-imports re-export)
-
+from .options import Options
 
 CLIENT_KEY: web.AppKey[aiohttp.ClientSession] = web.AppKey(
     "client", aiohttp.ClientSession
@@ -471,7 +471,7 @@ async def _pump_tunnel(
             return None
 
 
-def _close_meta_from_task(task: "asyncio.Task[Any]") -> tuple[int, str] | None:
+def _close_meta_from_task(task: asyncio.Task[Any]) -> tuple[int, str] | None:
     """Read a pump task's captured close meta. Returns ``None`` if the
     task was cancelled, hasn't completed, or finished cleanly without a
     close frame.
@@ -523,7 +523,7 @@ async def _reverse_http(
                 await response.write(chunk)
             await response.write_eof()
             return response
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         # The shared ClientSession is configured with bounded total /
         # connect / sock_read timeouts (see ``HTTP_FORWARD_TIMEOUT_*``).
         # An upstream stall surfaces here as ``asyncio.TimeoutError`` and

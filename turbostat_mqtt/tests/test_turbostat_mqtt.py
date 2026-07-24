@@ -7,7 +7,6 @@ import subprocess
 
 import turbostat_mqtt as tm
 
-
 # ---------------------------------------------------------------------------
 # sanitize_key
 # ---------------------------------------------------------------------------
@@ -161,20 +160,20 @@ def test_guess_meta_temperature():
 
 
 def test_guess_meta_mhz():
-    unit, dc, icon, sdp = tm.guess_meta("Bzy_MHz")
+    unit, dc, _icon, _sdp = tm.guess_meta("Bzy_MHz")
     assert unit == "MHz"
     assert dc == "frequency"
 
 
 def test_guess_meta_watt():
-    unit, dc, icon, sdp = tm.guess_meta("PkgWatt")
+    unit, dc, _icon, sdp = tm.guess_meta("PkgWatt")
     assert unit == "W"
     assert dc == "power"
     assert sdp == 1
 
 
 def test_guess_meta_joule():
-    unit, dc, icon, sdp = tm.guess_meta("Pkg_J")
+    unit, _dc, _icon, _sdp = tm.guess_meta("Pkg_J")
     assert unit == "J"
 
 
@@ -182,7 +181,7 @@ def test_guess_meta_rps_llc_overridden_to_megaref():
     """LLCkRPS / L2kRPS have explicit unit overrides because the parser
     scales the value into mega-refs/sec; the rps-suffix default ("1/s")
     would mislabel the magnitude."""
-    unit, dc, icon, sdp = tm.guess_meta("LLCkRPS")
+    unit, _dc, _icon, sdp = tm.guess_meta("LLCkRPS")
     assert unit == "M/s"
     assert sdp == 2
     unit, _, _, _ = tm.guess_meta("L2kRPS")
@@ -196,19 +195,19 @@ def test_guess_meta_rps_default_for_other_columns():
 
 
 def test_guess_meta_sec():
-    unit, dc, icon, sdp = tm.guess_meta("SomeSec")
+    unit, _dc, _icon, sdp = tm.guess_meta("SomeSec")
     assert unit == "s"
     assert sdp == 1
 
 
 def test_guess_meta_irq():
-    unit, dc, icon, sdp = tm.guess_meta("IRQ")
+    unit, dc, _icon, _sdp = tm.guess_meta("IRQ")
     assert unit is None
     assert dc is None
 
 
 def test_guess_meta_unknown_falls_back():
-    unit, dc, icon, sdp = tm.guess_meta("Zorblax")
+    unit, dc, _icon, sdp = tm.guess_meta("Zorblax")
     assert unit is None
     assert dc is None
     assert sdp == 2
@@ -261,7 +260,7 @@ def test_expected_cols_contains_historical_set():
 
 def test_guess_meta_cpu_percent_special():
     # "CPU%" contains "%" so should match percent branch
-    unit, dc, icon, sdp = tm.guess_meta("CPU%")
+    unit, _dc, _icon, _sdp = tm.guess_meta("CPU%")
     assert unit == "%"
 
 
@@ -295,7 +294,7 @@ def test_parser_parses_data_line_after_header():
     p.parse_line("PkgWatt CorWatt GFXWatt\n")
     result = p.parse_line("12.5 10.1 0.3\n")
     assert result is not None
-    header, values, raw = result
+    header, values, _raw = result
     assert header == ["PkgWatt", "CorWatt", "GFXWatt"]
     assert values == {"PkgWatt": "12.5", "CorWatt": "10.1", "GFXWatt": "0.3"}
 
@@ -382,7 +381,7 @@ def test_build_discovery_payloads_expire_after_minimum():
         cols=cols,
         expire_after_s=60,  # minimum value
     )
-    p = list(payloads.values())[0]
+    p = next(iter(payloads.values()))
     assert p["expire_after"] == 60
 
 
@@ -419,7 +418,7 @@ def test_build_discovery_payloads_no_unit_for_unknown():
         cols=cols,
         expire_after_s=120,
     )
-    p = list(payloads.values())[0]
+    p = next(iter(payloads.values()))
     assert "unit_of_measurement" not in p
     assert "device_class" not in p
 
@@ -644,7 +643,7 @@ def test_connect_mqtt_with_retry_delay_caps_at_60():
 
 
 def test_start_turbostat_command_construction():
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     mock_proc = MagicMock()
     with patch("turbostat_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -670,7 +669,7 @@ def test_start_turbostat_command_construction():
 
 
 def test_start_turbostat_fractional_interval():
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     mock_proc = MagicMock()
     with patch("turbostat_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -750,40 +749,40 @@ def test_mqtt_publish_with_retain_and_qos1():
 
 
 def test_guess_meta_gfx_percent():
-    unit, dc, icon, sdp = tm.guess_meta("GFX%")
+    unit, _dc, icon, _sdp = tm.guess_meta("GFX%")
     assert unit == "%"
     assert icon == "mdi:percent"
 
 
 def test_guess_meta_temp_in_name():
-    unit, dc, icon, sdp = tm.guess_meta("SomeTemp")
+    unit, dc, _icon, _sdp = tm.guess_meta("SomeTemp")
     assert unit == "°C"
     assert dc == "temperature"
 
 
 def test_guess_meta_per_s_in_name():
-    unit, dc, icon, sdp = tm.guess_meta("Ops/s")
+    unit, _dc, _icon, _sdp = tm.guess_meta("Ops/s")
     assert unit == "1/s"
 
 
 def test_guess_meta_trailing_s():
-    unit, dc, icon, sdp = tm.guess_meta("rate_s")
+    unit, _dc, _icon, _sdp = tm.guess_meta("rate_s")
     assert unit == "1/s"
 
 
 def test_guess_meta_seconds_exact():
-    unit, dc, icon, sdp = tm.guess_meta("seconds")
+    unit, _dc, _icon, sdp = tm.guess_meta("seconds")
     assert unit == "s"
     assert sdp == 1
 
 
 def test_guess_meta_sec_exact():
-    unit, dc, icon, sdp = tm.guess_meta("sec")
+    unit, _dc, _icon, _sdp = tm.guess_meta("sec")
     assert unit == "s"
 
 
 def test_guess_meta_joule_single_j():
-    unit, dc, icon, sdp = tm.guess_meta("CorJ")
+    unit, _dc, _icon, _sdp = tm.guess_meta("CorJ")
     assert unit == "J"
 
 
@@ -792,7 +791,7 @@ def test_guess_meta_nmi():
     # them the same sdp=0 treatment via an explicit COLUMNS entry so we
     # don't inherit a stale sdp=2 from the pre-consolidation heuristic
     # (only "irq" matched a count-like branch back then).
-    unit, dc, icon, sdp = tm.guess_meta("NMI")
+    unit, _dc, _icon, sdp = tm.guess_meta("NMI")
     assert unit is None
     assert sdp == 0
 
@@ -977,7 +976,7 @@ def test_build_discovery_payloads_temperature_col():
         cols=cols,
         expire_after_s=120,
     )
-    p = list(payloads.values())[0]
+    p = next(iter(payloads.values()))
     assert p["device_class"] == "temperature"
     assert p["unit_of_measurement"] == "°C"
 

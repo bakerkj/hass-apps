@@ -8,9 +8,8 @@ import logging
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import intel_gpu_mqtt as igm
+import pytest
 
 _LOG = logging.getLogger("test")
 
@@ -305,20 +304,20 @@ def test_auto_select_regex_preferred():
         "card=renderD128 /dev/dri/renderD128 i915\n"
         "card=renderD129 /dev/dri/renderD129 xe\n"
     )
-    device_arg, path = igm.auto_select_device_arg(listing, "xe", _LOG)
+    _device_arg, path = igm.auto_select_device_arg(listing, "xe", _LOG)
     assert path == "/dev/dri/renderD129"
 
 
 def test_auto_select_regex_no_match_falls_back_to_first():
     listing = "card=renderD128 /dev/dri/renderD128 i915\n"
-    device_arg, path = igm.auto_select_device_arg(listing, "amdgpu", _LOG)
+    _device_arg, path = igm.auto_select_device_arg(listing, "amdgpu", _LOG)
     assert path == "/dev/dri/renderD128"
 
 
 def test_auto_select_invalid_regex_falls_back():
     listing = "card=renderD128 /dev/dri/renderD128 i915\n"
     # Invalid regex should not raise; falls back to first candidate.
-    device_arg, path = igm.auto_select_device_arg(listing, "(unclosed", _LOG)
+    _device_arg, path = igm.auto_select_device_arg(listing, "(unclosed", _LOG)
     assert path == "/dev/dri/renderD128"
 
 
@@ -557,9 +556,11 @@ def test_start_intel_gpu_top_with_dev_arg():
 
 
 def test_start_intel_gpu_top_file_not_found():
-    with patch("intel_gpu_mqtt.subprocess.Popen", side_effect=FileNotFoundError):
-        with pytest.raises(FileNotFoundError):
-            igm.start_intel_gpu_top(1000, None, _LOG)
+    with (
+        patch("intel_gpu_mqtt.subprocess.Popen", side_effect=FileNotFoundError),
+        pytest.raises(FileNotFoundError),
+    ):
+        igm.start_intel_gpu_top(1000, None, _LOG)
 
 
 # ---------------------------------------------------------------------------
@@ -841,5 +842,5 @@ def test_auto_select_multiple_candidates_no_regex():
 def test_auto_select_regex_matches_path():
     """Regex can match against the path itself, not just the full line."""
     listing = "card=renderD128 /dev/dri/renderD128 i915\n"
-    device_arg, path = igm.auto_select_device_arg(listing, "renderD128", _LOG)
+    _device_arg, path = igm.auto_select_device_arg(listing, "renderD128", _LOG)
     assert path == "/dev/dri/renderD128"

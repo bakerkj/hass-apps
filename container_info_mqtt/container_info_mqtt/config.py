@@ -9,7 +9,6 @@ from typing import Any
 
 from .util import SENSITIVE_OPTION_KEYS
 
-
 OPTION_KEYS: set[str] = {
     "interval_seconds",
     "docker_timeout_seconds",
@@ -51,7 +50,7 @@ def load_options_file(path: str, ap: argparse.ArgumentParser) -> dict[str, Any]:
     if not isinstance(opts, dict):
         ap.error("options object must be a JSON object")
 
-    known_keys = sorted(key for key in opts.keys() if key in OPTION_KEYS)
+    known_keys = sorted(key for key in opts if key in OPTION_KEYS)
     if not known_keys:
         ap.error(
             "options file does not contain recognized add-on keys; "

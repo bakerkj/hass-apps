@@ -7,14 +7,14 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import frigate_compressor as fc
-
 from fc_helpers import (
     _insert_recording,
     _make_frigate_db,
     _make_options,
     _open_compress_db,
 )
+
+import frigate_compressor as fc
 
 
 def _make_swap_ctx(tmp_path, frigate_db, compress_conn=None, **cfg_overrides):

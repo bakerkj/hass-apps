@@ -8,12 +8,10 @@ aggregating them into per-source clients with their per-target rows.
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
-from dashboard_entity_proxy import http_traffic
 from dashboard_entity_proxy.http_traffic import (
     HttpTrafficTracker,
     addon_slug_for_path,
@@ -21,6 +19,8 @@ from dashboard_entity_proxy.http_traffic import (
     parse_line,
     tail_access_log,
 )
+
+from dashboard_entity_proxy import http_traffic
 
 
 class _FakeRegistry:
@@ -217,7 +217,7 @@ def test_expire_removes_client_when_all_rows_silent():
     # Age the only row past retention.
     client = reg.conns[0]
     row = next(iter(client._rows.values()))
-    row.last_seen = datetime.now(timezone.utc) - timedelta(seconds=10)
+    row.last_seen = datetime.now(UTC) - timedelta(seconds=10)
     t.expire()
     assert reg.conns == []
 

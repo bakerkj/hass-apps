@@ -9,7 +9,6 @@ should appear in ``hass.states`` without a page reload.
 import time
 
 import pytest
-
 from _wait import wait_until
 
 E2E = pytest.mark.e2e

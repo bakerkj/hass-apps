@@ -14,7 +14,7 @@ snapshot omits ``current_path`` and ``target_path`` so users with
 Ingress access can't see which dashboards other clients are on.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +63,7 @@ def create_app(
         if not show_client_paths:
             snap = [{k: v for k, v in s.items() if k not in _PATH_FIELDS} for s in snap]
         payload: dict[str, Any] = {
-            "now": datetime.now(timezone.utc).isoformat(),
+            "now": datetime.now(UTC).isoformat(),
             "sessions": snap,
         }
         return web.json_response(payload)

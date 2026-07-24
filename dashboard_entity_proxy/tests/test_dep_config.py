@@ -4,9 +4,9 @@
 import json
 
 import pytest
+from dashboard_entity_proxy.const import DEFAULT_HA_URL
 
 from dashboard_entity_proxy import config
-from dashboard_entity_proxy.const import DEFAULT_HA_URL
 
 
 def _write(tmp_path, content):

@@ -8,9 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from frigate_compressor.detached_subprocess import run_detached
-
 
 # ─── basic behaviour ────────────────────────────────────────────────────────
 
@@ -72,10 +70,12 @@ _HEAVY_READ_CMD = [
     "-c",
     # Read 16 MB from /dev/urandom into a temp file, then read it back
     # twice.  Uses ``read``/``write`` syscalls so rchar accumulates.
-    "dd if=/dev/urandom of=/tmp/_run_detached_test bs=1M count=16 2>/dev/null"
-    " && cat /tmp/_run_detached_test >/dev/null"
-    " && cat /tmp/_run_detached_test >/dev/null"
-    " && rm -f /tmp/_run_detached_test",
+    (
+        "dd if=/dev/urandom of=/tmp/_run_detached_test bs=1M count=16 2>/dev/null"
+        " && cat /tmp/_run_detached_test >/dev/null"
+        " && cat /tmp/_run_detached_test >/dev/null"
+        " && rm -f /tmp/_run_detached_test"
+    ),
 ]
 
 
@@ -125,11 +125,13 @@ def test_plain_subprocess_run_does_propagate_io():
     the kernel behaviour we're working around has changed and the
     double-fork helper may be unnecessary.
     """
-    subprocess.run(_HEAVY_READ_CMD, capture_output=True, timeout=30)  # warm up
+    subprocess.run(
+        _HEAVY_READ_CMD, capture_output=True, timeout=30, check=False
+    )  # warm up
 
     before = _read_self_io()
     for _ in range(3):
-        subprocess.run(_HEAVY_READ_CMD, capture_output=True, timeout=30)
+        subprocess.run(_HEAVY_READ_CMD, capture_output=True, timeout=30, check=False)
     after = _read_self_io()
 
     delta_rchar = after["rchar"] - before["rchar"]

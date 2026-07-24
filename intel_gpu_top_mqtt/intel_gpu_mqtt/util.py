@@ -10,8 +10,7 @@ from typing import Any
 def extract_latest_json_object(buf: str) -> tuple[dict | None, str]:
     """Parse the latest complete dict object from intel_gpu_top -J streaming output."""
     s = buf.lstrip()
-    if s.startswith("["):
-        s = s[1:]
+    s = s.removeprefix("[")
 
     dec = json.JSONDecoder()
     i = 0

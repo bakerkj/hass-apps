@@ -6,7 +6,6 @@ import re
 from typing import Any
 
 import pytest
-
 from dashboard_entity_proxy.customization import CardEntityKeys, Customization
 from dashboard_entity_proxy.dashboard import (
     apply_filters,

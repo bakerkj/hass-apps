@@ -14,7 +14,6 @@ subscription after the first message.
 """
 
 import pytest
-
 from _wait import wait_for_session_ready
 
 E2E = pytest.mark.e2e
