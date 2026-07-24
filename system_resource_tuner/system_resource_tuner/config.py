@@ -108,12 +108,12 @@ def parse_targets(raw_targets: Any, log: logging.Logger) -> list[Target]:
     if raw_targets is None:
         return []
     if not isinstance(raw_targets, list):
-        raise ValueError("'targets' must be a list")
+        raise TypeError("'targets' must be a list")
 
     targets: list[Target] = []
     for idx, raw in enumerate(raw_targets):
         if not isinstance(raw, dict):
-            raise ValueError(f"targets[{idx}] must be an object")
+            raise TypeError(f"targets[{idx}] must be an object")
 
         container = str(raw.get("container", "")).strip()
         if not container:
@@ -162,7 +162,7 @@ def parse_process_tuning(
     if raw_cfg is None:
         return ProcessTuning()
     if not isinstance(raw_cfg, dict):
-        raise ValueError(f"'{block_name}' must be an object")
+        raise TypeError(f"'{block_name}' must be an object")
 
     container: str | None = str(raw_cfg.get("container", "")).strip() or None
     pattern = str(raw_cfg.get("process_match_regex", "")).strip()
@@ -211,7 +211,7 @@ def parse_process_targets(raw_cfg: Any, log: logging.Logger) -> list[ProcessTuni
     if raw_cfg is None:
         return []
     if not isinstance(raw_cfg, list):
-        raise ValueError("'process_targets' must be a list")
+        raise TypeError("'process_targets' must be a list")
 
     out: list[ProcessTuning] = []
     for idx, raw in enumerate(raw_cfg):
@@ -234,12 +234,12 @@ def parse_host_process_targets(
     if raw_cfg is None:
         return []
     if not isinstance(raw_cfg, list):
-        raise ValueError("'host_process_targets' must be a list")
+        raise TypeError("'host_process_targets' must be a list")
 
     out: list[ProcessTuning] = []
     for idx, raw in enumerate(raw_cfg):
         if not isinstance(raw, dict):
-            raise ValueError(f"host_process_targets[{idx}] must be an object")
+            raise TypeError(f"host_process_targets[{idx}] must be an object")
 
         tuning = parse_process_tuning(
             raw,

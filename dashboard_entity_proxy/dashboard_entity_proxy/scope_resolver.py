@@ -11,8 +11,9 @@ explicit "all entities" mode set by the scope-ready watchdog.
 
 import bisect
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from . import dashboard
 from .const import ALWAYS_IN_SCOPE_DOMAINS, HELPER_PLATFORMS

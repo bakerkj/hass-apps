@@ -10,7 +10,8 @@ both sets; removal supersedes add so an entity that vanishes during the
 window only emits the removal.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class ThrottleBuffer:

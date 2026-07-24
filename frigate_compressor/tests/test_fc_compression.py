@@ -12,9 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import (
     _insert_recording,
     _make_config,
@@ -23,6 +20,7 @@ from fc_helpers import (
     _open_compress_db,
 )
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Context builders
@@ -906,9 +904,11 @@ def test_compress_one_atomic_bundle_rolls_back_on_record_failure(monkeypatch, tm
 
     monkeypatch.setattr(fc.compressor, "_record", boom_record)
 
-    with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="simulated"):
-            _compress_one(ctx, src)
+    with (
+        patch("subprocess.run", side_effect=fake_run),
+        pytest.raises(RuntimeError, match="simulated"),
+    ):
+        _compress_one(ctx, src)
 
     # Rollback should have undone the segment_size UPDATE that ran
     # earlier in the bundle.  Without rollback, this assertion would
@@ -1004,7 +1004,7 @@ def test_compress_one_segment_size_update_fails(tmp_path):
 def test_compress_one_segment_update_failed_not_recompressed(tmp_path):
     # A recording with status='segment_update_failed' must not be returned by
     # get_eligible_recordings — the file is already compressed.
-    ctx, src = _setup_compress_one(tmp_path)
+    ctx, _src = _setup_compress_one(tmp_path)
     ctx.compress_db.execute(
         "UPDATE files SET"
         " recording_type='motion', file_size=10000,"

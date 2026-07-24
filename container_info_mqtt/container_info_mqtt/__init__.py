@@ -14,9 +14,15 @@ import time  # noqa: F401 — exposed for tests
 
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
-from .app import main  # noqa: E402,F401
-from .config import OPTION_KEYS, load_options_file  # noqa: E402,F401
-from .docker import (  # noqa: E402,F401
+from .app import main  # noqa: F401
+
+# redact_options_for_log lives in config
+from .config import (  # noqa: F401
+    OPTION_KEYS,
+    load_options_file,
+    redact_options_for_log,
+)
+from .docker import (  # noqa: F401
     UnixSocketHTTPConnection,
     _fetch_stats_by_id_async,
     _fetch_stats_for_container,
@@ -27,7 +33,7 @@ from .docker import (  # noqa: E402,F401
     fetch_stats_by_id,
     run_cmd,
 )
-from .metrics import (  # noqa: E402,F401
+from .metrics import (  # noqa: F401
     METRIC_DEFS,
     RATE_METRICS,
     RATE_SOURCE_METRICS,
@@ -40,14 +46,14 @@ from .metrics import (  # noqa: E402,F401
     sum_blkio_totals,
     sum_network_totals,
 )
-from .mqtt import (  # noqa: E402,F401
+from .mqtt import (  # noqa: F401
     MqttHealth,
     clear_discovery,
     prune_stale_discovery,
     publish_discovery,
     publish_summary_discovery,
 )
-from .util import (  # noqa: E402,F401
+from .util import (  # noqa: F401
     DOCKER_SOCKET_PATH,
     SENSITIVE_OPTION_KEYS,
     cmd_error,
@@ -58,6 +64,3 @@ from .util import (  # noqa: E402,F401
     safe_text,
     slugify,
 )
-
-# redact_options_for_log lives in config
-from .config import redact_options_for_log  # noqa: E402,F401

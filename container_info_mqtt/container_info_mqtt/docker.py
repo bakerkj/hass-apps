@@ -14,7 +14,7 @@ import json
 import logging
 import socket
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -146,7 +146,7 @@ async def _fetch_stats_for_container(
                 endpoint,
                 docker_timeout_seconds,
             )
-        except Exception as exc:
+        except RuntimeError as exc:
             log.warning("Skipping docker stats for %s: %s", container_id[:12], exc)
             return None
 
@@ -250,7 +250,7 @@ def fetch_inspect_by_id(
         raise RuntimeError(f"docker inspect returned invalid JSON: {exc}") from exc
 
     if not isinstance(payload, list):
-        raise RuntimeError("docker inspect returned an unexpected payload")
+        raise TypeError("docker inspect returned an unexpected payload")
 
     inspect_by_id: dict[str, dict[str, Any]] = {}
     for item in payload:
@@ -341,9 +341,7 @@ def fetch_containers(
             and started_at <= now_wall
         ):
             uptime_seconds = now_wall - started_at
-            started_at_iso = datetime.fromtimestamp(
-                started_at, tz=timezone.utc
-            ).isoformat()
+            started_at_iso = datetime.fromtimestamp(started_at, tz=UTC).isoformat()
 
         container: dict[str, Any] = {
             "id": container_id,

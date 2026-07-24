@@ -10,9 +10,10 @@ which preserves today's behavior.
 
 import fnmatch
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import voluptuous as vol
 import yaml
@@ -221,7 +222,9 @@ def load(path: str) -> Customization:
     if raw is None:
         return Customization()
     if not isinstance(raw, dict):
-        raise ValueError(f"{path}: top-level must be a mapping")
+        # ValueError keeps this under the app-level ``(OSError, ValueError)``
+        # loader catch alongside YAML parse errors.
+        raise ValueError(f"{path}: top-level must be a mapping")  # noqa: TRY004
 
     try:
         data = _FILE_SCHEMA(raw)

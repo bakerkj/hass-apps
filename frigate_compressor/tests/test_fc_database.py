@@ -6,11 +6,9 @@
 import sqlite3
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import _open_compress_db
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DB schema

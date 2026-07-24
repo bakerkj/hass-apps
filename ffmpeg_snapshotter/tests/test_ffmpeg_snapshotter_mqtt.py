@@ -52,19 +52,19 @@ class _RecordingClient:
 
 
 def _make_mqtt_cfg(**overrides: Any) -> fs.MqttConfig:
-    kwargs: dict[str, Any] = dict(
-        host="example",
-        port=1883,
-        username="",
-        password="",
-        discovery_prefix="homeassistant",
-        base_topic="ffmpeg_snapshotter",
-        client_id="test-client",
-        publish_interval_seconds=60,
-        rate_window_seconds=60,
-        disconnect_timeout_seconds=300,
-        snapshot_error_timeout_seconds=30,
-    )
+    kwargs: dict[str, Any] = {
+        "host": "example",
+        "port": 1883,
+        "username": "",
+        "password": "",
+        "discovery_prefix": "homeassistant",
+        "base_topic": "ffmpeg_snapshotter",
+        "client_id": "test-client",
+        "publish_interval_seconds": 60,
+        "rate_window_seconds": 60,
+        "disconnect_timeout_seconds": 300,
+        "snapshot_error_timeout_seconds": 30,
+    }
     kwargs.update(overrides)
     return fs.MqttConfig(**kwargs)
 
@@ -216,7 +216,7 @@ def test_publish_state_reflects_stats_values():
         # SnapshotStats uses time.monotonic(); freeze it so the publisher's
         # snapshot() call lands on the same scale as the injected samples.
         _t.monotonic = lambda: 1060.0
-        publisher, cams, client = _build_publisher({"cam": stats})
+        publisher, _cams, client = _build_publisher({"cam": stats})
         publisher.publish_once()
     finally:
         _t.monotonic = _real_monotonic

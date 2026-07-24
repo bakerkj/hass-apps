@@ -85,7 +85,9 @@ def load(path: str) -> Config:
     with open(path, encoding="utf-8") as f:
         opts = json.load(f)
     if not isinstance(opts, dict):
-        raise ValueError("options file must contain a JSON object")
+        # ValueError keeps this under the app-level ``(OSError, ValueError)``
+        # loader catch alongside JSON parse errors.
+        raise ValueError("options file must contain a JSON object")  # noqa: TRY004
 
     cfg = Config()
     if opts.get("homeassistant_url"):

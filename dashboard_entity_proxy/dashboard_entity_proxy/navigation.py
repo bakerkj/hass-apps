@@ -152,10 +152,7 @@ def is_settings_signal(msg_type: str) -> bool:
     all entities for every dashboard before browser_mod has had a chance to
     report the real path.
     """
-    if not (
-        msg_type.startswith("config_entries/")
-        or msg_type.startswith("config/config_entries")
-    ):
+    if not (msg_type.startswith(("config_entries/", "config/config_entries"))):
         return False
     return "subscribe" not in msg_type
 

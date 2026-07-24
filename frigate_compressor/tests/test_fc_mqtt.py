@@ -9,10 +9,9 @@ import threading
 import time
 from pathlib import Path
 
-import frigate_compressor as fc
-
 from fc_helpers import _make_config, _make_frigate_db, _open_compress_db
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers

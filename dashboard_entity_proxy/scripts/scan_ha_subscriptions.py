@@ -67,19 +67,19 @@ def _cmd_type_from_decorator(dec: ast.expr) -> str | None:
     if not isinstance(schema, ast.Dict):
         return None
     for k, v in zip(schema.keys, schema.values):
+        if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
+            continue
+        # Plain-string key: {"type": "foo"}
         if isinstance(k, ast.Constant) and k.value == "type":
-            if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                return v.value
-        elif isinstance(k, ast.Call):
-            # vol.Required("type")
-            if (
-                k.args
-                and isinstance(k.args[0], ast.Constant)
-                and k.args[0].value == "type"
-                and isinstance(v, ast.Constant)
-                and isinstance(v.value, str)
-            ):
-                return v.value
+            return v.value
+        # vol.Required("type") form.
+        if (
+            isinstance(k, ast.Call)
+            and k.args
+            and isinstance(k.args[0], ast.Constant)
+            and k.args[0].value == "type"
+        ):
+            return v.value
     return None
 
 

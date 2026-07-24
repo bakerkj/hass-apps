@@ -11,7 +11,6 @@ the current view.
 """
 
 import pytest
-
 from _wait import wait_until
 
 E2E = pytest.mark.e2e

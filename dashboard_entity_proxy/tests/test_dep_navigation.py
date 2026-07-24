@@ -2,7 +2,6 @@
 # All rights reserved.
 
 import pytest
-
 from dashboard_entity_proxy.navigation import (
     ViewKind,
     classify_path,

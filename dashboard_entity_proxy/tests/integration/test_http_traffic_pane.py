@@ -6,8 +6,8 @@ path, bypassing the Python proxy entirely) surface in the status UI's
 per-client HTTP panes via the access-log tailer.
 """
 
+import asyncio
 import json
-import time
 import urllib.request
 
 import aiohttp
@@ -51,7 +51,7 @@ async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str
             rows = clients[0]["rows"]
             tx_total = clients[0].get("tx_bytes", 0)
             break
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
     assert rows, "no http_client card with rows ever appeared"
     targets = {r["target"] for r in rows}
@@ -91,7 +91,7 @@ async def test_http_traffic_detail_full_returns_all_rows(
         clients = [s for s in _fetch_sessions() if s.get("kind") == "http_client"]
         if clients and clients[0].get("rows"):
             break
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
     else:
         pytest.fail("http_client card never showed up")
 

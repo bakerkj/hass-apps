@@ -6,11 +6,9 @@
 import json
 
 import pytest
-
-import frigate_compressor as fc
-
 from fc_helpers import _make_config, _make_frigate_db
 
+import frigate_compressor as fc
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # _recording_type

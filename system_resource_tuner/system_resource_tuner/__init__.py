@@ -7,12 +7,12 @@ Re-exports the symbols tests and external callers reference at the
 package level.
 """
 
-import os  # noqa: F401 — exposed so tests can patch via system_resource_tuner.os
+import os
 
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
-from .app import main, main_async  # noqa: E402,F401
-from .config import (  # noqa: E402,F401
+from .app import main, main_async  # noqa: F401
+from .config import (  # noqa: F401
     ProcessTuning,
     Target,
     cpuset_matches,
@@ -24,7 +24,7 @@ from .config import (  # noqa: E402,F401
     parse_process_tuning,
     parse_targets,
 )
-from .docker import (  # noqa: E402,F401
+from .docker import (  # noqa: F401
     apply_all,
     apply_target,
     desired_update_kwargs,
@@ -33,7 +33,7 @@ from .docker import (  # noqa: E402,F401
     docker_top_processes,
     docker_url,
 )
-from .process import (  # noqa: E402,F401
+from .process import (  # noqa: F401
     apply_process_cpuset,
     apply_process_nice,
     apply_process_tuning,

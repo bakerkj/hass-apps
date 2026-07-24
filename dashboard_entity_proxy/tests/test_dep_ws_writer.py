@@ -12,7 +12,6 @@ write-failure → on_write_failure → exit path.
 import asyncio
 
 import pytest
-
 from dashboard_entity_proxy._ws_writer import WsWriter
 
 

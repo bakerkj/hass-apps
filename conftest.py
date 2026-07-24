@@ -28,7 +28,7 @@ def _make_paho_stub() -> None:
     # Minimal constants / class needed by the source modules at import time.
     paho_mqtt_client.MQTT_ERR_SUCCESS = 0  # type: ignore[attr-defined]
 
-    class _Client:  # noqa: D101 – stub
+    class _Client:
         def __init__(self, *args, **kwargs):
             pass
 

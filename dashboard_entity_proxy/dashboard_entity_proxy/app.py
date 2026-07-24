@@ -87,7 +87,9 @@ def main() -> int:
         cfg = config.load(args.options)
     except (OSError, ValueError) as exc:
         logging.basicConfig(level=logging.ERROR)
-        logging.error("failed to load options from %s: %s", args.options, exc)
+        logging.getLogger("dashboard_entity_proxy").error(
+            "failed to load options from %s: %s", args.options, exc
+        )
         return 1
 
     logging.basicConfig(
@@ -219,7 +221,7 @@ async def _serve(
         # paths are: Supervisor ingress (auth-gated by HA) and other
         # containers on the same bridge. Don't tighten this without
         # also reworking how Supervisor reaches the UI.
-        (status_app, "0.0.0.0", INGRESS_PORT, "status", status_access_log),  # noqa: S104
+        (status_app, "0.0.0.0", INGRESS_PORT, "status", status_access_log),
     ):
         runner = web.AppRunner(
             app,

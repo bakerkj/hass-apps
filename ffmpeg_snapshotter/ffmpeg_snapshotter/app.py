@@ -166,7 +166,7 @@ def main() -> int:
     for w in workers.values():
         try:
             w.start()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # startup guard: any failure aborts
             log("ERROR", f"[{w.cfg.name}] failed to start: {e}")
             return 1
 
@@ -174,7 +174,7 @@ def main() -> int:
         try:
             publisher.start()
             log("INFO", f"MQTT publisher started (host={mqtt_cfg.host})")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # continue without MQTT on any failure
             log("ERROR", f"MQTT publisher failed to start: {e}")
             publisher = None
 
@@ -190,7 +190,7 @@ def main() -> int:
                     apply_retention_count(
                         cfg.output_dir, cfg.retain_count, cfg.latest_name
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # retention must not kill main loop
                     log("WARNING", f"[{cfg.name}] retention error: {e}")
 
         # Surface an MQTT watchdog exit (11/12) to the supervisor so the

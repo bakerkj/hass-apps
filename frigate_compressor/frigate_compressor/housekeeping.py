@@ -117,7 +117,7 @@ def _hk_retry_segment_updates(
                 "INFO",
                 f"[{row['camera']}] retried segment_size update — ok: {_display_path(fpath)}",
             )
-        except Exception as e:
+        except sqlite3.Error as e:
             log(
                 "WARNING",
                 f"[{row['camera']}] segment_size retry failed again: {e}",

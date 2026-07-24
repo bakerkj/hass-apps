@@ -6,7 +6,6 @@
 from pathlib import Path
 
 import pytest
-
 from dashboard_entity_proxy.customization import (
     CardEntityKeys,
     Customization,

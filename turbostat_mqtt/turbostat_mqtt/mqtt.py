@@ -38,7 +38,7 @@ def mqtt_publish(
                 health.last_state_publish_ok = time.time()
             return True
         log("WARNING", f"MQTT publish rc={info.rc} topic={topic}", log_level)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 publish wrapper must not crash caller
         log("WARNING", f"MQTT publish failed topic={topic}: {e}", log_level)
     return False
 
@@ -54,7 +54,7 @@ def connect_mqtt_with_retry(
         try:
             client.connect(mqtt_host, mqtt_port, keepalive=60)
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 retry loop must not crash
             log(
                 "WARNING",
                 f"Cannot connect to MQTT broker {mqtt_host}:{mqtt_port}: {e} — retrying in {delay}s",

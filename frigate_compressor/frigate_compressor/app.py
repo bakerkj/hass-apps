@@ -13,9 +13,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import __version__
 from .compressor import compress_direct, compress_one
 from .config import (
+    _RECORDING_TYPES,
     Config,
     TypeSettings,
-    _RECORDING_TYPES,
     _fmt_type,
     load_config,
 )
@@ -34,7 +34,7 @@ from .housekeeping import run_housekeeping
 from .mqtt import MqttPublisher
 from .probe_loop import run_probe_loop
 from .swap_loop import run_swap_loop
-from .throttle import MAX_SLEEP_SEC, _THROTTLE_WINDOW_SEC, adapt_pace_scale
+from .throttle import _THROTTLE_WINDOW_SEC, MAX_SLEEP_SEC, adapt_pace_scale
 from .util import log, set_log_level
 
 
@@ -181,7 +181,7 @@ def main() -> int:
         try:
             publisher = MqttPublisher(ctx, cfg.mqtt, stopping)
             publisher.start()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — MQTT init failure must not abort startup
             log("ERROR", f"Failed to start MQTT publisher: {e}")
             publisher = None
 
@@ -210,7 +210,7 @@ def main() -> int:
         if publisher is not None:
             try:
                 publisher.stop()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort shutdown
                 log("WARNING", f"MQTT publisher stop failed: {e}")
         log("INFO", "Frigate Compressor stopped")
         compress_db.close()
@@ -299,14 +299,14 @@ def run_main_loop(
         if (iter_start - last_housekeeping) >= housekeeping_interval_sec:
             try:
                 run_housekeeping(ctx)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — supervisor loop must survive
                 log("ERROR", f"Housekeeping failed: {e}")
             last_housekeeping = time.time()
 
         # ── Find eligible recordings ──────────────────────────────────────
         try:
             eligible = get_eligible_recordings(ctx)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — supervisor loop must survive
             log("ERROR", f"Failed to query eligible recordings: {e}")
             stopping.wait(timeout=60)
             continue
@@ -360,7 +360,7 @@ def run_main_loop(
                 r = futures[future]
                 try:
                     future.result()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — collect any worker crash
                     log("ERROR", f"[{r['camera']}] unhandled error: {e}")
 
         # ── Adapt pacing for the next iteration ───────────────────────────
@@ -392,8 +392,7 @@ def run_main_loop(
             next_window = time.time() + _THROTTLE_WINDOW_SEC
         elif eligible:
             next_window += _THROTTLE_WINDOW_SEC
-            if next_window < time.time():
-                next_window = time.time()
+            next_window = max(next_window, time.time())
             sleep_sec = max(0.0, next_window - time.time())
         else:
             try:
@@ -401,7 +400,7 @@ def run_main_loop(
                     time_until_next_eligible(ctx) + _THROTTLE_WINDOW_SEC,
                     MAX_SLEEP_SEC,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — supervisor loop must survive
                 log("WARNING", f"time_until_next_eligible failed: {e}")
                 sleep_sec = MAX_SLEEP_SEC
             next_window = time.time() + sleep_sec

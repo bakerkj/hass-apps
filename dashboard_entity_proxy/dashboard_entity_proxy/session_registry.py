@@ -10,7 +10,7 @@ entity and device registries for scope resolution: two unrelated
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .const import DEFAULT_DISCONNECT_RETENTION_SECONDS
@@ -58,10 +58,10 @@ class SessionRegistry:
             return
         self._conns.discard(conn)
         snap = conn.status()
-        snap["disconnected_at"] = datetime.now(timezone.utc).isoformat()
+        snap["disconnected_at"] = datetime.now(UTC).isoformat()
         # ``_connected_at`` is a raw aware ``datetime`` on both Session and
         # TunnelConnection. Fall back to ``now`` if a test double omits it.
-        raw_dt = getattr(conn, "_connected_at", datetime.now(timezone.utc))
+        raw_dt = getattr(conn, "_connected_at", datetime.now(UTC))
         self._recent.append((time.monotonic(), raw_dt, snap))
 
     def snapshot(self, *, detail: str = "summary") -> list[dict[str, Any]]:
@@ -86,7 +86,7 @@ class SessionRegistry:
         self._recent = [(t, dt, s) for t, dt, s in self._recent if t > cutoff]
         live: list[tuple[datetime, dict[str, Any]]] = [
             (
-                getattr(c, "_connected_at", datetime.now(timezone.utc)),
+                getattr(c, "_connected_at", datetime.now(UTC)),
                 _call_status(c, detail),
             )
             for c in self._conns

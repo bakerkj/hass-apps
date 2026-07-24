@@ -18,14 +18,15 @@ observed.
 """
 
 import asyncio
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class WsWriter:
     def __init__(
         self,
         ws: Any,
-        queue: "asyncio.Queue[tuple[str, Any]]",
+        queue: asyncio.Queue[tuple[str, Any]],
         done: asyncio.Event,
         on_write_failure: Callable[[], None],
     ) -> None:
@@ -55,7 +56,7 @@ class WsWriter:
                     getter.cancel()
                     try:
                         await getter
-                    except asyncio.CancelledError, Exception:  # noqa: BLE001
+                    except asyncio.CancelledError, Exception:  # noqa: BLE001, S110 - best-effort drain after cancel
                         pass
                     continue
                 kind, payload = getter.result()

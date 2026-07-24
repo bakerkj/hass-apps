@@ -420,15 +420,15 @@ class MqttPublisher:
                 # paho raises if the loop already isn't running or the
                 # broker has dropped — best-effort, not worth retrying.
                 pass
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort mqtt shutdown
             pass
         try:
             client.loop_stop()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort mqtt shutdown
             pass
         try:
             client.disconnect()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort mqtt shutdown
             pass
 
     # ── connection ───────────────────────────────────────────────────────
@@ -442,7 +442,7 @@ class MqttPublisher:
                     self.mqtt_cfg.host, self.mqtt_cfg.port, keepalive=60
                 )
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — retry any connect failure
                 log(
                     "WARNING",
                     f"MQTT connect to {self.mqtt_cfg.host}:{self.mqtt_cfg.port}"
@@ -484,7 +484,7 @@ class MqttPublisher:
     def _on_message(self, _client, _userdata, msg) -> None:
         try:
             payload = msg.payload.decode("utf-8", errors="replace").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001 — ignore malformed HA birth message
             return
         if payload == "online":
             log("INFO", "HA birth message received — will republish discovery")
@@ -500,7 +500,7 @@ class MqttPublisher:
             t0 = time.monotonic()
             try:
                 self.publish_once()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — supervisor loop must survive
                 log("ERROR", f"MQTT publish failed: {e}")
             if self._check_watchdogs(time.time()):
                 return
@@ -644,7 +644,7 @@ class MqttPublisher:
                         f"MQTT discovery publish rc={info.rc} topic={config_topic}",
                     )
                     published = False
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — per-sensor MQTT publish guard
                 log("WARNING", f"MQTT discovery publish failed for {key}: {e}")
                 published = False
         if published:
@@ -733,5 +733,5 @@ class MqttPublisher:
                     self.health.last_state_publish_ok = time.time()
                 else:
                     log("WARNING", f"MQTT state publish rc={info.rc} topic={topic}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — per-value MQTT publish guard
                 log("WARNING", f"MQTT state publish failed for {key}: {e}")
