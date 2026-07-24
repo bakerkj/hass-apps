@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.4](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.3...dashboard_entity_proxy-v0.1.4) (2026-07-24)
+
+
+### Miscellaneous Chores
+
+* add per-addon .dockerignore and ship LICENSE in each image ([#302](https://github.com/bakerkj/hass-apps/issues/302)) ([b74f977](https://github.com/bakerkj/hass-apps/commit/b74f977af0ac684e864a88d9fdf64d5f62cef853))
+* **deps:** update alpine apk packages to v1.30.3-r0 ([#272](https://github.com/bakerkj/hass-apps/issues/272)) ([07b769a](https://github.com/bakerkj/hass-apps/commit/07b769a4809c4906c1aad200931f6b68b13340b1))
+* **deps:** update alpine apk packages to v1.30.4-r0 ([#326](https://github.com/bakerkj/hass-apps/issues/326)) ([7ef0c36](https://github.com/bakerkj/hass-apps/commit/7ef0c36c864a0176a7f67cc97ee7c5315963c1de))
+* **deps:** update alpine apk packages to v1.30.4-r1 ([#334](https://github.com/bakerkj/hass-apps/issues/334)) ([5e499e8](https://github.com/bakerkj/hass-apps/commit/5e499e8e110f77171c0400a46dfab7132fb2093e))
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.16.0 ([#331](https://github.com/bakerkj/hass-apps/issues/331)) ([6cc91f4](https://github.com/bakerkj/hass-apps/commit/6cc91f47b7c17f2b428b41288c403a9a1a3cdac5))
+* harden shellcheck config and fix uncovered findings ([#310](https://github.com/bakerkj/hass-apps/issues/310)) ([868e4f2](https://github.com/bakerkj/hass-apps/commit/868e4f26a6a9bbb1d54fdb67e1d187ccec22bc8f))
+
+
+### Continuous Integration
+
+* **tests:** unify per-addon test jobs under the e2e marker ([#255](https://github.com/bakerkj/hass-apps/issues/255)) ([1cdcd72](https://github.com/bakerkj/hass-apps/commit/1cdcd725b314347777612df3c8ea2473825d5d2c))
+
 ## [0.1.3](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.2...dashboard_entity_proxy-v0.1.3) (2026-06-20)
 
 
