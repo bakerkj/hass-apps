@@ -51,8 +51,9 @@ from aiohttp import web
 # package next door. Same trick the integration suite uses.
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
-from dashboard_entity_proxy import proxy  # noqa: E402
-from dashboard_entity_proxy.session import SessionRegistry  # noqa: E402
+from dashboard_entity_proxy.session import SessionRegistry
+
+from dashboard_entity_proxy import proxy
 
 _TS_RE = re.compile(r"\|t(\d+)")
 
@@ -262,7 +263,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float) -> None:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return
-        except OSError, socket.timeout:
+        except TimeoutError, OSError:
             time.sleep(0.5)
     raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
 
@@ -299,7 +300,7 @@ def _start_addon_container(target_url: str, image: str) -> tuple[str, str, list[
     )
 
     container = f"dep_bench_addon_{addon_port}"
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
     subprocess.run(
         [
             "docker",
@@ -327,55 +328,57 @@ async def _run_client(
 ) -> None:
     timeout = aiohttp.ClientTimeout(total=cfg.duration + 30)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as cs:
-            async with cs.ws_connect(
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as cs,
+            cs.ws_connect(
                 base_url + "/api/websocket",
                 max_msg_size=64 * 1024 * 1024,
                 receive_timeout=cfg.duration + 30,
-            ) as ws:
-                await ws.receive_json()  # auth_required
-                await ws.send_json({"type": "auth", "access_token": "x"})
-                await ws.receive_json()  # auth_ok
-                await ws.send_json({"id": 1, "type": "subscribe_entities"})
-                # Drain the result + initial snapshot before measuring;
-                # snapshot delivery is bulk and dwarfs steady-state latency.
-                await ws.receive_json()  # result
-                await ws.receive_json()  # initial 'a' frame
-                deadline = time.monotonic() + cfg.duration
-                while time.monotonic() < deadline:
-                    try:
-                        raw = await asyncio.wait_for(
-                            ws.receive(), timeout=deadline - time.monotonic()
-                        )
-                    except asyncio.TimeoutError:
-                        break
-                    if raw.type == aiohttp.WSMsgType.CLOSED:
-                        # The proxy disconnects "slow" peers when the
-                        # outbound queue saturates — record that.
-                        stats.queue_full_disconnect = True
-                        break
-                    if raw.type != aiohttp.WSMsgType.TEXT:
+            ) as ws,
+        ):
+            await ws.receive_json()  # auth_required
+            await ws.send_json({"type": "auth", "access_token": "x"})
+            await ws.receive_json()  # auth_ok
+            await ws.send_json({"id": 1, "type": "subscribe_entities"})
+            # Drain the result + initial snapshot before measuring;
+            # snapshot delivery is bulk and dwarfs steady-state latency.
+            await ws.receive_json()  # result
+            await ws.receive_json()  # initial 'a' frame
+            deadline = time.monotonic() + cfg.duration
+            while time.monotonic() < deadline:
+                try:
+                    raw = await asyncio.wait_for(
+                        ws.receive(), timeout=deadline - time.monotonic()
+                    )
+                except TimeoutError:
+                    break
+                if raw.type == aiohttp.WSMsgType.CLOSED:
+                    # The proxy disconnects "slow" peers when the
+                    # outbound queue saturates — record that.
+                    stats.queue_full_disconnect = True
+                    break
+                if raw.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                recv_ns = time.monotonic_ns()
+                stats.bytes_received += len(raw.data)
+                m = json.loads(raw.data)
+                payloads = m if isinstance(m, list) else [m]
+                for payload in payloads:
+                    if not isinstance(payload, dict):
                         continue
-                    recv_ns = time.monotonic_ns()
-                    stats.bytes_received += len(raw.data)
-                    m = json.loads(raw.data)
-                    payloads = m if isinstance(m, list) else [m]
-                    for payload in payloads:
-                        if not isinstance(payload, dict):
+                    ev = payload.get("event") or {}
+                    changed = ev.get("c") or {}
+                    for diff in changed.values():
+                        plus = diff.get("+") or {}
+                        state = plus.get("s")
+                        if not isinstance(state, str):
                             continue
-                        ev = payload.get("event") or {}
-                        changed = ev.get("c") or {}
-                        for diff in changed.values():
-                            plus = diff.get("+") or {}
-                            state = plus.get("s")
-                            if not isinstance(state, str):
-                                continue
-                            match = _TS_RE.search(state)
-                            if not match:
-                                continue
-                            send_ns = int(match.group(1))
-                            stats.latencies_ns.append(recv_ns - send_ns)
-                            stats.received += 1
+                        match = _TS_RE.search(state)
+                        if not match:
+                            continue
+                        send_ns = int(match.group(1))
+                        stats.latencies_ns.append(recv_ns - send_ns)
+                        stats.received += 1
     except aiohttp.ClientError as e:
         print(f"client {idx} error: {e}", file=sys.stderr)
 
@@ -383,7 +386,7 @@ async def _run_client(
 def _percentile(xs: list[int], p: float) -> int:
     if not xs:
         return 0
-    k = max(0, min(len(xs) - 1, int(round((p / 100) * (len(xs) - 1)))))
+    k = max(0, min(len(xs) - 1, round((p / 100) * (len(xs) - 1))))
     return sorted(xs)[k]
 
 
@@ -508,7 +511,11 @@ async def main() -> int:
         if proxy_runner is not None:
             await proxy_runner.cleanup()
         if container_name is not None:
-            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+            subprocess.run(  # noqa: ASYNC221 - teardown script; blocking wait is fine here
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                check=False,
+            )
             for path in tempfiles:
                 path.unlink(missing_ok=True)
         await fake_runner.cleanup()

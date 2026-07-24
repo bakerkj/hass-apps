@@ -22,7 +22,7 @@ class _TrailingDebouncer:
     mode's burst-threshold rule).
     """
 
-    def __init__(self, interval: float, flush_cb: "Any") -> None:
+    def __init__(self, interval: float, flush_cb: Any) -> None:
         self._interval = interval
         self._flush = flush_cb
         self._handle: asyncio.TimerHandle | None = None

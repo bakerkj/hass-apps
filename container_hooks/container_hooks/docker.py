@@ -24,9 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import patch_ng
-
 import aiodocker
+import patch_ng
 from aiodocker.exceptions import DockerError
 
 # Backoff between reconnect attempts when the events stream exits —

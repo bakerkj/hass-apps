@@ -7,7 +7,8 @@ the cache with older data.
 """
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ._msg_utils import subscription_frame
 from .dashboard import ScopeSet

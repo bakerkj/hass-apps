@@ -20,9 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-import haos_configurator.host as host
-import haos_configurator.manifest as manifest
-
+from haos_configurator import host, manifest
 
 # ---------------------------------------------------------------------------
 # default_mode_for

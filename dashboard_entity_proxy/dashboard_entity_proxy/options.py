@@ -44,7 +44,7 @@ class Options:
     exclude_globs: list[str] = field(default_factory=list)
 
     # Shared infrastructure.
-    registry: "SessionRegistry | None" = None
+    registry: SessionRegistry | None = None
     logger: logging.Logger | None = None
     customization: Customization = field(default_factory=Customization)
 

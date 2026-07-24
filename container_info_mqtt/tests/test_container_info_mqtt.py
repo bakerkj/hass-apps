@@ -7,7 +7,7 @@ import argparse
 import json
 import logging
 import subprocess
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -739,7 +739,7 @@ def test_reconcile_active_slug_clears_only_orphan_metric():
         "homeassistant/sensor/container-info-mqtt_ffmpeg_snapshotter/uptime_seconds/config"
     }
     # The orphan was cleared with an empty retained payload (a tombstone).
-    topic, payload, _qos, retain = client.published[0]
+    _topic, payload, _qos, retain = client.published[0]
     assert payload == ""
     assert retain is True
     # Availability for an online container is never touched.
@@ -897,7 +897,7 @@ def test_render_metric_state_every_metric_def_renders():
         "string": "x",
         "timestamp": "2026-01-15T10:30:00+00:00",
     }
-    for key, mdef in cim.METRIC_DEFS.items():
+    for mdef in cim.METRIC_DEFS.values():
         sample = sample_by_type[mdef.get("value_type", "number")]
         cim.render_metric_state(mdef, sample)  # must not raise
 
@@ -980,7 +980,7 @@ def test_parse_docker_timestamp_full_iso8601():
     assert result is not None
     assert isinstance(result, float)
     # Verify it parses to roughly the right time (Jan 15, 2026 10:30 UTC).
-    dt = datetime.utcfromtimestamp(result)
+    dt = datetime.fromtimestamp(result, tz=UTC)
     assert dt.year == 2026
     assert dt.month == 1
     assert dt.day == 15
@@ -992,7 +992,7 @@ def test_parse_docker_timestamp_timezone_offset():
     result = cim.parse_docker_timestamp("2026-01-15T10:30:00.123456+05:00")
     assert result is not None
     # 10:30 +05:00 = 05:30 UTC
-    dt = datetime.utcfromtimestamp(result)
+    dt = datetime.fromtimestamp(result, tz=UTC)
     assert dt.hour == 5
     assert dt.minute == 30
 
@@ -1006,7 +1006,7 @@ def test_parse_docker_timestamp_truncated_fractional():
 def test_parse_docker_timestamp_no_fractional():
     result = cim.parse_docker_timestamp("2026-01-15T10:30:00Z")
     assert result is not None
-    dt = datetime.utcfromtimestamp(result)
+    dt = datetime.fromtimestamp(result, tz=UTC)
     assert dt.year == 2026
     assert dt.second == 0
 
@@ -1464,27 +1464,33 @@ def test_fetch_inspect_by_id_parses_state_and_host_config():
 
 def test_fetch_inspect_by_id_failure_raises():
     proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
-        with pytest.raises(RuntimeError, match="docker inspect failed"):
-            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+    with (
+        patch("container_info_mqtt.docker.run_cmd", return_value=proc),
+        pytest.raises(RuntimeError, match="docker inspect failed"),
+    ):
+        cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
 
 def test_fetch_inspect_by_id_invalid_json_raises():
     proc = subprocess.CompletedProcess(
         args=[], returncode=0, stdout="not json", stderr=""
     )
-    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
-        with pytest.raises(RuntimeError, match="invalid JSON"):
-            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+    with (
+        patch("container_info_mqtt.docker.run_cmd", return_value=proc),
+        pytest.raises(RuntimeError, match="invalid JSON"),
+    ):
+        cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
 
 def test_fetch_inspect_by_id_non_list_raises():
     proc = subprocess.CompletedProcess(
         args=[], returncode=0, stdout='{"not": "a list"}', stderr=""
     )
-    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
-        with pytest.raises(RuntimeError, match="unexpected payload"):
-            cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
+    with (
+        patch("container_info_mqtt.docker.run_cmd", return_value=proc),
+        pytest.raises(TypeError, match="unexpected payload"),
+    ):
+        cim.fetch_inspect_by_id(["abc123"], 10, _LOG)
 
 
 # ---------------------------------------------------------------------------
@@ -1537,9 +1543,11 @@ def test_fetch_ps_skips_invalid_json_lines():
 
 def test_fetch_ps_failure_raises():
     proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-    with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
-        with pytest.raises(RuntimeError, match="docker ps failed"):
-            cim.fetch_ps_containers(10, _LOG)
+    with (
+        patch("container_info_mqtt.docker.run_cmd", return_value=proc),
+        pytest.raises(RuntimeError, match="docker ps failed"),
+    ):
+        cim.fetch_ps_containers(10, _LOG)
 
 
 def test_fetch_ps_skips_missing_id():

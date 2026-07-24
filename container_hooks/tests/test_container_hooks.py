@@ -16,12 +16,12 @@ import json
 import logging
 import tarfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock
 
+import patch_ng
 import pytest
-
-import container_hooks as rocs
+from aiodocker.exceptions import DockerError
 from container_hooks.app import (
     _LAST_RUN_PRUNE_AGE_MULTIPLIER,
     _dispatch,
@@ -56,8 +56,8 @@ from container_hooks.docker import (
     run_pre_start_hook,
     self_container_name,
 )
-from aiodocker.exceptions import DockerError
-import patch_ng
+
+import container_hooks as rocs
 
 _LOG = logging.getLogger("test")
 
@@ -1210,10 +1210,10 @@ class _FakeStream:
     def __init__(self, messages: list[Any]) -> None:
         self._messages = list(messages)
 
-    async def __aenter__(self) -> _FakeStream:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *a: Any) -> None:
+    async def __aexit__(self, *a: object) -> None:
         return None
 
     async def read_out(self) -> Any:

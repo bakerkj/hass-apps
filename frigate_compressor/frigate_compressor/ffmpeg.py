@@ -31,6 +31,7 @@ def detect_encoder(preferred: str) -> str:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         output = result.stdout + result.stderr
         if preferred == "qsv" and "h264_qsv" in output:
@@ -39,7 +40,7 @@ def detect_encoder(preferred: str) -> str:
             return "vaapi"
         if preferred == "nvenc" and "h264_nvenc" in output:
             return "nvenc"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log("WARNING", f"ffmpeg encoder probe failed: {e}")
     log(
         "WARNING",
@@ -144,7 +145,9 @@ def check_encoder_works(encoder: str) -> tuple[bool, str]:
         return False, f"unknown encoder '{encoder}'"
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, check=False
+        )
     except subprocess.TimeoutExpired:
         return False, "self-test ffmpeg timed out after 30s"
     except OSError as e:
@@ -206,8 +209,9 @@ def _probe(filepath: Path) -> dict | None:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log("WARNING", f"ffprobe failed for {filepath}: {e}")
         return None
     if result.returncode != 0 or not result.stdout.strip():
@@ -277,8 +281,8 @@ def _build_scale_filter(
         try:
             frac = float(value)
             if source_dims is not None:
-                w = max(2, int(round(source_dims[0] * frac)) & ~1)
-                h = max(2, int(round(source_dims[1] * frac)) & ~1)
+                w = max(2, round(source_dims[0] * frac) & ~1)
+                h = max(2, round(source_dims[1] * frac) & ~1)
                 dims = f"{w}:{h}"
             else:
                 dims = "iw/2:ih/2"  # fallback if ffprobe failed
@@ -306,13 +310,13 @@ def _build_fps_filter(mode: str, value: float, source_fps: float | None) -> str:
     if mode == "none":
         return ""
     if mode == "cap":
-        fps = max(1, int(round(value)))
+        fps = max(1, round(value))
         return f"fps={fps}"
     if mode == "fraction":
         if source_fps is not None:
-            fps = max(1, int(round(source_fps * value)))
+            fps = max(1, round(source_fps * value))
         else:
-            fps = max(1, int(round(value)))
+            fps = max(1, round(value))
         return f"fps={fps}"
     return ""
 

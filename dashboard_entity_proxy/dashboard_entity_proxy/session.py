@@ -28,9 +28,9 @@ import asyncio
 import itertools
 import logging
 import time
-from collections.abc import MutableMapping
-from datetime import datetime, timezone
-from typing import Any, Callable, assert_never, cast
+from collections.abc import Callable, MutableMapping
+from datetime import UTC, datetime
+from typing import Any, assert_never, cast
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -39,17 +39,16 @@ from . import hostname_lookup, wire
 from ._msg_utils import subscription_frame
 from ._periodic import PeriodicTask
 from ._ws_writer import WsWriter
+from .const import (
+    CLEANUP_DRAIN_TIMEOUT,
+    HA_SUBSCRIPTION_COMMANDS,
+    INFLIGHT_MAX,
+    INFLIGHT_SWEEP_INTERVAL,
+    OUTBOUND_BUFFER,
+    SCOPE_READY_TIMEOUT,
+)
 from .dashboard_cache import DashboardCache
 from .inflight import InflightTable
-from .navigation_manager import NavigationManager
-from .options import Options
-from .registry_store import RegistryStore
-from .scope_resolver import ScopeFilters, ScopeResolver
-from .subscription_set import SubscriptionSet
-from .phase import Phase
-from .scope_watchdog import ScopeWatchdog
-from .session_registry import SessionRegistry  # noqa: F401  (re-export for compat)
-from .throttle import ThrottleBuffer
 from .inflight_types import (
     ClientConfig,
     ClientReq,
@@ -65,14 +64,6 @@ from .inflight_types import (
     LovelaceUpdates,
     Mirror,
 )
-from .const import (
-    CLEANUP_DRAIN_TIMEOUT,
-    HA_SUBSCRIPTION_COMMANDS,
-    INFLIGHT_MAX,
-    INFLIGHT_SWEEP_INTERVAL,
-    OUTBOUND_BUFFER,
-    SCOPE_READY_TIMEOUT,
-)
 from .navigation import (
     View,
     ViewKind,
@@ -80,8 +71,16 @@ from .navigation import (
     path_from_browser_mod,
     url_path_from_config_request,
 )
+from .navigation_manager import NavigationManager
+from .options import Options
+from .phase import Phase
+from .registry_store import RegistryStore
+from .scope_resolver import ScopeFilters, ScopeResolver
+from .scope_watchdog import ScopeWatchdog
+from .session_registry import SessionRegistry  # noqa: F401  (re-export for compat)
 from .statestore import StateStore
-
+from .subscription_set import SubscriptionSet
+from .throttle import ThrottleBuffer
 
 # Exception types that mean "the peer hung up", as opposed to "a bug in a
 # handler". The pumps swallow the former silently (a clean disconnect is
@@ -99,7 +98,7 @@ _EXPECTED_DISCONNECT_EXC: tuple[type[BaseException], ...] = (
 # only meaningful collaborator). Re-exported here so existing callers
 # importing ``from dashboard_entity_proxy.session import ScopeSet`` keep
 # working without churn.
-from .dashboard import ScopeSet  # noqa: F401, E402
+from .dashboard import ScopeSet  # noqa: F401
 
 
 def filter_event(
@@ -227,7 +226,7 @@ class Session:
         )
 
         self._store = StateStore()
-        self._connected_at = datetime.now(timezone.utc)
+        self._connected_at = datetime.now(UTC)
         self._sent_to_client = 0
         # Per-direction byte counters (WS payload length only; frame
         # overhead isn't counted). rx is client→HA; tx is HA-or-mirror→
@@ -444,7 +443,7 @@ class Session:
         try:
             await self._done.wait()
         finally:
-            duration = (datetime.now(timezone.utc) - self._connected_at).total_seconds()
+            duration = (datetime.now(UTC) - self._connected_at).total_seconds()
             # ``_disconnect_by`` is set by the first pump to exit (see
             # ``_pump_ws``); ``ws.closed`` is unreliable here because it
             # only flips on a clean CLOSE handshake. Falls back to
@@ -467,7 +466,7 @@ class Session:
                     await asyncio.wait_for(
                         asyncio.shield(writer), timeout=CLEANUP_DRAIN_TIMEOUT
                     )
-                except asyncio.TimeoutError, Exception:  # noqa: BLE001
+                except TimeoutError, Exception:  # noqa: BLE001, S110 - past drain deadline, fall through to hard cancel
                     pass
             for task in tasks:
                 task.cancel()
@@ -480,7 +479,7 @@ class Session:
                     asyncio.gather(*tasks, return_exceptions=True),
                     timeout=CLEANUP_DRAIN_TIMEOUT * 4,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._log.warning("cleanup deadline expired; some tasks may be leaking")
             await self._close_conns()
 
@@ -508,7 +507,7 @@ class Session:
         for ws in (self.ws_ha, self.ws_client):
             try:
                 await ws.close()
-            except Exception:  # noqa: BLE001 - best-effort close
+            except Exception:  # noqa: BLE001, S110 - best-effort close; peer may have torn down already
                 pass
 
     # --- pumps and writer --------------------------------------------------
@@ -544,7 +543,7 @@ class Session:
                     forward_binary(msg.data)
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.ERROR):
                     break
-        except _EXPECTED_DISCONNECT_EXC:  # noqa: BLE001 - peer-side close
+        except _EXPECTED_DISCONNECT_EXC:
             pass
         except Exception as exc:  # noqa: BLE001 - bug in a handler, not a disconnect
             self._log.warning("%s pump exception: %r", name, exc, exc_info=True)
@@ -625,7 +624,7 @@ class Session:
         self._enqueue(self._to_ha, ("bin", data))
 
     def _enqueue(
-        self, queue: "asyncio.Queue[tuple[str, Any]]", item: tuple[str, Any]
+        self, queue: asyncio.Queue[tuple[str, Any]], item: tuple[str, Any]
     ) -> None:
         """Non-blocking enqueue onto an outbound queue. If the queue is full
         the slow peer is disconnected; bounded memory beats unbounded
@@ -637,8 +636,9 @@ class Session:
             queue.put_nowait(item)
             if queue is self._to_client:
                 depth = queue.qsize()
-                if depth > self._client_queue_high_water:
-                    self._client_queue_high_water = depth
+                self._client_queue_high_water = max(
+                    self._client_queue_high_water, depth
+                )
             return
         except asyncio.QueueFull:
             if queue is self._to_client:

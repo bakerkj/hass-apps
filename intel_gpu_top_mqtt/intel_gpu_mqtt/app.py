@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import time
 from typing import Any
 
@@ -200,7 +201,7 @@ def main() -> int:
         try:
             client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
             break
-        except Exception as e:
+        except (OSError, ValueError) as e:
             log.warning(
                 "Cannot connect to MQTT broker %s:%d: %s — retrying in %ds",
                 args.mqtt_host,
@@ -269,9 +270,9 @@ def main() -> int:
                 proc.terminate()
                 try:
                     proc.wait(timeout=3)
-                except Exception:
+                except subprocess.TimeoutExpired:
                     proc.kill()
-        except Exception as e:
+        except OSError as e:
             log.warning("Error stopping intel_gpu_top: %s", e)
 
         # Re-select device in case GPU nodes changed
@@ -318,16 +319,18 @@ def main() -> int:
                 restart_intel_gpu_top("sample_timeout")
 
             # MQTT disconnect watchdog: exit nonzero so add-on supervisor restarts us
-            if not health.connected and health.last_disconnect > 0:
-                if (
-                    now - health.last_disconnect
-                ) > args.mqtt_disconnect_timeout_seconds:
-                    log.error(
-                        "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
-                        now - health.last_disconnect,
-                        args.mqtt_disconnect_timeout_seconds,
-                    )
-                    return 11
+            if (
+                not health.connected
+                and health.last_disconnect > 0
+                and (now - health.last_disconnect)
+                > args.mqtt_disconnect_timeout_seconds
+            ):
+                log.error(
+                    "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
+                    now - health.last_disconnect,
+                    args.mqtt_disconnect_timeout_seconds,
+                )
+                return 11
 
             # Heartbeat publish (independent of samples)
             if now - last_heartbeat_time >= interval_s:
@@ -434,7 +437,7 @@ def main() -> int:
                     if proc.stderr is not None:
                         try:
                             err_tail = proc.stderr.read()[-4000:]
-                        except Exception:
+                        except OSError:
                             err_tail = "(stderr read failed)"
                     log.error("intel_gpu_top exited rc=%s stderr_tail=%s", rc, err_tail)
                     restart_intel_gpu_top("intel_gpu_top_exited")
@@ -445,13 +448,13 @@ def main() -> int:
     finally:
         try:
             client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # shutdown path: swallow all MQTT errors
             pass
         client.loop_stop()
         try:
             if proc and proc.poll() is None:
                 proc.terminate()
-        except Exception:
+        except OSError:  # shutdown path: process may already be gone
             pass
 
     return 0

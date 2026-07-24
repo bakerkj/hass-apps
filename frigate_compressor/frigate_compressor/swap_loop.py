@@ -48,7 +48,7 @@ def run_swap_loop(
     while not stopping.is_set():
         try:
             eligible = get_eligible_swaps(ctx)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — supervisor loop must survive
             log("ERROR", f"Swap loop: failed to query eligible swaps: {e}")
             stopping.wait(timeout=_SWAP_WINDOW_SEC)
             continue
@@ -83,7 +83,7 @@ def run_swap_loop(
                     encoder,
                     ctx,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — supervisor loop must survive per-row failures
                 # Include the traceback so post-rename failures (e.g.
                 # primary holds tier-2 content but the t2 status write
                 # never landed) leave a forensic trail — without it,

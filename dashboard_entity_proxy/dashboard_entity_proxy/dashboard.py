@@ -123,8 +123,8 @@ def _load_builtin_customization() -> Customization:
 
 
 def _merge_frames(
-    a: "CardEntityKeys | None", b: "CardEntityKeys | None"
-) -> "CardEntityKeys | None":
+    a: CardEntityKeys | None, b: CardEntityKeys | None
+) -> CardEntityKeys | None:
     """Additive union of two per-card key frames. ``None`` is identity."""
     if a is None:
         return b
@@ -504,8 +504,7 @@ def _walk(state: _State, node: Any, frame: CardEntityKeys | None = None) -> None
             if (
                 isinstance(key, str)
                 and (
-                    (key.endswith("_entity") or key.endswith("_sensor"))
-                    or key.startswith("sensor_")
+                    (key.endswith(("_entity", "_sensor"))) or key.startswith("sensor_")
                 )
                 and key not in _SINGLE_ENTITY_KEYS
             ):
@@ -562,7 +561,7 @@ def _harvest_scheduler_customize(state: _State, value: dict[str, Any]) -> None:
     against any ``customize:`` dict; the walker still recurses into the
     values to pick up any nested ``entity:`` refs inside the override.
     """
-    for entity_key in value.keys():
+    for entity_key in value:
         if not isinstance(entity_key, str) or not entity_key:
             continue
         if any(c in entity_key for c in "*?["):

@@ -7,9 +7,7 @@ import os
 import time
 from pathlib import Path
 
-
 import ffmpeg_snapshotter as fs
-
 
 # ---------------------------------------------------------------------------
 # redact_url
@@ -258,19 +256,19 @@ def test_streamcfg_construction():
 
 def _make_worker(tmp_path, **overrides):
     """Build a Worker with sensible defaults for testing."""
-    cfg_kwargs = dict(
-        name="test_cam",
-        url="rtsp://user:pass@192.168.1.10/stream",
-        interval_seconds=60,
-        output_dir=tmp_path,
-        filename_format="%Y%m%d-%H%M%S.jpg",
-        date_dir_format="%Y/%m/%d",
-        latest_name="latest.jpg",
-        retain_count=0,
-        retain_days=0,
-        extra_input_args="",
-        extra_output_args="",
-    )
+    cfg_kwargs = {
+        "name": "test_cam",
+        "url": "rtsp://user:pass@192.168.1.10/stream",
+        "interval_seconds": 60,
+        "output_dir": tmp_path,
+        "filename_format": "%Y%m%d-%H%M%S.jpg",
+        "date_dir_format": "%Y/%m/%d",
+        "latest_name": "latest.jpg",
+        "retain_count": 0,
+        "retain_days": 0,
+        "extra_input_args": "",
+        "extra_output_args": "",
+    }
     cfg_kwargs.update(overrides)
     cfg = fs.StreamCfg(**cfg_kwargs)
     ffmpeg_cfg = {
@@ -499,7 +497,7 @@ def _fake_popen_factory(rc: int, write_output: bool):
                 out_path.write_bytes(b"\xff\xd8fake-jpeg")
             return ("", "")
 
-        def kill(self) -> None:  # noqa: D401 — behaviour not used on success path
+        def kill(self) -> None:
             return None
 
     def _fake(cmd, *args, **kwargs):

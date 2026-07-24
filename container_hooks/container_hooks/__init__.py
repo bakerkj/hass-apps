@@ -7,7 +7,7 @@ import os
 
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
-from .docker import (  # noqa: E402,F401 — tests reference these as ``rocs.<name>``.
+from .docker import (  # noqa: F401 — tests reference these as ``rocs.<name>``.
     HookExecution,
     apply_patch,
     docker_events,

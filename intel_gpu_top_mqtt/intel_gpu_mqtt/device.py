@@ -15,7 +15,7 @@ def list_intel_gpu_top_devices(log: logging.Logger) -> str:
             ["intel_gpu_top", "-L"], text=True, stderr=subprocess.STDOUT, timeout=5
         )
         return out
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log.warning("Failed to list devices with intel_gpu_top -L: %s", e)
         return ""
 

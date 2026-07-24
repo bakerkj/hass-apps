@@ -12,7 +12,6 @@ modules.
 
 import re
 
-
 # ---- Entity-id shape -------------------------------------------------------
 
 # Conservative entity-id matcher: ``domain.name`` with only lowercase

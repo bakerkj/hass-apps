@@ -16,7 +16,6 @@ session-shared ``proxy_url``.
 """
 
 import pytest
-
 from _wait import wait_until
 from dashboard_entity_proxy.customization import Customization
 

@@ -10,12 +10,13 @@ same deadline the old hard sleep would have walked past silently.
 """
 
 import time
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 
-def wait_until(
+def wait_until[T](
     probe: Callable[[], T],
     predicate: Callable[[T], bool],
     *,

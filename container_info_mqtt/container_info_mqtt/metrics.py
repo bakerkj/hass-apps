@@ -10,7 +10,6 @@ from typing import Any
 
 from .util import deep_get, safe_float, safe_int, safe_text
 
-
 METRIC_DEFS: dict[str, dict[str, Any]] = {
     "cpu_percent": {
         "paths": [("cpu_percent",)],

@@ -36,9 +36,9 @@ import sqlite3
 import time
 
 import pytest
+from fc_helpers import _make_options, _open_compress_db
 
 import frigate_compressor as fc
-from fc_helpers import _make_options, _open_compress_db
 
 # Per-class row count and total ``frigate.recordings`` count sized to
 # match the production database (~2.04 M rows in each table on the live

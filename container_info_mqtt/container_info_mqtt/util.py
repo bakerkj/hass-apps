@@ -7,7 +7,6 @@ import re
 import subprocess
 from typing import Any
 
-
 SENSITIVE_OPTION_KEYS: set[str] = {"mqtt_password"}
 
 DOCKER_SOCKET_PATH = "/var/run/docker.sock"

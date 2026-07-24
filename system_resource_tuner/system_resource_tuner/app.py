@@ -161,7 +161,7 @@ async def _apply_for_container(
                 await apply_process_tuning(docker, pt, dry_run, log)
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 — top-level dispatch safety net
+    except Exception:
         log.exception("apply chain for %s failed", container)
 
 
@@ -301,7 +301,7 @@ async def _reconcile_pass(
         await apply_process_tunings(docker, host_process_targets, dry_run, log)
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 — reconcile must survive any transient surface
+    except Exception:
         log.exception("reconcile pass failed; will retry next tick")
 
 
@@ -346,8 +346,7 @@ async def main_async() -> int:
     log.info("System Resource Tuner v%s starting", __version__)
 
     interval_seconds = int(options.get("interval_seconds", 60))
-    if interval_seconds < 5:
-        interval_seconds = 5
+    interval_seconds = max(interval_seconds, 5)
 
     apply_on_start = parse_bool(options.get("apply_on_start", True), default=True)
     dry_run = parse_bool(options.get("dry_run", False), default=False)
@@ -357,8 +356,7 @@ async def main_async() -> int:
             "post_start_retry_max_seconds", _DEFAULT_POST_START_RETRY_MAX_SECONDS
         )
     )
-    if retry_max_seconds < 0:
-        retry_max_seconds = 0
+    retry_max_seconds = max(retry_max_seconds, 0)
 
     try:
         targets = parse_targets(options.get("targets"), log)
@@ -367,7 +365,7 @@ async def main_async() -> int:
             options.get("host_process_targets"),
             log,
         )
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         log.error("Invalid configuration: %s", e)
         return 1
 

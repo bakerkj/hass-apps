@@ -139,7 +139,7 @@ def main() -> int:
     log.info("Container Info MQTT v%s starting", __version__)
     interval_seconds = max(1, args.interval_seconds)
     expire_after_s = max(60, int(interval_seconds) * args.expire_after_multiplier)
-    unknown_option_keys = sorted(key for key in opts.keys() if key not in OPTION_KEYS)
+    unknown_option_keys = sorted(key for key in opts if key not in OPTION_KEYS)
     if unknown_option_keys:
         log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
     log.info(
@@ -282,7 +282,7 @@ def main() -> int:
         try:
             client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # broker connect retry loop
             log.warning(
                 "Cannot connect to MQTT broker %s:%s: %s — retrying in %ds",
                 args.mqtt_host,
@@ -315,16 +315,22 @@ def main() -> int:
         ):
             middle = topic[len(discovery_topic_prefix) : -len(discovery_topic_suffix)]
             node_id, sep, metric_key = middle.partition("/")
-            if sep and "/" not in metric_key and node_id.startswith(device_node_prefix):
-                # Empty payload = tombstone (already cleared); ignore.
-                if msg.payload:
-                    retained_configs.setdefault(node_id, set()).add(metric_key)
+            # Empty payload = tombstone (already cleared); ignore.
+            if (
+                sep
+                and "/" not in metric_key
+                and node_id.startswith(device_node_prefix)
+                and msg.payload
+            ):
+                retained_configs.setdefault(node_id, set()).add(metric_key)
             return
         # HA birth message on the discovery status topic.
-        if topic == f"{args.mqtt_discovery_prefix}/status":
-            if msg.payload.decode(errors="replace").strip() == "online":
-                log.info("HA birth message received — will republish discovery")
-                needs_rediscovery["v"] = True
+        if (
+            topic == f"{args.mqtt_discovery_prefix}/status"
+            and msg.payload.decode(errors="replace").strip() == "online"
+        ):
+            log.info("HA birth message received — will republish discovery")
+            needs_rediscovery["v"] = True
 
     client.on_message = on_message
     last_heartbeat = 0.0
@@ -348,14 +354,17 @@ def main() -> int:
             log.info("Discovery state cleared — will republish for all containers")
 
         # MQTT disconnect watchdog
-        if not health.connected and health.last_disconnect > 0:
-            if (now - health.last_disconnect) > args.mqtt_disconnect_timeout_seconds:
-                log.error(
-                    "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
-                    now - health.last_disconnect,
-                    args.mqtt_disconnect_timeout_seconds,
-                )
-                return 11
+        if (
+            not health.connected
+            and health.last_disconnect > 0
+            and (now - health.last_disconnect) > args.mqtt_disconnect_timeout_seconds
+        ):
+            log.error(
+                "MQTT disconnected for %.1fs (> %ss). Exiting for supervisor restart.",
+                now - health.last_disconnect,
+                args.mqtt_disconnect_timeout_seconds,
+            )
+            return 11
 
         # Sample stall watchdog
         if last_sample_time > 0 and (now - last_sample_time) > expire_after_s:
@@ -382,7 +391,7 @@ def main() -> int:
 
         try:
             containers = fetch_containers(args.docker_timeout_seconds, log)
-        except Exception as exc:
+        except (RuntimeError, TypeError) as exc:
             log.error("Failed to collect Docker container info: %s", exc)
             sleep_to_interval(loop_start_monotonic)
             continue
@@ -449,11 +458,15 @@ def main() -> int:
                 metric_value(container, "network_tx_total") is not None
             )
 
-            def network_metric_enabled(metric_key: str) -> bool:
+            def network_metric_enabled(
+                metric_key: str,
+                has_rx: bool = has_network_rx_total,
+                has_tx: bool = has_network_tx_total,
+            ) -> bool:
                 if metric_key in {"network_rx_total", "network_rx_rate"}:
-                    return has_network_rx_total
+                    return has_rx
                 if metric_key in {"network_tx_total", "network_tx_rate"}:
-                    return has_network_tx_total
+                    return has_tx
                 return True
 
             stale_for_container = discovered[container_slug] - selected_metric_set
@@ -600,7 +613,7 @@ def main() -> int:
     log.info("Shutting down")
     try:
         client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110  # best-effort shutdown publish
         pass
     client.loop_stop()
     return 0
