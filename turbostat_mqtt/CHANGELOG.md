@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.0.39](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.38...turbostat_mqtt-v0.0.39) (2026-07-24)
+
+
+### Miscellaneous Chores
+
+* add per-addon .dockerignore and ship LICENSE in each image ([#302](https://github.com/bakerkj/hass-apps/issues/302)) ([b74f977](https://github.com/bakerkj/hass-apps/commit/b74f977af0ac684e864a88d9fdf64d5f62cef853))
+* **deps:** update alpine apk packages to v7.1.4-r0 ([#323](https://github.com/bakerkj/hass-apps/issues/323)) ([6787c25](https://github.com/bakerkj/hass-apps/commit/6787c25e96977d7da7d00f28289dbc5c559038fa))
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.16.0 ([#331](https://github.com/bakerkj/hass-apps/issues/331)) ([6cc91f4](https://github.com/bakerkj/hass-apps/commit/6cc91f47b7c17f2b428b41288c403a9a1a3cdac5))
+* harden shellcheck config and fix uncovered findings ([#310](https://github.com/bakerkj/hass-apps/issues/310)) ([868e4f2](https://github.com/bakerkj/hass-apps/commit/868e4f26a6a9bbb1d54fdb67e1d187ccec22bc8f))
+
 ## [0.0.38](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.37...turbostat_mqtt-v0.0.38) (2026-07-12)
 
 
