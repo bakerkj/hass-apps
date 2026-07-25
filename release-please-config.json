@@ -139,6 +139,18 @@
           "jsonpath": "$.version"
         }
       ]
+    },
+    "signalk_bridge": {
+      "release-type": "simple",
+      "package-name": "signalk_bridge",
+      "component": "signalk_bridge",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }

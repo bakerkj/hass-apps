@@ -72,6 +72,10 @@ jobs:
               persistent HAOS host files via `nsenter`.
             - intel_gpu_top_mqtt — wraps `intel_gpu_top` and publishes
               GPU engine / power / frequency metrics to MQTT Discovery.
+            - signalk_bridge — bridges Signal K marine data (navigation,
+              wind, depth, engine, batteries, tanks, switches, alarms,
+              position) and NMEA 2000 bus health to Home Assistant as
+              MQTT Discovery entities.
             - system_resource_tuner — applies and reconciles container
               resource tuning (cpuset, CPU shares, blkio weight) plus
               per-process nice / cpuset.

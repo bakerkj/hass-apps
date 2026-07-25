@@ -56,7 +56,7 @@ jobs:
           echo "$changed" | awk '{print "  " $0}'
 
           # Known addons whose tests this workflow runs.
-          ALL='container_hooks container_info_mqtt dashboard_entity_proxy ffmpeg_snapshotter frigate_compressor haos_configurator intel_gpu_top_mqtt system_resource_tuner turbostat_mqtt'
+          ALL='container_hooks container_info_mqtt dashboard_entity_proxy ffmpeg_snapshotter frigate_compressor haos_configurator intel_gpu_top_mqtt signalk_bridge system_resource_tuner turbostat_mqtt'
 
           # ``WORKFLOW_PATH`` is matched as a literal (its dots are real
           # path characters, not ERE metacharacters); the other patterns
@@ -399,6 +399,46 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  signalk-bridge-e2e:
+    name: Signal K Bridge e2e
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: signalk-bridge-e2e
+      # The e2e runs the real bridge against a real broker. Install Mosquitto
+      # from Ubuntu's apt repo rather than pulling from Docker Hub, which is
+      # rate-limited/unreliable from Actions runners (the other e2e jobs pull
+      # ghcr.io images for the same reason). Fail loud if the binary is missing
+      # so the test never silently skips.
+      - name: Install Mosquitto broker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+          command -v mosquitto || test -x /usr/sbin/mosquitto
+      - run:
+          uv run pytest signalk_bridge/tests/integration/ -m e2e -v
+          --junit-xml=junit.xml
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+        if: ${{ !cancelled() }}
+        with:
+          check_name: "Signal K Bridge e2e results"
+          files: junit.xml
+      - run: mv .coverage .coverage.signalk_bridge_e2e
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-signalk-bridge-e2e
+          path: .coverage.signalk_bridge_e2e
+          include-hidden-files: true
+          if-no-files-found: error
+
   coverage:
     name: Combined coverage
     runs-on: ubuntu-24.04
@@ -411,6 +451,7 @@ jobs:
         ffmpeg-snapshotter-e2e,
         dashboard-entity-proxy-e2e,
         container-hooks-e2e,
+        signalk-bridge-e2e,
       ]
     # Report whatever coverage was produced even if a test job failed or was
     # skipped via the discover gate; the failing job (if any) already reds

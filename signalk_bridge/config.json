@@ -1,0 +1,44 @@
+{
+  "name": "Signal K to Home Assistant",
+  "slug": "signalk_bridge",
+  "description": "Publishes Signal K marine data (navigation, wind, depth, engine, batteries, tanks, switches, alarms, position) and NMEA 2000 bus health as Home Assistant MQTT Discovery entities.",
+  "url": "https://github.com/bakerkj/hass-apps",
+  "version": "0.0.1",
+  "arch": [
+    "aarch64",
+    "amd64"
+  ],
+  "stage": "experimental",
+  "startup": "services",
+  "init": false,
+  "host_network": true,
+  "hassio_api": true,
+  "services": [
+    "mqtt:need"
+  ],
+  "options": {
+    "signalk_url": "http://localhost:3000",
+    "signalk_token": "",
+    "interval_seconds": 10,
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "signalk",
+    "client_id": "signalk-bridge",
+    "expire_after_multiplier": 4,
+    "log_level": "INFO"
+  },
+  "schema": {
+    "signalk_url": "str",
+    "signalk_token": "password?",
+    "interval_seconds": "int(1,300)",
+    "mqtt_host": "str?",
+    "mqtt_port": "port?",
+    "mqtt_username": "str?",
+    "mqtt_password": "password?",
+    "mqtt_discovery_prefix": "str",
+    "mqtt_base_topic": "str",
+    "client_id": "str",
+    "expire_after_multiplier": "int(2,10)",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)"
+  },
+  "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
+}
