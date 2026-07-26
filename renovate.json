@@ -15,7 +15,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images anywhere they're pinned: Dockerfile FROM/ARG lines, workflow ADDON_BASE_IMAGE/HA_IMAGE env vars, and ADDON_BASE_IMAGE constants in integration conftests. A single manager across all three file types so a base-image bump moves every reference together in one PR (the alternative — separate per-file managers or relying on the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps across two PRs and stranded one set when the other was merged).",
+      "description": "Home Assistant add-on base images pinned in Dockerfile FROM/ARG lines, workflow HA_IMAGE env var, and the HA_IMAGE constant in the dep-proxy integration conftest. A single manager across all three file types so a bump moves every reference together in one PR (the alternative — separate per-file managers or the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps and stranded one set when the other merged).",
       "managerFilePatterns": [
         "/Dockerfile$/",
         "/\\.github/workflows/.+\\.ya?ml$/",

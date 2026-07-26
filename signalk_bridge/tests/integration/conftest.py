@@ -31,11 +31,6 @@ from typing import Any, cast
 
 import pytest
 
-# Renovate tracks the addon BUILD_FROM pin via this comment so a base-image bump
-# opens a PR on conftest + Dockerfile + tests.yml together.
-# renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
-
 ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]  # .../signalk_bridge
 
 # A small vessel snapshot whose conversions we assert once they reach the broker.
@@ -102,8 +97,6 @@ def addon_image() -> str:
     tag = f"signalk_bridge_e2e:{uuid.uuid4().hex[:8]}"
     _docker(
         "build",
-        "--build-arg",
-        f"BUILD_FROM={ADDON_BASE_IMAGE}",
         "--build-arg",
         "BUILD_VERSION=e2e",
         "-t",
