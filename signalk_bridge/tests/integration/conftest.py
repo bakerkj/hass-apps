@@ -1,12 +1,17 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Fixtures for the signalk_bridge end-to-end test.
+"""End-to-end harness for signalk_bridge.
 
-Spins up a stub Signal K REST server and a real Mosquitto broker (an apt-installed
-binary, or the eclipse-mosquitto image as a local fallback) so the actual bridge
-process can run against them and its MQTT output be observed on the wire -- the
-one path the unit suite deliberately stubs.
+Builds the REAL add-on image and runs the bridge in a container (its shipped
+apk paho, run.sh, s6 -- the actual artifact), against a stub Signal K server and
+a real Mosquitto broker, then observes what it publishes with an independent MQTT
+client. The observer's paho version is irrelevant; the bridge under test uses the
+container's.
+
+Run: pytest signalk_bridge/tests/integration/ -m e2e
+Requires: docker, and a Mosquitto broker (a local ``mosquitto`` binary, or docker
+to run one). The default ``pytest`` run excludes the ``e2e`` marker.
 """
 
 import importlib
@@ -18,12 +23,20 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+
+# Renovate tracks the addon BUILD_FROM pin via this comment so a base-image bump
+# opens a PR on conftest + Dockerfile + tests.yml together.
+# renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
+ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
+
+ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]  # .../signalk_bridge
 
 # A small vessel snapshot whose conversions we assert once they reach the broker.
 VESSEL_TREE: dict[str, Any] = {
@@ -39,6 +52,70 @@ VESSEL_TREE: dict[str, Any] = {
 }
 
 _SERVER_INFO = {"server": {"id": "signalk-server", "version": "0.0.0-e2e"}}
+
+
+# ---------------------------------------------------------------------------
+# docker helpers
+# ---------------------------------------------------------------------------
+
+
+def _docker(*args: str, check: bool = True, capture: bool = True) -> str:
+    if capture:
+        result = subprocess.run(
+            ["docker", *args],
+            check=check,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    else:
+        result = subprocess.run(["docker", *args], check=check, text=True)
+    return result.stdout or ""
+
+
+def _have_docker() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        _docker("version", "--format", "{{.Server.Version}}")
+    except subprocess.CalledProcessError, FileNotFoundError:
+        return False
+    return True
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_docker() -> None:
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable; skipping e2e suite")
+
+
+@pytest.fixture(scope="session")
+def addon_image() -> str:
+    """Build (or reuse) the real signalk_bridge add-on image.
+
+    If ``SIGNALK_BRIDGE_IMAGE`` is set, trust the caller (CI prebuild via
+    docker/build-push-action with a gha cache) and use that tag.
+    """
+    prebuilt = os.environ.get("SIGNALK_BRIDGE_IMAGE")
+    if prebuilt:
+        return prebuilt
+    tag = f"signalk_bridge_e2e:{uuid.uuid4().hex[:8]}"
+    _docker(
+        "build",
+        "--build-arg",
+        f"BUILD_FROM={ADDON_BASE_IMAGE}",
+        "--build-arg",
+        "BUILD_VERSION=e2e",
+        "-t",
+        tag,
+        str(ADDON_SOURCE_DIR),
+    )
+    return tag
+
+
+# ---------------------------------------------------------------------------
+# stub Signal K server (host loopback; container reaches it via --network host)
+# ---------------------------------------------------------------------------
 
 
 def _free_port() -> int:
@@ -66,22 +143,26 @@ class _SKHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def log_message(self, *_a: Any) -> None:  # silence the request log
+    def log_message(self, *_a: Any) -> None:
         pass
 
 
 @pytest.fixture
-def signalk_stub() -> Iterator[str]:
-    """A minimal Signal K REST server returning a fixed vessel snapshot."""
+def signalk_stub() -> Iterator[tuple[str, int]]:
     srv = HTTPServer(("127.0.0.1", _free_port()), _SKHandler)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
-    host, port = cast("tuple[str, int]", srv.server_address)
+    _host, port = cast("tuple[str, int]", srv.server_address)
     try:
-        yield f"http://{host}:{port}"
+        yield ("127.0.0.1", port)
     finally:
         srv.shutdown()
         thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Mosquitto broker (host: a local binary, or docker --network host)
+# ---------------------------------------------------------------------------
 
 
 def _wait_port(host: str, port: int, timeout: float) -> None:
@@ -99,8 +180,6 @@ def _find_mosquitto() -> str | None:
     found = shutil.which("mosquitto")
     if found:
         return found
-    # The Debian/Ubuntu broker package installs to /usr/sbin, which isn't always
-    # on a non-login PATH.
     for candidate in ("/usr/sbin/mosquitto", "/usr/local/sbin/mosquitto"):
         if os.path.exists(candidate):
             return candidate
@@ -109,13 +188,9 @@ def _find_mosquitto() -> str | None:
 
 @pytest.fixture
 def mosquitto(tmp_path: Path) -> Iterator[tuple[str, int]]:
-    """A real Mosquitto broker on a free port.
-
-    Prefers a local ``mosquitto`` binary (what CI installs via apt). Falls back
-    to the same ``mosquitto -c`` invocation from the eclipse-mosquitto image with
-    host networking, so a docker-only dev box exercises the identical config.
-    Skips when neither is available. No Docker Hub pull happens in CI.
-    """
+    """A real Mosquitto broker on a free host port. Prefers a local binary
+    (what CI installs via apt); falls back to the eclipse-mosquitto image with
+    host networking so the same ``mosquitto -c`` config runs either way."""
     port = _free_port()
     conf = tmp_path / "mosquitto.conf"
     conf.write_text(f"listener {port}\nallow_anonymous true\n")
@@ -151,9 +226,84 @@ def mosquitto(tmp_path: Path) -> Iterator[tuple[str, int]]:
             proc.kill()
 
 
+# ---------------------------------------------------------------------------
+# the bridge container under test (the real shipped artifact)
+# ---------------------------------------------------------------------------
+
+
+class BridgeContainer:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def running(self) -> bool:
+        out = _docker(
+            "inspect", "-f", "{{.State.Running}}", self.name, check=False
+        ).strip()
+        return out == "true"
+
+    def logs(self) -> str:
+        return _docker("logs", self.name, check=False)
+
+    def graceful_stop(self) -> None:
+        _docker("stop", "-t", "10", self.name, check=False)
+
+    def remove(self) -> None:
+        _docker("rm", "-f", self.name, check=False)
+
+
+@pytest.fixture
+def bridge_container(
+    addon_image: str,
+    signalk_stub: tuple[str, int],
+    mosquitto: tuple[str, int],
+    tmp_path: Path,
+) -> Iterator[BridgeContainer]:
+    sk_host, sk_port = signalk_stub
+    mqtt_host, mqtt_port = mosquitto
+    options = {
+        "signalk_url": f"http://{sk_host}:{sk_port}",
+        "signalk_token": "e2e-token",  # non-empty -> skips the request/approve flow
+        "mqtt_host": mqtt_host,
+        "mqtt_port": mqtt_port,
+        "interval_seconds": 1,
+        "log_level": "info",
+    }
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "options.json").write_text(json.dumps(options))
+
+    name = f"skb_e2e_{uuid.uuid4().hex[:10]}"
+    # --network host: the bridge reaches the host-run stub Signal K + broker on
+    # 127.0.0.1 (the add-on ships host_network: true anyway). No --init: the HA
+    # base image's s6 must be PID 1 (run.sh uses with-contenv), and s6 forwards
+    # signals for the clean-shutdown path. No --rm either, so a crashed
+    # container's logs survive for the failure message; the fixture removes it.
+    _docker(
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        "host",
+        "-v",
+        f"{data / 'options.json'}:/data/options.json:ro",
+        addon_image,
+    )
+    handle = BridgeContainer(name)
+    try:
+        yield handle
+    finally:
+        handle.remove()
+
+
+# ---------------------------------------------------------------------------
+# MQTT observer (independent client; its paho version is irrelevant)
+# ---------------------------------------------------------------------------
+
+
 def _real_paho() -> Any:
-    """Import the REAL paho client, dropping the repo-wide import stub that the
-    root conftest installs via ``sys.modules.setdefault``."""
+    """Import the REAL paho client, dropping the repo-wide import stub the root
+    conftest installs via ``sys.modules.setdefault``."""
     for name in ("paho.mqtt.client", "paho.mqtt", "paho"):
         mod = sys.modules.get(name)
         if mod is not None and not getattr(mod, "__file__", None):
@@ -162,8 +312,6 @@ def _real_paho() -> Any:
 
 
 class Collector:
-    """Thread-safe record of the last payload seen on each MQTT topic."""
-
     def __init__(self) -> None:
         self.seen: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -183,12 +331,10 @@ class Collector:
 
 @pytest.fixture
 def subscriber(mosquitto: tuple[str, int]) -> Iterator[Collector]:
-    """A real paho subscriber on the broker, collecting every retained/live
-    message under ``homeassistant/#`` and ``signalk/#``."""
     host, port = mosquitto
     mqtt = _real_paho()
     coll = Collector()
-    client = mqtt.Client(client_id="signalk-e2e-sub")
+    client = mqtt.Client(client_id="signalk-e2e-observer")
 
     def _on_connect(c: Any, *_a: Any) -> None:
         c.subscribe("homeassistant/#")
@@ -203,3 +349,18 @@ def subscriber(mosquitto: tuple[str, int]) -> Iterator[Collector]:
     finally:
         client.loop_stop()
         client.disconnect()
+
+
+@pytest.fixture
+def wait_for() -> Callable[..., bool]:
+    def _wait_for(
+        predicate: Callable[[], bool], timeout: float, interval: float = 0.2
+    ) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(interval)
+        return predicate()
+
+    return _wait_for
