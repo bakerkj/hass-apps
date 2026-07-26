@@ -1,0 +1,10 @@
+configuration:
+  sites:
+    name: Proxied sites
+    description: >-
+      Each entry proxies one device web UI on its own listen port. Fields: name
+      (label), upstream (device IP/host), upstream_port (default 80),
+      listen_port (one of 18800-18819).
+  log_level:
+    name: Log level
+    description: nginx/add-on log verbosity.

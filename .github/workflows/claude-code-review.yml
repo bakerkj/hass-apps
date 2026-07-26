@@ -63,6 +63,10 @@ jobs:
               the browser and Home Assistant on port 8123, with
               per-Lovelace-view entity scoping and customization
               applied on top.
+            - dashboard_web_proxy — nginx reverse proxy that makes LAN
+              device web UIs embeddable in HA dashboards (strips
+              X-Frame-Options/CSP, rewrites the session-cookie domain);
+              one device per port.
             - ffmpeg_snapshotter — captures timestamped JPEG snapshots
               from RTSP streams on demand (VAAPI-capable).
             - frigate_compressor — long-running daemon that re-encodes

@@ -1,0 +1,74 @@
+{
+  "name": "Dashboard Web Proxy",
+  "slug": "dashboard_web_proxy",
+  "description": "Reverse-proxies LAN device web UIs so they can be embedded in Home Assistant dashboards -- strips X-Frame-Options and rewrites the session-cookie domain. One device per port.",
+  "url": "https://github.com/bakerkj/hass-apps",
+  "image": "ghcr.io/bakerkj/{arch}-dashboard_web_proxy",
+  "version": "0.0.1",
+  "arch": [
+    "aarch64",
+    "amd64"
+  ],
+  "stage": "experimental",
+  "startup": "services",
+  "init": false,
+  "ports": {
+    "18800/tcp": 18800,
+    "18801/tcp": 18801,
+    "18802/tcp": 18802,
+    "18803/tcp": 18803,
+    "18804/tcp": 18804,
+    "18805/tcp": 18805,
+    "18806/tcp": 18806,
+    "18807/tcp": 18807,
+    "18808/tcp": 18808,
+    "18809/tcp": 18809,
+    "18810/tcp": 18810,
+    "18811/tcp": 18811,
+    "18812/tcp": 18812,
+    "18813/tcp": 18813,
+    "18814/tcp": 18814,
+    "18815/tcp": 18815,
+    "18816/tcp": 18816,
+    "18817/tcp": 18817,
+    "18818/tcp": 18818,
+    "18819/tcp": 18819
+  },
+  "ports_description": {
+    "18800/tcp": "Proxied device UI",
+    "18801/tcp": "Proxied device UI",
+    "18802/tcp": "Proxied device UI",
+    "18803/tcp": "Proxied device UI",
+    "18804/tcp": "Proxied device UI",
+    "18805/tcp": "Proxied device UI",
+    "18806/tcp": "Proxied device UI",
+    "18807/tcp": "Proxied device UI",
+    "18808/tcp": "Proxied device UI",
+    "18809/tcp": "Proxied device UI",
+    "18810/tcp": "Proxied device UI",
+    "18811/tcp": "Proxied device UI",
+    "18812/tcp": "Proxied device UI",
+    "18813/tcp": "Proxied device UI",
+    "18814/tcp": "Proxied device UI",
+    "18815/tcp": "Proxied device UI",
+    "18816/tcp": "Proxied device UI",
+    "18817/tcp": "Proxied device UI",
+    "18818/tcp": "Proxied device UI",
+    "18819/tcp": "Proxied device UI"
+  },
+  "options": {
+    "sites": [],
+    "log_level": "info"
+  },
+  "schema": {
+    "sites": [
+      {
+        "name": "str",
+        "upstream": "str",
+        "upstream_port": "port?",
+        "listen_port": "list(18800|18801|18802|18803|18804|18805|18806|18807|18808|18809|18810|18811|18812|18813|18814|18815|18816|18817|18818|18819)"
+      }
+    ],
+    "log_level": "list(trace|debug|info|notice|warning|error|fatal)?"
+  }
+}
