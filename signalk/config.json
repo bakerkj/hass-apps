@@ -4,7 +4,7 @@
   "description": "Signal K server for NMEA 2000 and marine data, reading the onboard CAN bus via canboatjs and making it available to Home Assistant.",
   "url": "https://github.com/bakerkj/hass-apps",
   "image": "ghcr.io/bakerkj/{arch}-signalk",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "arch": [
     "aarch64",
     "amd64"
