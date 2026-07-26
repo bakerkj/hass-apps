@@ -151,6 +151,18 @@
           "jsonpath": "$.version"
         }
       ]
+    },
+    "signalk": {
+      "release-type": "simple",
+      "package-name": "signalk",
+      "component": "signalk",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }
