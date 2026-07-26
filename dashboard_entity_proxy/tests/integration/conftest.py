@@ -264,12 +264,16 @@ def ha() -> Iterator[dict[str, str]]:
 
     # Clean up any stray container with this name.
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
-    with _phase("ha container start"):
+    # ``docker run -d`` is measured at 40-50s on ubuntu-24.04 runners for
+    # the ~1.5 GB HA image, which is orders of magnitude off from what
+    # ``-d`` should cost. Split into create + start so the log tells us
+    # which half owns the cost — create-heavy would point at lazy layer
+    # extraction to overlayfs; start-heavy at daemon-side container init.
+    with _phase("ha container create"):
         subprocess.run(
             [
                 "docker",
-                "run",
-                "-d",
+                "create",
                 "--name",
                 container,
                 "-p",
@@ -278,6 +282,12 @@ def ha() -> Iterator[dict[str, str]]:
                 f"{config_dir}:/config",
                 HA_IMAGE,
             ],
+            check=True,
+            capture_output=True,
+        )
+    with _phase("ha container start"):
+        subprocess.run(
+            ["docker", "start", container],
             check=True,
             capture_output=True,
         )
