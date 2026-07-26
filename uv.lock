@@ -230,6 +230,7 @@ dev = [
     { name = "aiohttp" },
     { name = "humanfriendly" },
     { name = "mypy" },
+    { name = "paho-mqtt" },
     { name = "patch-ng" },
     { name = "prek" },
     { name = "pyjwt" },
@@ -253,6 +254,7 @@ dev = [
     { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "humanfriendly", specifier = ">=10.0" },
     { name = "mypy", specifier = ">=1.20.0" },
+    { name = "paho-mqtt", specifier = "==1.6.1" },
     { name = "patch-ng", specifier = ">=1.18" },
     { name = "prek", specifier = ">=0.4.1" },
     { name = "pyjwt", specifier = ">=2.0" },
@@ -435,6 +437,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
 ]
+
+[[package]]
+name = "paho-mqtt"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/dd/4b75dcba025f8647bc9862ac17299e0d7d12d3beadbf026d8c8d74215c12/paho-mqtt-1.6.1.tar.gz", hash = "sha256:2a8291c81623aec00372b5a85558a372c747cbca8e9934dfe218638b8eefc26f", size = 99373, upload-time = "2021-10-21T10:33:59.864Z" }
 
 [[package]]
 name = "patch-ng"

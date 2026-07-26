@@ -1,0 +1,45 @@
+configuration:
+  signalk_url:
+    name: Signal K server URL
+    description: >-
+      Base URL of the Signal K server. The default assumes the Signal K add-on
+      running on the same machine with host networking.
+  signalk_token:
+    name: Signal K access token
+    description: >-
+      Only needed if Signal K denies anonymous read access. Create a device
+      token in Signal K under Security -> Devices, or allow read-only access for
+      unauthenticated clients.
+  interval_seconds:
+    name: Poll interval (seconds)
+    description: Seconds between Signal K reads and MQTT publishes (1-300).
+  mqtt_host:
+    name: MQTT host
+    description: Leave blank to use the broker the Supervisor provides.
+  mqtt_port:
+    name: MQTT port
+    description: Leave blank to use the Supervisor-provided port.
+  mqtt_username:
+    name: MQTT username
+    description: Leave blank to use Supervisor-provided credentials.
+  mqtt_password:
+    name: MQTT password
+    description: Leave blank to use Supervisor-provided credentials.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description:
+      Home Assistant MQTT Discovery prefix (normally "homeassistant").
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Base topic for state and availability messages.
+  client_id:
+    name: MQTT client ID
+    description: Client identifier used when connecting to the broker.
+  expire_after_multiplier:
+    name: Expire-after multiplier
+    description: >-
+      Entities go unavailable after interval x this multiplier without an update
+      (2-10). Marine instruments drop out when powered down, so this matters.
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).

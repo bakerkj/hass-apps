@@ -37,5 +37,6 @@ jobs:
           ffmpeg_snapshotter/ffmpeg_snapshotter
           frigate_compressor/frigate_compressor
           haos_configurator/haos_configurator intel_gpu_top_mqtt/intel_gpu_mqtt
+          signalk_bridge/signalk_bridge
           system_resource_tuner/system_resource_tuner
           turbostat_mqtt/turbostat_mqtt

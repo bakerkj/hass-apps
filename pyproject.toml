@@ -28,6 +28,7 @@ dev = [
     "websockets>=12.0",
     "pyjwt>=2.0",
     "types-humanfriendly>=10.0.1.20250319",
+    "paho-mqtt==1.6.1",
 ]
 
 [tool.mypy]
@@ -46,6 +47,8 @@ mypy_path = [
     "haos_configurator/tests",
     "intel_gpu_top_mqtt",
     "intel_gpu_top_mqtt/tests",
+    "signalk_bridge",
+    "signalk_bridge/tests",
     "system_resource_tuner",
     "system_resource_tuner/tests",
     "turbostat_mqtt",
@@ -79,6 +82,8 @@ pythonpath = [
     "haos_configurator/tests",
     "intel_gpu_top_mqtt",
     "intel_gpu_top_mqtt/tests",
+    "signalk_bridge",
+    "signalk_bridge/tests",
     "system_resource_tuner",
     "system_resource_tuner/tests",
     "turbostat_mqtt",
@@ -87,7 +92,7 @@ pythonpath = [
 # No --cov-fail-under here: the unit and integration jobs each collect only
 # part of the picture (integration exercises the real ffmpeg/ffprobe paths).
 # The threshold is enforced once on the combined total in the `coverage` CI job.
-addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=system_resource_tuner --cov=turbostat_mqtt"
+addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=signalk_bridge --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
     "e2e: tests that exercise real external systems (ffmpeg/ffprobe binaries, docker daemon, full HA + Chrome stack). Skipped by default to keep the unit run hermetic; each per-addon e2e CI job runs them with the relevant externals installed.",
 ]
