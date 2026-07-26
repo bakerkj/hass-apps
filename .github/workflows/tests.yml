@@ -404,26 +404,49 @@ jobs:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      # Mirror the pin in signalk_bridge/tests/integration/conftest.py. Renovate
+      # tracks via the comment so a base-image bump opens a PR on both files.
+      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
+      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: signalk-bridge-e2e
-      # The e2e runs the real bridge against a real broker. Install Mosquitto
-      # from Ubuntu's apt repo rather than pulling from Docker Hub, which is
-      # rate-limited/unreliable from Actions runners (the other e2e jobs pull
-      # ghcr.io images for the same reason). Fail loud if the binary is missing
-      # so the test never silently skips.
+      # The e2e builds the real add-on image and runs the bridge in a container,
+      # so it publishes with its shipped apk paho. Install Mosquitto from apt for
+      # the broker (Docker Hub is rate-limited from Actions; the other e2e jobs
+      # pull ghcr images for the same reason). Fail loud if the binary is missing.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto
           command -v mosquitto || test -x /usr/sbin/mosquitto
+      # Build the add-on image with a GHA buildkit cache so the base-image pull
+      # and apk-install layer are reused across runs (the buildx docker-container
+      # driver resolves FROM itself, so a daemon-loaded base image wouldn't help
+      # -- the gha cache is the only caching that reaches the build). Surfaced to
+      # conftest via ``SIGNALK_BRIDGE_IMAGE`` so the session fixture skips its own
+      # build.
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./signalk_bridge
+          load: true
+          tags: signalk_bridge_e2e:ci
+          build-args: |
+            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
+            BUILD_VERSION=e2e
+          cache-from: type=gha,scope=signalk-bridge-e2e
+          cache-to: type=gha,scope=signalk-bridge-e2e,mode=max
       - run:
           uv run pytest signalk_bridge/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
+        env:
+          SIGNALK_BRIDGE_IMAGE: signalk_bridge_e2e:ci
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:
