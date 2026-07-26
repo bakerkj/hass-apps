@@ -172,6 +172,11 @@
       "allowedVersions": "<3.15"
     },
     {
+      "description": "Do not float the pip paho-mqtt: it is pinned to exactly match the apk py3-paho-mqtt the signalk_bridge add-on ships (see pyproject.toml; Alpine 3.24 = 1.6.1). The e2e must run the same client production does, so bump this and the signalk_bridge Dockerfile apk pin together when the Alpine base moves.",
+      "matchDepNames": ["paho-mqtt"],
+      "enabled": false
+    },
+    {
       "description": "Override the helpers:pinGitHubActionDigestsToSemver preset's semver versioning for home-assistant/builder, which moved from semver tags (1.x-7.x) to calver tags (2026.06.0+). With semver versioning, the calver tags don't parse and Renovate proposes 'upgrades' to the old pre-calver semver tags (this surfaced as the bogus #246 and #248 PRs).",
       "matchPackageNames": ["home-assistant/builder"],
       "versioning": "loose"
