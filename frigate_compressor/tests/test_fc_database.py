@@ -10,6 +10,34 @@ from fc_helpers import _open_compress_db
 
 import frigate_compressor as fc
 
+
+@pytest.fixture(autouse=True)
+def _close_compress_dbs(monkeypatch):
+    """Close every compress-db connection a test opens, so none leak.
+
+    The ``test_files_stats_*`` tests open a connection per test (some reopen
+    after a close) and don't all close it. Under coverage's GC pressure those
+    survive to a later generational collection and surface as
+    ``ResourceWarning: unclosed database`` -- attributed to whatever test
+    happened to trigger the GC. Wrapping ``open_compress_db`` to track each
+    connection and closing them here keeps the suite warning-clean without
+    threading cleanup through every test; double-closing one a test already
+    closed is a harmless no-op.
+    """
+    opened: list[sqlite3.Connection] = []
+    real = fc.open_compress_db
+
+    def _tracking(path):
+        conn = real(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(fc, "open_compress_db", _tracking)
+    yield
+    for conn in opened:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DB schema
 # ═══════════════════════════════════════════════════════════════════════════════
