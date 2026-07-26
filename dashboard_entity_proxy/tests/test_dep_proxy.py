@@ -22,6 +22,24 @@ from multidict import CIMultiDict, CIMultiDictProxy
 
 from dashboard_entity_proxy import proxy
 
+
+def _install_fake_upstream(app: web.Application, ws_connect: Any) -> None:
+    """Swap the app's shared upstream ``ClientSession`` for a fake exposing only
+    ``ws_connect``/``close``. Registered as an ``on_startup`` hook so the swap
+    runs while the app is still unfrozen -- assigning ``app[CLIENT_KEY]`` after
+    ``_start_app`` returns trips aiohttp's "changing state of started
+    application" deprecation (the app freezes once started).
+    """
+
+    async def _swap(app: web.Application) -> None:
+        real = app[proxy.CLIENT_KEY]
+        app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
+            ws_connect=ws_connect, close=real.close
+        )
+
+    app.on_startup.append(_swap)
+
+
 # ---- header / URL helpers (pure functions) ---------------------------------
 
 
@@ -531,11 +549,8 @@ async def test_tunnel_ws_closes_upstream_on_prepare_failure() -> None:
         return _FakeWS()
 
     proxy_app = proxy.create_app(_opts("http://127.0.0.1:1"))
+    _install_fake_upstream(proxy_app, fake_ws_connect)
     proxy_runner, proxy_url = await _start_app(proxy_app)
-    real_client = proxy_app[proxy.CLIENT_KEY]
-    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
-        ws_connect=fake_ws_connect, close=real_client.close
-    )
     # Make ``WebSocketResponse.prepare`` raise to simulate the client
     # dropping its TCP connection in the dial→accept window.
     from unittest.mock import patch
@@ -582,12 +597,9 @@ async def test_ws_dial_forwards_custom_headers_and_strips_handshake() -> None:
         return _FakeWS()
 
     proxy_app = proxy.create_app(_opts("http://127.0.0.1:1"))
-    proxy_runner, proxy_url = await _start_app(proxy_app)
     # Swap in a fake upstream client whose ws_connect records its kwargs.
-    real_client = proxy_app[proxy.CLIENT_KEY]
-    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
-        ws_connect=fake_ws_connect, close=real_client.close
-    )
+    _install_fake_upstream(proxy_app, fake_ws_connect)
+    proxy_runner, proxy_url = await _start_app(proxy_app)
     try:
         async with aiohttp.ClientSession() as cs:
             try:
@@ -647,11 +659,8 @@ async def test_tunnel_ws_rewrites_origin_to_match_upstream_host() -> None:
         return _FakeWS()
 
     proxy_app = proxy.create_app(_opts("http://homeassistant:8123"))
+    _install_fake_upstream(proxy_app, fake_ws_connect)
     proxy_runner, proxy_url = await _start_app(proxy_app)
-    real_client = proxy_app[proxy.CLIENT_KEY]
-    proxy_app[proxy.CLIENT_KEY] = SimpleNamespace(  # type: ignore[misc]
-        ws_connect=fake_ws_connect, close=real_client.close
-    )
     try:
         async with aiohttp.ClientSession() as cs:
             try:
