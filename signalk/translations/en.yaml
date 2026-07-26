@@ -1,0 +1,13 @@
+configuration:
+  port:
+    name: Web UI port
+    description: >-
+      Port for the Signal K web UI and API. The add-on uses host networking, so
+      this port is bound directly on the host and must not clash with anything
+      else (Home Assistant itself uses 8123).
+  log_level:
+    name: Log level
+    description: >-
+      Signal K server logging verbosity. "debug" enables verbose signalk-server
+      and canboat tracing, which is useful when diagnosing why NMEA 2000 frames
+      are not being decoded.

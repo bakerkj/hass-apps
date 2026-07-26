@@ -9,5 +9,6 @@
   "container_hooks": "0.1.1",
   "system_resource_tuner": "0.0.33",
   "turbostat_mqtt": "0.0.39",
-  "signalk_bridge": "0.0.1"
+  "signalk_bridge": "0.0.2",
+  "signalk": "0.0.2"
 }

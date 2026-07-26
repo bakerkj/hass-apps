@@ -29,6 +29,16 @@
     },
     {
       "customType": "regex",
+      "description": "Upstream Signal K server base image pinned in the signalk Dockerfile (ARG BUILD_FROM default) -- the single source for the base version (the add-on has no build.yaml; the e2e and CI build from this default). It lives on docker.io, so it falls outside the ghcr.io/home-assistant manager above and needs its own matcher to stay current.",
+      "managerFilePatterns": ["/Dockerfile$/"],
+      "matchStrings": [
+        "(?<depName>signalk/signalk-server):(?<currentValue>[\\w.-]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "GitHub runner versions in shell scripts and YAML within workflows",
       "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
@@ -175,6 +185,12 @@
       "description": "Override the helpers:pinGitHubActionDigestsToSemver preset's semver versioning for home-assistant/builder, which moved from semver tags (1.x-7.x) to calver tags (2026.06.0+). With semver versioning, the calver tags don't parse and Renovate proposes 'upgrades' to the old pre-calver semver tags (this surfaced as the bogus #246 and #248 PRs).",
       "matchPackageNames": ["home-assistant/builder"],
       "versioning": "loose"
+    },
+    {
+      "description": "signalk/signalk-server publishes noisy rolling tags (latest-alpine, master-<major>-alpine, sha-<hash>-alpine, <major>-alpine) alongside its v<semver>-alpine releases. Restrict Renovate to the release tags so it tracks real versions and never proposes a rolling or bogus-major 'upgrade'.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["signalk/signalk-server"],
+      "allowedVersions": "/^v\\d+\\.\\d+\\.\\d+-alpine$/"
     }
   ]
 }
