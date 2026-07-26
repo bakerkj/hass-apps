@@ -1,0 +1,18 @@
+# Only files referenced by COPY lines in the Dockerfile enter the image
+# (LICENSE.md, run.sh). Everything below is either HA Supervisor metadata
+# (read before the build), docs, or dev-host artifacts.
+
+# Docs (LICENSE.md is kept — COPY'd into the image at /LICENSE)
+CHANGELOG.md
+README.md
+
+# HA Supervisor metadata (Supervisor reads these separately from the build)
+config.json
+icon.png
+icon.svg
+translations/
+
+# Meta
+.gitignore
+.dockerignore
+Dockerfile
