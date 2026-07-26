@@ -37,11 +37,6 @@ from typing import Any
 
 import pytest
 
-# Renovate tracks the addon BUILD_FROM and target image pins via these
-# comments so a base-image bump opens a PR on conftest + Dockerfile +
-# tests.yml together.
-# renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
 # renovate: datasource=docker depName=alpine
 TARGET_IMAGE = "alpine:3.20"
 
@@ -105,8 +100,6 @@ def addon_image() -> str:
     tag = f"container_hooks_e2e:{uuid.uuid4().hex[:8]}"
     _docker(
         "build",
-        "--build-arg",
-        f"BUILD_FROM={ADDON_BASE_IMAGE}",
         "--build-arg",
         "BUILD_VERSION=e2e",
         "-t",

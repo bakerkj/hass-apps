@@ -49,11 +49,6 @@ from dashboard_entity_proxy import proxy as proxy_mod
 HA_IMAGE = "ghcr.io/home-assistant/home-assistant:2026.6.2"
 HA_BOOT_TIMEOUT = 120
 
-# The addon's docker BUILD_FROM base. Mirrors the value Dockerfile
-# defaults to; pinned for reproducibility. Renovate tracks via the
-# comment so a bump opens a PR on both this and Dockerfile together.
-# renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-ADDON_BASE_IMAGE = "ghcr.io/home-assistant/amd64-base:3.24"
 ADDON_BOOT_TIMEOUT = 30
 ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
 
@@ -390,8 +385,6 @@ def addon_image() -> Iterator[str]:
                 "docker",
                 "buildx",
                 "build",
-                "--build-arg",
-                f"BUILD_FROM={ADDON_BASE_IMAGE}",
                 "--build-arg",
                 "BUILD_VERSION=int-test",
                 "--load",

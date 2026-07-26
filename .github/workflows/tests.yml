@@ -239,13 +239,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      # Mirror the two pins in dashboard_entity_proxy/tests/integration/conftest.py. Renovate
-      # tracks each via the comments so a bump opens a PR on both
-      # workflow and conftest together.
+      # Mirror the pin in dashboard_entity_proxy/tests/integration/conftest.py. Renovate
+      # tracks via the comment so a bump opens a PR on both files.
       # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
       HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.7.4"
-      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -256,18 +253,15 @@ jobs:
       # parallel pull + decompression beats an actions/cache round-trip
       # (restore + serial ``docker load`` of a 1.5 GB tarball) on this
       # runner class — the load step alone measured ~59 s in prior runs.
-      # The addon BUILD_FROM base is intentionally NOT pulled here:
-      # ``docker/setup-buildx-action`` uses the ``docker-container``
-      # driver, whose BuildKit fetches base images from the registry
-      # (or from the GHA layer cache below) — a host-side ``docker pull``
-      # is never consulted.
       - name: Pull HA image
         run: docker pull "$HA_IMAGE"
       # Pre-build the addon image with a GHA-backed buildkit cache so
       # the apk-install layer (~10-30 s of Alpine repo traffic) is
       # reused across CI runs. ``DEP_PROXY_IMAGE`` tells conftest's
       # ``addon_image`` fixture to use this prebuilt tag instead of
-      # invoking its own ``docker buildx build``.
+      # invoking its own ``docker buildx build``. The base version comes
+      # from the Dockerfile's BUILD_FROM default (renovate tracks it
+      # there) — no second copy here to drift.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -275,7 +269,6 @@ jobs:
           load: true
           tags: dep_int_test:ci
           build-args: |
-            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
             BUILD_VERSION=int-test
           cache-from: type=gha,scope=dep-int
           cache-to: type=gha,scope=dep-int,mode=max
@@ -314,39 +307,19 @@ jobs:
     if: contains(fromJson(needs.discover.outputs.addons), 'container_hooks')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      # Mirror the pin in container_hooks/tests/integration/conftest.py.
-      # Renovate tracks via the comment so a base-image bump opens a PR
-      # on both files together.
-      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: container-hooks-e2e
-      # Cache the BUILD_FROM base image so the per-run image build skips
-      # the network leg. Keyed on the pin; renovate-bumps invalidate it.
-      - name: Cache addon base image
-        id: addon-base-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/addon-base.tar
-          key: addon-base-${{ env.ADDON_BASE_IMAGE }}
-      - name: Pull addon base image (cache miss)
-        if: steps.addon-base-cache.outputs.cache-hit != 'true'
-        run: |
-          docker pull "$ADDON_BASE_IMAGE"
-          docker save "$ADDON_BASE_IMAGE" > ~/addon-base.tar
-      - name: Load addon base image (cache hit)
-        if: steps.addon-base-cache.outputs.cache-hit == 'true'
-        run: docker load < ~/addon-base.tar
       # Pre-build the addon image with a GHA buildkit cache so the apk +
       # uv install layers (~20-40 s) are reused across CI runs. Tagged
       # ``container_hooks_e2e:ci`` and surfaced to conftest via
       # ``CONTAINER_HOOKS_IMAGE`` so the session fixture skips its own
-      # docker build.
+      # docker build. The base version comes from the Dockerfile's
+      # BUILD_FROM default (renovate tracks it there) — no second copy
+      # here to drift.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -354,7 +327,6 @@ jobs:
           load: true
           tags: container_hooks_e2e:ci
           build-args: |
-            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
             BUILD_VERSION=e2e
           cache-from: type=gha,scope=container-hooks-e2e
           cache-to: type=gha,scope=container-hooks-e2e,mode=max
@@ -384,11 +356,6 @@ jobs:
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      # Mirror the pin in signalk_bridge/tests/integration/conftest.py. Renovate
-      # tracks via the comment so a base-image bump opens a PR on both files.
-      # renovate: datasource=docker depName=ghcr.io/home-assistant/amd64-base
-      ADDON_BASE_IMAGE: "ghcr.io/home-assistant/amd64-base:3.24"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -405,11 +372,10 @@ jobs:
           sudo apt-get install -y mosquitto
           command -v mosquitto || test -x /usr/sbin/mosquitto
       # Build the add-on image with a GHA buildkit cache so the base-image pull
-      # and apk-install layer are reused across runs (the buildx docker-container
-      # driver resolves FROM itself, so a daemon-loaded base image wouldn't help
-      # -- the gha cache is the only caching that reaches the build). Surfaced to
-      # conftest via ``SIGNALK_BRIDGE_IMAGE`` so the session fixture skips its own
-      # build.
+      # and apk-install layer are reused across runs. The base version comes from
+      # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
+      # second copy here to drift. Surfaced to conftest via
+      # ``SIGNALK_BRIDGE_IMAGE`` so the session fixture skips its own build.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -417,7 +383,6 @@ jobs:
           load: true
           tags: signalk_bridge_e2e:ci
           build-args: |
-            BUILD_FROM=${{ env.ADDON_BASE_IMAGE }}
             BUILD_VERSION=e2e
           cache-from: type=gha,scope=signalk-bridge-e2e
           cache-to: type=gha,scope=signalk-bridge-e2e,mode=max
