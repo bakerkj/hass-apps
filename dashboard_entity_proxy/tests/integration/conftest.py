@@ -22,6 +22,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -90,6 +91,33 @@ USER = {
     "client_id": "http://localhost/",
     "language": "en",
 }
+
+
+@contextlib.contextmanager
+def _phase(label: str) -> Iterator[None]:
+    """Log a session-fixture bring-up phase with elapsed time to stderr.
+
+    GHA prefixes every log line with its own timestamp, so the deltas
+    surface directly in the job log — useful for seeing where the ~80 s
+    of silent pre-first-test time is actually spent.
+    """
+    start = time.monotonic()
+    print(f"[dep-e2e] {label}: start", file=sys.stderr, flush=True)
+    try:
+        yield
+    except BaseException:
+        print(
+            f"[dep-e2e] {label}: failed after {time.monotonic() - start:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    else:
+        print(
+            f"[dep-e2e] {label}: done in {time.monotonic() - start:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 from _aiohttp_helpers import _free_port
@@ -236,28 +264,31 @@ def ha() -> Iterator[dict[str, str]]:
 
     # Clean up any stray container with this name.
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            container,
-            "-p",
-            f"{port}:8123",
-            "-v",
-            f"{config_dir}:/config",
-            HA_IMAGE,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    with _phase("ha container start"):
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container,
+                "-p",
+                f"{port}:8123",
+                "-v",
+                f"{config_dir}:/config",
+                HA_IMAGE,
+            ],
+            check=True,
+            capture_output=True,
+        )
 
     url = f"http://127.0.0.1:{port}"
     ws_url = f"ws://127.0.0.1:{port}/api/websocket"
     try:
-        _wait_for_ha(url, time.time() + HA_BOOT_TIMEOUT)
-        tokens = _onboard(url)
+        with _phase("ha http ready"):
+            _wait_for_ha(url, time.time() + HA_BOOT_TIMEOUT)
+        with _phase("ha onboarding"):
+            tokens = _onboard(url)
         yield {
             "url": url,
             "ws_url": ws_url,
@@ -345,26 +376,32 @@ def addon_image() -> Iterator[str]:
     build and the cleanup (CI handles teardown).
     """
     if pre_built := os.environ.get("DEP_PROXY_IMAGE"):
+        print(
+            f"[dep-e2e] addon image: using prebuilt {pre_built}",
+            file=sys.stderr,
+            flush=True,
+        )
         yield pre_built
         return
     tag = f"dep_int_test:{int(time.time())}"
-    subprocess.run(
-        [
-            "docker",
-            "buildx",
-            "build",
-            "--build-arg",
-            f"BUILD_FROM={ADDON_BASE_IMAGE}",
-            "--build-arg",
-            "BUILD_VERSION=int-test",
-            "--load",
-            "-t",
-            tag,
-            str(ADDON_SOURCE_DIR),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    with _phase("addon docker build"):
+        subprocess.run(
+            [
+                "docker",
+                "buildx",
+                "build",
+                "--build-arg",
+                f"BUILD_FROM={ADDON_BASE_IMAGE}",
+                "--build-arg",
+                "BUILD_VERSION=int-test",
+                "--load",
+                "-t",
+                tag,
+                str(ADDON_SOURCE_DIR),
+            ],
+            check=True,
+            capture_output=True,
+        )
     yield tag
     subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, check=False)
 
@@ -418,32 +455,34 @@ def proxy_url(addon_image: str, ha: dict[str, str]) -> Iterator[str]:
 
     container = f"dep_int_addon_{addon_port}"
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            container,
-            # ``--network host`` is the simplest way to give the
-            # container reach into HA on the host's loopback. Each
-            # test run picks a fresh ``addon_port`` so parallel
-            # invocations don't collide on a single shared 8126.
-            "--network",
-            "host",
-            "-v",
-            f"{options_path}:/data/options.json:ro",
-            "-v",
-            f"{nginx_conf_path}:/etc/nginx/nginx.conf:ro",
-            "-v",
-            f"{render_noop_path}:/usr/bin/render-nginx-conf:ro",
-            addon_image,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    with _phase("addon container start"):
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container,
+                # ``--network host`` is the simplest way to give the
+                # container reach into HA on the host's loopback. Each
+                # test run picks a fresh ``addon_port`` so parallel
+                # invocations don't collide on a single shared 8126.
+                "--network",
+                "host",
+                "-v",
+                f"{options_path}:/data/options.json:ro",
+                "-v",
+                f"{nginx_conf_path}:/etc/nginx/nginx.conf:ro",
+                "-v",
+                f"{render_noop_path}:/usr/bin/render-nginx-conf:ro",
+                addon_image,
+            ],
+            check=True,
+            capture_output=True,
+        )
     try:
-        _wait_for_port("127.0.0.1", addon_port, ADDON_BOOT_TIMEOUT)
+        with _phase("addon port ready"):
+            _wait_for_port("127.0.0.1", addon_port, ADDON_BOOT_TIMEOUT)
         yield f"http://127.0.0.1:{addon_port}"
     finally:
         subprocess.run(
@@ -565,7 +604,8 @@ def chrome() -> Iterator[webdriver.Chrome]:
     ):
         opts.add_argument(arg)
     opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
-    drv = webdriver.Chrome(options=opts)
+    with _phase("chrome driver start"):
+        drv = webdriver.Chrome(options=opts)
     drv.set_page_load_timeout(30)
     yield drv
     drv.quit()
