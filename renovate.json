@@ -173,6 +173,12 @@
       "enabled": false
     },
     {
+      "description": "Same duplicate-PR guard for docker-compose files: the custom regex manager above tracks the HA image tag in the dep-proxy e2e docker-compose.yml; the built-in docker-compose manager (enabled by ``config:recommended``) also parses ``image:`` lines by default, so without this rule an HA bump would open two competing PRs (one grouped, one not).",
+      "matchManagers": ["docker-compose"],
+      "matchPackageNames": ["/home-assistant/"],
+      "enabled": false
+    },
+    {
       "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0)",
       "matchDepNames": ["python"],
       "allowedVersions": "<3.15"
