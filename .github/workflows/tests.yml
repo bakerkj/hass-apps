@@ -238,30 +238,19 @@ jobs:
       'dashboard_entity_proxy')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      # Mirror the pin in dashboard_entity_proxy/tests/integration/conftest.py. Renovate
-      # tracks via the comment so a bump opens a PR on both files.
-      # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
-      HA_IMAGE: "ghcr.io/home-assistant/home-assistant:2026.7.4"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: dashboard-entity-proxy-e2e
-      # Pull the HA image (~1.5 GB) directly from GHCR. Layered
-      # parallel pull + decompression beats an actions/cache round-trip
-      # (restore + serial ``docker load`` of a 1.5 GB tarball) on this
-      # runner class — the load step alone measured ~59 s in prior runs.
-      - name: Pull HA image
-        run: docker pull "$HA_IMAGE"
       # Pre-build the addon image with a GHA-backed buildkit cache so
       # the apk-install layer (~10-30 s of Alpine repo traffic) is
-      # reused across CI runs. ``DEP_PROXY_IMAGE`` tells conftest's
-      # ``addon_image`` fixture to use this prebuilt tag instead of
-      # invoking its own ``docker buildx build``. The base version comes
-      # from the Dockerfile's BUILD_FROM default (renovate tracks it
-      # there) — no second copy here to drift.
+      # reused across CI runs. Tagged ``dep_int_test:ci`` — the
+      # ``dep-proxy`` service in the compose file consumes exactly that
+      # tag. The base version comes from the Dockerfile's BUILD_FROM
+      # default (renovate tracks it there) — no second copy here to
+      # drift.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -277,15 +266,15 @@ jobs:
       # ubuntu-24.04 runner images).
       - name: Verify Chrome present
         run: google-chrome --version
-      # ``-s`` disables pytest's default capture so the session-fixture
-      # ``_phase()`` prints (ha container start, http ready, onboarding,
-      # …) reach the GHA log — under capture=fd they'd be swallowed on
-      # successful runs and only surface on failure.
+      # ``-s`` disables pytest's default capture so the ``_phase()``
+      # prints emitted by the compose-stack fixture reach the GHA log —
+      # under capture=fd they'd be swallowed on successful runs.
+      # The compose stack (HA + addon) comes up inside the session
+      # autouse ``_compose_stack`` fixture in conftest.py; nothing extra
+      # to bring up here.
       - run:
           uv run pytest dashboard_entity_proxy/tests/integration/ -m e2e -v -s
           --junit-xml=junit.xml
-        env:
-          DEP_PROXY_IMAGE: dep_int_test:ci
       - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         if: ${{ !cancelled() }}
         with:

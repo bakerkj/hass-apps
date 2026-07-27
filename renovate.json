@@ -15,12 +15,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images pinned in Dockerfile FROM/ARG lines, workflow HA_IMAGE env var, and the HA_IMAGE constant in the dep-proxy integration conftest. A single manager across all three file types so a bump moves every reference together in one PR (the alternative — separate per-file managers or the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps and stranded one set when the other merged).",
-      "managerFilePatterns": [
-        "/Dockerfile$/",
-        "/\\.github/workflows/.+\\.ya?ml$/",
-        "/tests/integration/conftest\\.py$/"
-      ],
+      "description": "Home Assistant add-on base images pinned in Dockerfile FROM/ARG lines and the HA image tag pinned in the dep-proxy e2e docker-compose.yml. A single manager across both file types so a bump moves every reference together in one PR (the alternative — separate per-file managers or the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps and stranded one set when the other merged).",
+      "managerFilePatterns": ["/Dockerfile$/", "/docker-compose\\.ya?ml$/"],
       "matchStrings": [
         "(?<depName>ghcr\\.io/home-assistant/[\\w.-]+):(?<currentValue>[\\w.-]+)"
       ],
@@ -173,6 +169,12 @@
     {
       "description": "Avoid duplicate PRs: the custom regex manager above already handles ghcr.io/home-assistant/* FROM lines in Dockerfiles; disabling the built-in dockerfile manager for those packages keeps the regex manager as the single source so we don't get two PRs (one per datasource) on every base-image bump. The /.../ matchPackageNames is regex syntax matching any package name containing 'home-assistant' — the dockerfile manager only sees image names, so this can only hit the HA base images.",
       "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["/home-assistant/"],
+      "enabled": false
+    },
+    {
+      "description": "Same duplicate-PR guard for docker-compose files: the custom regex manager above tracks the HA image tag in the dep-proxy e2e docker-compose.yml; the built-in docker-compose manager (enabled by ``config:recommended``) also parses ``image:`` lines by default, so without this rule an HA bump would open two competing PRs (one grouped, one not).",
+      "matchManagers": ["docker-compose"],
       "matchPackageNames": ["/home-assistant/"],
       "enabled": false
     },
