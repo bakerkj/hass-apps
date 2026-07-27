@@ -18,12 +18,9 @@ image pull, headless Chrome (system ``google-chrome`` + the
 import asyncio
 import contextlib
 import json
-import os
 import shutil
-import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -42,15 +39,15 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 from dashboard_entity_proxy import proxy as proxy_mod
 
-# Pinned HA version so the integration suite stays deterministic across
-# upstream releases. Renovate tracks this via the digest comment below;
-# bump deliberately when validating against a new HA.
-# renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
-HA_IMAGE = "ghcr.io/home-assistant/home-assistant:2026.6.2"
-HA_BOOT_TIMEOUT = 120
-
-ADDON_BOOT_TIMEOUT = 30
-ADDON_SOURCE_DIR = Path(__file__).resolve().parents[2]
+# Compose stack: the HA image tag is pinned in docker-compose.yml (the
+# single source of truth; Renovate tracks it via the file). Fixture-
+# side lifecycle happens through ``docker compose up/down`` — no image
+# constant needed here.
+_COMPOSE_FILE = Path(__file__).parent / "docker-compose.yml"
+# The compose file bind-mounts a few files from this dir into the
+# ``dep-proxy`` service. Prepared by the ``_compose_stack`` fixture
+# below before ``compose up`` runs.
+_STACK_DIR = Path("/tmp/dep-proxy-e2e")
 
 
 def _docker_available() -> bool:
@@ -118,15 +115,27 @@ def _phase(label: str) -> Iterator[None]:
 from _aiohttp_helpers import _free_port
 
 
-def _wait_for_ha(url: str, deadline: float) -> None:
-    """Block until HA's HTTP responds (any status code) or deadline."""
-    while time.time() < deadline:
-        try:
-            urllib.request.urlopen(url + "/", timeout=2)
-            return
-        except OSError:
-            time.sleep(1)
-    raise TimeoutError(f"HA at {url} did not become ready in time")
+def _compose_port(service: str, container_port: int) -> int:
+    """Return the host port compose published ``service:container_port`` on.
+
+    ``docker compose port`` prints ``0.0.0.0:PORT`` (or ``[::]:PORT`` on
+    v6-first daemons) for the requested mapping.
+    """
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(_COMPOSE_FILE),
+            "port",
+            service,
+            str(container_port),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(result.stdout.strip().rsplit(":", 1)[1])
 
 
 def _http_post_json(
@@ -212,103 +221,127 @@ def _ws_call(ws_url: str, token: str, cmd: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(go())
 
 
-@pytest.fixture(scope="session")
-def ha() -> Iterator[dict[str, str]]:
-    """Start HA in a docker container; yield a dict with ``url``,
-    ``ws_url``, ``access_token``, ``refresh_token``.
+# The addon's /data/options.json content. Deterministic across the whole
+# session — no per-test variation needed here (per-test proxy configs
+# use ``proxy_factory`` below, which spawns fresh Python proxies).
+_OPTIONS = {
+    "homeassistant_url": "http://ha:8123",
+    "transparent": True,
+    "state_update_interval": "",
+    "extra_entities": [],
+    "include_entity_globs": [],
+    "exclude_entity_globs": [],
+    "passthrough_all": False,
+    "log_level": "INFO",
+    "customization_file": "",
+    "show_client_paths": True,
+    # 0 disables; integration tests don't want timer flakiness from the
+    # periodic refresh.
+    "registry_mode": "incremental",
+    "registry_refetch_interval": 0,
+    "registry_burst_threshold": 50,
+}
 
-    Session-scoped: the ~30-60 s bootstrap is paid once per pytest run.
+
+@pytest.fixture(scope="session", autouse=True)
+def _compose_stack() -> Iterator[None]:
+    """Bring up the compose stack (ha + dep-proxy) and tear it down after
+    the session.
+
+    ``docker compose up -d --wait`` blocks until both services'
+    healthchecks pass — replaces the pre-compose ``_wait_for_ha`` /
+    ``_wait_for_port`` polling. Bind-mount files under ``_STACK_DIR`` are
+    prepared here because they're generated from the shipped nginx
+    template (rendered once, per-session) — not something the checked-in
+    compose file can hold static.
     """
-    port = _free_port()
-    config_dir = Path(tempfile.mkdtemp(prefix="ha_test_"))
-    # Bake a deterministic set of test entities so individual tests can
-    # put them in / out of scope without each one needing to provision
-    # its own integration. The names ``int.test_*`` give tests a stable
-    # vocabulary for assertions.
-    (config_dir / "configuration.yaml").write_text(
-        "default_config:\n"
-        "frontend:\n"
-        "input_boolean:\n"
-        "  int_test_a: {name: Int Test A}\n"
-        "  int_test_b: {name: Int Test B}\n"
-        "  int_test_c: {name: Int Test C}\n"
-        "  int_test_d: {name: Int Test D}\n"
-        "input_text:\n"
-        "  int_text_a: {name: Int Text A, initial: hello}\n"
-        "  int_text_b: {name: Int Text B, initial: world}\n"
-        # A template weather entity that supports ``weather/subscribe_forecast``
-        # so tests can exercise the namespaced-subscription routing
-        # path without depending on a real weather integration. The
-        # ``forecasts:`` section declares a daily forecast template,
-        # without which HA replies ``forecast_not_supported`` to a
-        # ``forecast_type: daily`` subscribe request.
-        "template:\n"
-        "  - weather:\n"
-        "      name: Int Test Weather\n"
-        '      condition_template: "sunny"\n'
-        '      temperature_template: "70"\n'
-        '      temperature_unit: "°F"\n'
-        '      humidity_template: "50"\n'
-        "      forecasts:\n"
-        '        - day_template: "{{ now().isoformat() }}"\n'
-        '          condition_template: "sunny"\n'
-        '          temperature_template: "72"\n'
-        '          templow_template: "55"\n'
+    # Belt-and-suspenders: an aborted prior session (or a manual
+    # ``compose up`` before file prep) leaves compose containers holding
+    # bind-mount refs, and docker creates empty root-owned dirs at the
+    # missing bind-source paths. Bring any prior stack down first, then
+    # clean the tmp dir via a rootful container (own-user rm can't
+    # remove root-owned entries).
+    subprocess.run(
+        ["docker", "compose", "-f", str(_COMPOSE_FILE), "down", "-v"],
+        check=False,
+        capture_output=True,
     )
-    container = f"ha_int_test_{port}"
-
-    # Clean up any stray container with this name.
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
-    with _phase("ha container start"):
+    if _STACK_DIR.exists():
+        # Bind the parent and remove _STACK_DIR itself — a prior aborted
+        # ``compose up`` may have made the dir (and its entries)
+        # root-owned, which pytest's user can't rm and can't overwrite.
         subprocess.run(
             [
                 "docker",
                 "run",
-                "-d",
-                "--name",
-                container,
-                "-p",
-                f"{port}:8123",
+                "--rm",
                 "-v",
-                f"{config_dir}:/config",
-                HA_IMAGE,
+                f"{_STACK_DIR.parent}:/x",
+                "alpine:3.20",
+                "sh",
+                "-c",
+                f"rm -rf /x/{_STACK_DIR.name}",
+            ],
+            check=False,
+            capture_output=True,
+        )
+    _STACK_DIR.mkdir(parents=True, exist_ok=True)
+    (_STACK_DIR / "options.json").write_text(json.dumps(_OPTIONS))
+    (_STACK_DIR / "nginx.conf").write_text(_render_nginx_conf())
+    render_noop = _STACK_DIR / "render-nginx-conf"
+    render_noop.write_text(_RENDER_NOOP)
+    render_noop.chmod(0o755)
+
+    with _phase("compose up"):
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(_COMPOSE_FILE),
+                "up",
+                "-d",
+                "--wait",
             ],
             check=True,
             capture_output=True,
         )
-
-    url = f"http://127.0.0.1:{port}"
-    ws_url = f"ws://127.0.0.1:{port}/api/websocket"
     try:
-        with _phase("ha http ready"):
-            _wait_for_ha(url, time.time() + HA_BOOT_TIMEOUT)
-        with _phase("ha onboarding"):
-            tokens = _onboard(url)
-        yield {
-            "url": url,
-            "ws_url": ws_url,
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens["refresh_token"],
-            "config_dir": str(config_dir),
-            "container": container,
-        }
+        yield
     finally:
         subprocess.run(
-            ["docker", "rm", "-f", container], capture_output=True, check=False
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(_COMPOSE_FILE),
+                "down",
+                "-v",
+            ],
+            check=False,
+            capture_output=True,
         )
-        shutil.rmtree(config_dir, ignore_errors=True)
+        shutil.rmtree(_STACK_DIR, ignore_errors=True)
 
 
-def _wait_for_port(host: str, port: int, timeout: float) -> None:
-    """Block until ``host:port`` accepts a TCP connection or timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=1):
-                return
-        except TimeoutError, OSError:
-            time.sleep(0.5)
-    raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
+@pytest.fixture(scope="session")
+def ha(_compose_stack: None) -> dict[str, str]:
+    """Return a dict with ``url``, ``ws_url``, ``access_token``,
+    ``refresh_token`` for the compose-started HA. Onboarding runs on the
+    first request (~2 s) so the first test to depend on ``ha`` triggers
+    it — subsequent tests reuse the session-scoped result.
+    """
+    ha_port = _compose_port("ha", 8123)
+    url = f"http://127.0.0.1:{ha_port}"
+    ws_url = f"ws://127.0.0.1:{ha_port}/api/websocket"
+    with _phase("ha onboarding"):
+        tokens = _onboard(url)
+    return {
+        "url": url,
+        "ws_url": ws_url,
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+    }
 
 
 # Path to the production nginx config template. We render it for tests
@@ -322,19 +355,22 @@ _NGINX_TEMPLATE_PATH = (
 )
 
 
-def _render_nginx_conf(listen_port: int, ha_port: int) -> str:
+def _render_nginx_conf() -> str:
     """Render the production nginx.conf template with test-specific
     substitutions. Matches what ``rootfs/usr/bin/render-nginx-conf`` does
-    at addon boot, plus a listen-port override so several parallel
-    integration runs don't collide on a single shared 8126.
+    at addon boot.
+
+    The addon runs on the compose network and reaches HA via DNS
+    (``http://ha:8123``) — no per-session port template needed. Listen
+    port stays at the shipped 8126.
 
     ``transparent: true`` is implied for the test HA (which trusts no
     X-Forwarded-* proxies anyway), so ``__XFWD_BLOCK__`` resolves empty.
     """
     template = _NGINX_TEMPLATE_PATH.read_text()
     return (
-        template.replace("__HA_HOST__", "127.0.0.1")
-        .replace("__HA_PORT__", str(ha_port))
+        template.replace("__HA_HOST__", "ha")
+        .replace("__HA_PORT__", "8123")
         .replace("__XFWD_BLOCK__", "")
         # Match the INFO-level form ``render-nginx-conf`` produces. The
         # test harness never flips log_level to DEBUG, so the gated
@@ -342,11 +378,6 @@ def _render_nginx_conf(listen_port: int, ha_port: int) -> str:
         .replace(
             "__STDERR_ACCESS_LOG__",
             "access_log /dev/stderr combined if=$nginx_loggable;",
-        )
-        .replace("listen 8126 default_server", f"listen {listen_port} default_server")
-        .replace(
-            "listen [::]:8126 default_server",
-            f"listen [::]:{listen_port} default_server",
         )
     )
 
@@ -358,132 +389,24 @@ _RENDER_NOOP = "#!/command/with-contenv bash\nexit 0\n"
 
 
 @pytest.fixture(scope="session")
-def addon_image() -> Iterator[str]:
-    """Build the addon docker image once per session from the local
-    source tree. Returns the image tag.
+def proxy_url(_compose_stack: None) -> str:
+    """Return the URL the nginx-fronted addon is published on.
 
-    Uses ``docker buildx build --load`` against the same base image
-    config.json points to; the resulting image is what ships to users —
-    nginx + python + s6 services + the rootfs/ overlay.
-
-    CI pre-builds the image with a GHA-backed buildkit cache and hands
-    us the tag via ``DEP_PROXY_IMAGE``. In that mode we skip both the
-    build and the cleanup (CI handles teardown).
+    The addon container is brought up by ``_compose_stack``; here we
+    just discover the published host port for the compose ``dep-proxy``
+    service's 8126.
     """
-    if pre_built := os.environ.get("DEP_PROXY_IMAGE"):
-        print(
-            f"[dep-e2e] addon image: using prebuilt {pre_built}",
-            file=sys.stderr,
-            flush=True,
-        )
-        yield pre_built
-        return
-    tag = f"dep_int_test:{int(time.time())}"
-    with _phase("addon docker build"):
-        subprocess.run(
-            [
-                "docker",
-                "buildx",
-                "build",
-                "--build-arg",
-                "BUILD_VERSION=int-test",
-                "--load",
-                "-t",
-                tag,
-                str(ADDON_SOURCE_DIR),
-            ],
-            check=True,
-            capture_output=True,
-        )
-    yield tag
-    subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, check=False)
+    return f"http://127.0.0.1:{_compose_port('dep-proxy', 8126)}"
 
 
 @pytest.fixture(scope="session")
-def proxy_url(addon_image: str, ha: dict[str, str]) -> Iterator[str]:
-    """Run the addon container, pointed at the test HA. Yields the
-    nginx-fronted URL.
-
-    Session-scoped: one container instance shared across tests. The
-    container exercises the same nginx + s6 + python stack that ships
-    to users, so tests catch nginx-config bugs (WebSocket upgrade
-    headers, timeout settings, …) as well as Python-side regressions.
+def status_url(_compose_stack: None) -> str:
+    """Return the URL the addon's Python status UI (``/api/sessions``,
+    …) is published on. Same shape as ``proxy_url`` — pre-compose these
+    were one port because the container ran ``--network host``; on the
+    compose network they're two separate published ports.
     """
-    ha_parts = urllib.parse.urlsplit(ha["url"])
-    assert ha_parts.port is not None, (
-        "ha fixture must publish a url with an explicit port"
-    )
-    addon_port = _free_port()
-    # Write options + an nginx override (the override only swaps the
-    # listen port so several parallel runs don't collide on 8126).
-    options_path = Path(tempfile.mkstemp(suffix=".json")[1])
-    options_path.write_text(
-        json.dumps(
-            {
-                "homeassistant_url": f"http://127.0.0.1:{ha_parts.port}",
-                "transparent": True,
-                "state_update_interval": "",
-                "extra_entities": [],
-                "include_entity_globs": [],
-                "exclude_entity_globs": [],
-                "passthrough_all": False,
-                "log_level": "INFO",
-                "customization_file": "",
-                "show_client_paths": True,
-                "registry_mode": "incremental",
-                # 0 disables; integration tests don't want timer
-                # flakiness from the periodic refresh.
-                "registry_refetch_interval": 0,
-                "registry_burst_threshold": 50,
-            }
-        )
-    )
-    nginx_conf_path = options_path.parent / f"dep_int_nginx_{addon_port}.conf"
-    nginx_conf_path.write_text(_render_nginx_conf(addon_port, ha_parts.port))
-    # No-op stand-in for the init-nginx-conf cont-init renderer so it
-    # doesn't overwrite the bind-mounted nginx.conf above.
-    render_noop_path = options_path.parent / f"dep_int_render_noop_{addon_port}.sh"
-    render_noop_path.write_text(_RENDER_NOOP)
-    render_noop_path.chmod(0o755)
-
-    container = f"dep_int_addon_{addon_port}"
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
-    with _phase("addon container start"):
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                container,
-                # ``--network host`` is the simplest way to give the
-                # container reach into HA on the host's loopback. Each
-                # test run picks a fresh ``addon_port`` so parallel
-                # invocations don't collide on a single shared 8126.
-                "--network",
-                "host",
-                "-v",
-                f"{options_path}:/data/options.json:ro",
-                "-v",
-                f"{nginx_conf_path}:/etc/nginx/nginx.conf:ro",
-                "-v",
-                f"{render_noop_path}:/usr/bin/render-nginx-conf:ro",
-                addon_image,
-            ],
-            check=True,
-            capture_output=True,
-        )
-    try:
-        with _phase("addon port ready"):
-            _wait_for_port("127.0.0.1", addon_port, ADDON_BOOT_TIMEOUT)
-        yield f"http://127.0.0.1:{addon_port}"
-    finally:
-        subprocess.run(
-            ["docker", "rm", "-f", container], capture_output=True, check=False
-        )
-        options_path.unlink(missing_ok=True)
-        render_noop_path.unlink(missing_ok=True)
-        nginx_conf_path.unlink(missing_ok=True)
+    return f"http://127.0.0.1:{_compose_port('dep-proxy', 8098)}"
 
 
 def _spawn_proxy(

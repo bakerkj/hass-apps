@@ -15,12 +15,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Home Assistant add-on base images pinned in Dockerfile FROM/ARG lines, workflow HA_IMAGE env var, and the HA_IMAGE constant in the dep-proxy integration conftest. A single manager across all three file types so a bump moves every reference together in one PR (the alternative — separate per-file managers or the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps and stranded one set when the other merged).",
-      "managerFilePatterns": [
-        "/Dockerfile$/",
-        "/\\.github/workflows/.+\\.ya?ml$/",
-        "/tests/integration/conftest\\.py$/"
-      ],
+      "description": "Home Assistant add-on base images pinned in Dockerfile FROM/ARG lines and the HA image tag pinned in the dep-proxy e2e docker-compose.yml. A single manager across both file types so a bump moves every reference together in one PR (the alternative — separate per-file managers or the built-in dockerfile manager for FROM + inline ``# renovate:`` annotations for the rest — split the bumps and stranded one set when the other merged).",
+      "managerFilePatterns": ["/Dockerfile$/", "/docker-compose\\.ya?ml$/"],
       "matchStrings": [
         "(?<depName>ghcr\\.io/home-assistant/[\\w.-]+):(?<currentValue>[\\w.-]+)"
       ],

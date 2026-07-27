@@ -1,0 +1,28 @@
+default_config:
+frontend:
+input_boolean:
+  int_test_a: { name: Int Test A }
+  int_test_b: { name: Int Test B }
+  int_test_c: { name: Int Test C }
+  int_test_d: { name: Int Test D }
+input_text:
+  int_text_a: { name: Int Text A, initial: hello }
+  int_text_b: { name: Int Text B, initial: world }
+# A template weather entity that supports ``weather/subscribe_forecast``
+# so tests can exercise the namespaced-subscription routing path without
+# depending on a real weather integration. The ``forecasts:`` section
+# declares a daily forecast template, without which HA replies
+# ``forecast_not_supported`` to a ``forecast_type: daily`` subscribe
+# request.
+template:
+  - weather:
+      name: Int Test Weather
+      condition_template: "sunny"
+      temperature_template: "70"
+      temperature_unit: "°F"
+      humidity_template: "50"
+      forecasts:
+        - day_template: "{{ now().isoformat() }}"
+          condition_template: "sunny"
+          temperature_template: "72"
+          templow_template: "55"

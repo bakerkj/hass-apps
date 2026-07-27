@@ -15,14 +15,9 @@ import pytest
 
 E2E = pytest.mark.e2e
 
-# Status-UI port. The addon container runs with ``--network host`` (see
-# ``proxy_url`` fixture), so the Python-served /api/sessions endpoint
-# binds on the host's loopback at this port.
-_STATUS_PORT = 8098
 
-
-def _fetch_sessions(detail: str = "summary") -> list[dict]:
-    url = f"http://127.0.0.1:{_STATUS_PORT}/api/sessions"
+def _fetch_sessions(status_url: str, detail: str = "summary") -> list[dict]:
+    url = f"{status_url}/api/sessions"
     if detail == "full":
         url += "?detail=full"
     with urllib.request.urlopen(url, timeout=2) as r:
@@ -30,7 +25,9 @@ def _fetch_sessions(detail: str = "summary") -> list[dict]:
 
 
 @E2E
-async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str]):
+async def test_http_requests_show_in_status_ui(
+    proxy_url: str, status_url: str, ha: dict[str, str]
+):
     """Drive a few HTTP requests through the addon's nginx; assert the
     status UI lists at least one ``http_client`` card whose rows include
     the right targets and a populated rx/tx byte count.
@@ -43,13 +40,32 @@ async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str
         async with cs.get(proxy_url + "/auth/providers") as resp:
             await resp.read()
 
+    # Under the compose network the addon sees two client IPs — the
+    # in-container docker healthcheck (from localhost) and pytest's
+    # aiohttp session (from the host-side docker gateway). Each shows
+    # up as its own http_client card; pick the pytest one by matching
+    # ``/auth/providers`` (never fired by the healthcheck, which only
+    # hits ``/``).
     rows: list[dict] = []
     tx_total = 0
     for _ in range(40):
-        clients = [s for s in _fetch_sessions() if s.get("kind") == "http_client"]
-        if clients and clients[0].get("rows"):
-            rows = clients[0]["rows"]
-            tx_total = clients[0].get("tx_bytes", 0)
+        clients = [
+            s for s in _fetch_sessions(status_url) if s.get("kind") == "http_client"
+        ]
+        us = next(
+            (
+                c
+                for c in clients
+                if any(
+                    "/auth/providers" in r.get("last_uri", "")
+                    for r in c.get("rows", [])
+                )
+            ),
+            None,
+        )
+        if us and us.get("rows"):
+            rows = us["rows"]
+            tx_total = us.get("tx_bytes", 0)
             break
         await asyncio.sleep(0.1)
 
@@ -75,7 +91,7 @@ async def test_http_requests_show_in_status_ui(proxy_url: str, ha: dict[str, str
 
 @E2E
 async def test_http_traffic_detail_full_returns_all_rows(
-    proxy_url: str, ha: dict[str, str]
+    proxy_url: str, status_url: str, ha: dict[str, str]
 ):
     """The ``?detail=full`` query param returns the full row set
     (otherwise capped at 50). Mirrors B12's detail switch on intercept
@@ -86,21 +102,37 @@ async def test_http_traffic_detail_full_returns_all_rows(
         async with cs.get(proxy_url + "/api/", headers=headers) as resp:
             await resp.read()
 
-    # Give the tailer a moment to ingest.
+    def _pick_us(entries: list[dict]) -> dict | None:
+        # Match pytest's aiohttp session by its /api target; the docker
+        # healthcheck client (from container-localhost) never hits /api,
+        # so we never pick it.
+        return next(
+            (
+                e
+                for e in entries
+                if any("/api" in r.get("last_uri", "") for r in e.get("rows", []))
+            ),
+            None,
+        )
+
     for _ in range(20):
-        clients = [s for s in _fetch_sessions() if s.get("kind") == "http_client"]
-        if clients and clients[0].get("rows"):
+        clients = [
+            s for s in _fetch_sessions(status_url) if s.get("kind") == "http_client"
+        ]
+        if _pick_us(clients):
             break
         await asyncio.sleep(0.1)
     else:
-        pytest.fail("http_client card never showed up")
+        pytest.fail("pytest-side http_client card never showed up")
 
     for detail in ("summary", "full"):
         clients = [
-            s for s in _fetch_sessions(detail=detail) if s.get("kind") == "http_client"
+            s
+            for s in _fetch_sessions(status_url, detail=detail)
+            if s.get("kind") == "http_client"
         ]
-        assert clients, f"http_client missing for detail={detail}"
-        entry = clients[0]
+        entry = _pick_us(clients)
+        assert entry, f"pytest-side http_client missing for detail={detail}"
         assert "row_count" in entry
         assert "rows" in entry
         assert "rx_bytes" in entry

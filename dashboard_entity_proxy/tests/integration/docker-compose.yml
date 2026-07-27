@@ -1,0 +1,72 @@
+# dep-proxy e2e stack: real Home Assistant + the real add-on image, on
+# a compose network so the add-on reaches HA via DNS (``http://ha:8123``)
+# instead of the loopback-with-dynamic-port dance the pre-compose harness
+# used. Pytest runs on the host and reaches services via published ports
+# (random host port; discovered via ``docker compose port``).
+#
+# Prereq: the add-on image must exist locally as ``dep_int_test:ci``. CI
+# builds it via ``docker/build-push-action`` with a GHA layer cache; for
+# local dev, ``docker build -t dep_int_test:ci ../..``.
+#
+# The per-session bind mounts under ``/tmp/dep-proxy-e2e/`` are prepared
+# by pytest before ``docker compose up`` runs — see the ``compose_stack``
+# fixture in ``conftest.py``.
+
+services:
+  ha:
+    # renovate: datasource=docker depName=ghcr.io/home-assistant/home-assistant
+    image: ghcr.io/home-assistant/home-assistant:2026.7.4
+    volumes:
+      # Mount just configuration.yaml — HA writes .storage/, deps/, and
+      # its log to the rest of /config; letting those land on the
+      # container's writable layer keeps the session ephemeral (``down
+      # -v`` drops everything).
+      - ./configuration.yaml:/config/configuration.yaml:ro
+    ports:
+      - "8123"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python3 -c "import urllib.request;
+          urllib.request.urlopen(''http://localhost:8123/'', timeout=2)"',
+        ]
+      interval: 2s
+      timeout: 4s
+      retries: 60
+      start_period: 10s
+
+  dep-proxy:
+    image: dep_int_test:ci
+    # Fail loud when the addon image isn't built locally — without this,
+    # ``compose up`` treats it as pullable and races off to docker.io,
+    # producing an opaque "pull access denied for dep_int_test" error.
+    pull_policy: never
+    depends_on:
+      ha:
+        condition: service_healthy
+    volumes:
+      # Session-scoped renderings written by the pytest fixture before
+      # ``docker compose up`` — options.json + a nginx.conf rendered from
+      # the production template (so we exercise the shipped nginx config,
+      # not a parallel test copy) + a no-op stand-in for the
+      # ``render-nginx-conf`` cont-init step (else it would overwrite the
+      # bind-mounted nginx.conf at addon boot).
+      - /tmp/dep-proxy-e2e/options.json:/data/options.json:ro
+      - /tmp/dep-proxy-e2e/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /tmp/dep-proxy-e2e/render-nginx-conf:/usr/bin/render-nginx-conf:ro
+    ports:
+      # 8126: nginx (main add-on entry point).
+      # 8098: the Python status UI's HTTP API — used by
+      # test_http_traffic_pane.py to read /api/sessions. Pre-compose the
+      # container ran ``--network host`` so this bound directly on the
+      # runner's loopback; on the compose network we publish it and let
+      # pytest discover the host port via ``docker compose port``.
+      - "8126"
+      - "8098"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8126/ || exit 1"]
+      interval: 2s
+      timeout: 4s
+      retries: 30
+      start_period: 3s
