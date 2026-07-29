@@ -1,0 +1,21 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# halpid exited. Let s6 restart it -- do NOT halt the container.
+#
+# halpid disarms the hardware watchdog only on a clean SIGTERM/SIGINT
+# (daemon/signals.rs cleanup()). If it instead panics/aborts while armed
+# (e.g. a fatal I2C error), it leaves the watchdog armed. Halting the container
+# here would then leave that watchdog armed and unfed, and the controller hard
+# power-cycles the host within the timeout (<=10 s) -- the exact unclean cut
+# this add-on exists to prevent. Restarting re-runs Start, which re-arms and
+# re-feeds the watchdog before it expires. A persistent failure becomes a
+# visible restart loop in the add-on log, which is strictly safer than a
+# hard-reset loop.
+#
+# The restart throttle is deliberately tiny here (unlike mqtt/finish's 1 s): if
+# halpid crashed while the watchdog was armed, every fraction of a second spent
+# here eats into the residual re-feed window before the controller hard-resets
+# the host. 0.2 s is enough to avoid a pathological tight spin without
+# meaningfully shortening that window.
+echo "[halpi2] halpid exited (code ${1:-?}); restarting" >&2
+sleep 0.2

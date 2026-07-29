@@ -32,6 +32,18 @@
         }
       ]
     },
+    "container_hooks": {
+      "release-type": "simple",
+      "package-name": "container_hooks",
+      "component": "container_hooks",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "container_info_mqtt": {
       "release-type": "simple",
       "package-name": "container_info_mqtt",
@@ -92,6 +104,18 @@
         }
       ]
     },
+    "halpi2_power": {
+      "release-type": "simple",
+      "package-name": "halpi2_power",
+      "component": "halpi2_power",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "haos_configurator": {
       "release-type": "simple",
       "package-name": "haos_configurator",
@@ -116,10 +140,22 @@
         }
       ]
     },
-    "container_hooks": {
+    "signalk": {
       "release-type": "simple",
-      "package-name": "container_hooks",
-      "component": "container_hooks",
+      "package-name": "signalk",
+      "component": "signalk",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "signalk_bridge": {
+      "release-type": "simple",
+      "package-name": "signalk_bridge",
+      "component": "signalk_bridge",
       "extra-files": [
         {
           "type": "json",
@@ -144,30 +180,6 @@
       "release-type": "simple",
       "package-name": "turbostat_mqtt",
       "component": "turbostat_mqtt",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "config.json",
-          "jsonpath": "$.version"
-        }
-      ]
-    },
-    "signalk_bridge": {
-      "release-type": "simple",
-      "package-name": "signalk_bridge",
-      "component": "signalk_bridge",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "config.json",
-          "jsonpath": "$.version"
-        }
-      ]
-    },
-    "signalk": {
-      "release-type": "simple",
-      "package-name": "signalk",
-      "component": "signalk",
       "extra-files": [
         {
           "type": "json",

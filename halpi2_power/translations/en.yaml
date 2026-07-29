@@ -1,0 +1,71 @@
+configuration:
+  mode:
+    name: Controller mode
+    description: >-
+      coop: the daemon coordinates with the power controller so a power outage
+      produces a clean shutdown before the supercapacitors are exhausted
+      (recommended). solo: telemetry only -- the controller manages power on its
+      own thresholds and a power outage ends in an abrupt power cut. Co-op
+      requires the hardware watchdog, so solo disables it automatically.
+  watchdog_timeout_ms:
+    name: Hardware watchdog timeout (ms)
+    description: >-
+      Milliseconds before the power controller hard power-cycles the system if
+      it stops seeing I2C traffic from the daemon. Only used when mode is coop,
+      where it must be at least 1000 (arming the watchdog is what enters Co-op).
+      Ignored and forced to 0 when mode is solo. Maximum 65535 (~65 seconds).
+  power_outage_time_limit:
+    name: Power outage time limit (seconds)
+    description: >-
+      How long the input voltage must stay below the power outage threshold
+      before a graceful shutdown is started. Short glitches are ignored. Must be
+      between 1 and 60.
+  power_outage_voltage_limit:
+    name: Power outage voltage limit (volts)
+    description: >-
+      Input voltage below which the supply is considered lost. Must be between
+      5.0 and 15.0.
+  interval_seconds:
+    name: Publish interval (seconds)
+    description: Seconds between telemetry reads and MQTT publishes (1-300).
+  shutdown_via:
+    name: Shutdown method
+    description: >-
+      supervisor: ask the Supervisor to shut the host down when the
+      supercapacitors are nearly depleted (recommended). mqtt_only: publish
+      telemetry only and never shut down. dry_run: run the full state machine
+      and log the decision without acting -- useful for testing.
+  mqtt_host:
+    name: MQTT host
+    description: >-
+      Leave blank to use the broker the Supervisor provides (e.g. the Mosquitto
+      add-on). Set only to target an external broker.
+  mqtt_port:
+    name: MQTT port
+    description: Leave blank to use the Supervisor-provided port.
+  mqtt_username:
+    name: MQTT username
+    description: Leave blank to use Supervisor-provided credentials.
+  mqtt_password:
+    name: MQTT password
+    description: Leave blank to use Supervisor-provided credentials.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description:
+      Home Assistant MQTT Discovery prefix (normally "homeassistant").
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Base topic for state and availability messages.
+  client_id:
+    name: MQTT client ID
+    description: Client identifier used when connecting to the broker.
+  expire_after_multiplier:
+    name: Expire-after multiplier
+    description: >-
+      Entities are marked unavailable after interval x this multiplier without
+      an update (2-10).
+  log_level:
+    name: Log level
+    description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  # power_outage_time_limit / power_outage_voltage_limit together decide when the
+  # daemon gives up on the input supply and starts shutting the host down.

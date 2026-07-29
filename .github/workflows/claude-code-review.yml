@@ -72,6 +72,11 @@ jobs:
             - frigate_compressor — long-running daemon that re-encodes
               older Frigate NVR recordings using Intel QSV with
               VAAPI / NVENC / CPU fallback; tracks state in SQLite.
+            - halpi2_power — runs the HALPI2 power controller daemon
+              (halpid) in Co-op mode so a power outage triggers a graceful
+              Supervisor shutdown, and publishes controller telemetry
+              (voltages, current, temperatures, power state) to MQTT
+              Discovery.
             - haos_configurator — manifest-driven installer for
               persistent HAOS host files via `nsenter`.
             - intel_gpu_top_mqtt — wraps `intel_gpu_top` and publishes

@@ -1,0 +1,13 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# The MQTT publisher exited. Let s6 restart just this service -- do NOT halt the
+# container.
+#
+# The publisher is non-safety-critical telemetry. Halting here would take halpid
+# down with it, and halpid's SIGTERM cleanup disarms the hardware watchdog and
+# drops the controller to Solo -- so a bug in telemetry would silently disable
+# graceful power-outage shutdown until the next real outage cut power hard. A
+# telemetry crash must never be able to kill the safety daemon. `sleep`
+# throttles a tight crash loop.
+echo "[halpi2] mqtt publisher exited (code ${1:-?}); restarting" >&2
+sleep 1
