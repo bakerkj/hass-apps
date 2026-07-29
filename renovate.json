@@ -35,6 +35,17 @@
     },
     {
       "customType": "regex",
+      "description": "Pinned halpid (HALPI2 power controller daemon) release built from source in the halpi2_power Dockerfile. Upstream tags are v<semver>+<rev>; regex versioning so the +<rev> packaging bumps compare too. The add-on's watchdog patch is pinned against a specific release, so a bump that stops the patch applying fails the build loudly -- the intended review signal.",
+      "managerFilePatterns": ["/Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=github-releases depName=(?<depName>\\S+)\\s+ARG HALPID_VERSION=(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:\\+(?<build>\\d+))?$"
+    },
+    {
+      "customType": "regex",
       "description": "GitHub runner versions in shell scripts and YAML within workflows",
       "managerFilePatterns": ["/.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [

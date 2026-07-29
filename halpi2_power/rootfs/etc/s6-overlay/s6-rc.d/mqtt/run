@@ -1,0 +1,21 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# MQTT publisher: polls halpid's UNIX-socket HTTP API and publishes HA discovery
+# entities. Deliberately does no I2C of its own -- halpid owns the bus.
+set -euo pipefail
+
+SOCK="/run/halpid/halpid.sock"
+
+# halpid is a dependency, but its socket may lag the service coming up.
+for _ in $(seq 1 60); do
+  [[ -S "${SOCK}" ]] && break
+  sleep 1
+done
+
+if [[ ! -S "${SOCK}" ]]; then
+  echo "[halpi2] halpid socket ${SOCK} never appeared; is halpid running?" >&2
+  exit 1
+fi
+
+export PYTHONPATH=/opt
+exec python3 -m halpi2_power --options /data/options.json --socket "${SOCK}"

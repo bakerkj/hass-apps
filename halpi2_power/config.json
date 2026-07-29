@@ -1,0 +1,55 @@
+{
+  "name": "HALPI2 Power",
+  "slug": "halpi2_power",
+  "description": "Runs the HALPI2 power controller daemon (halpid) in Co-op mode for graceful shutdown on power outage, and publishes controller telemetry as Home Assistant MQTT Discovery sensors.",
+  "url": "https://github.com/bakerkj/hass-apps",
+  "image": "ghcr.io/bakerkj/{arch}-halpi2_power",
+  "version": "0.0.1",
+  "arch": [
+    "aarch64"
+  ],
+  "stage": "experimental",
+  "startup": "services",
+  "init": false,
+  "hassio_api": true,
+  "hassio_role": "manager",
+  "services": [
+    "mqtt:need"
+  ],
+  "devices": [
+    "/dev/i2c-1"
+  ],
+  "options": {
+    "mode": "coop",
+    "watchdog_timeout_ms": 10000,
+    "power_outage_time_limit": 5.0,
+    "power_outage_voltage_limit": 9.0,
+    "interval_seconds": 10,
+    "shutdown_via": "supervisor",
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "halpi2_power",
+    "client_id": "halpi2-power",
+    "expire_after_multiplier": 4,
+    "log_level": "INFO"
+  },
+  "schema": {
+    "mode": "list(coop|solo)",
+    "watchdog_timeout_ms": "int(0,65535)",
+    "power_outage_time_limit": "float(1,60)",
+    "power_outage_voltage_limit": "float(5,15)",
+    "interval_seconds": "int(1,300)",
+    "shutdown_via": "list(supervisor|mqtt_only|dry_run)",
+    "mqtt_host": "str?",
+    "mqtt_port": "port?",
+    "mqtt_username": "str?",
+    "mqtt_password": "password?",
+    "mqtt_discovery_prefix": "str",
+    "mqtt_base_topic": "str",
+    "client_id": "str",
+    "expire_after_multiplier": "int(2,10)",
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)"
+  },
+  "map": [
+    "share:rw"
+  ]
+}

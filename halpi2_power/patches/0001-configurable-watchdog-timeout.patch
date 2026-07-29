@@ -1,0 +1,225 @@
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' halpid-orig/config/halpid.conf halpid-src/config/halpid.conf
+--- a/config/halpid.conf	2026-06-04 08:17:50.000000000 -0400
++++ b/config/halpid.conf	2026-07-21 23:57:33.526887444 -0400
+@@ -34,3 +34,19 @@
+ # Set to empty string for dry-run mode (testing without actually shutting down)
+ # Default: /sbin/poweroff
+ poweroff: /sbin/poweroff
++
++# Hardware Watchdog
++# -----------------
++# Timeout in milliseconds before the controller hard power-cycles the system
++# if it stops seeing I2C traffic from this daemon (default: 10000).
++#
++# The controller firmware feeds the watchdog on ANY I2C operation, so the
++# daemon's regular 100 ms polling keeps it alive. The daemon disarms it on a
++# clean shutdown (SIGINT/SIGTERM).
++#
++# Set to 0 to disable the watchdog entirely -- it is then never armed, and no
++# unattended power-cycle can occur. Choose this where an unexpected reset is
++# worse than a hung system, or where maintenance windows may exceed the timeout.
++#
++# Note the value is a u16, so the maximum is 65535 ms (~65 seconds).
++watchdog-timeout-ms: 10000
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' halpid-orig/halpi-common/src/config.rs halpid-src/halpi-common/src/config.rs
+--- a/halpi-common/src/config.rs	2026-06-04 08:17:50.000000000 -0400
++++ b/halpi-common/src/config.rs	2026-07-21 23:57:33.524869670 -0400
+@@ -18,6 +18,11 @@
+ /// Default blackout voltage limit in volts
+ pub const DEFAULT_BLACKOUT_VOLTAGE_LIMIT: f64 = 9.0;
+
++/// Default hardware watchdog timeout in milliseconds
++///
++/// A value of 0 disables the watchdog entirely (it is never armed).
++pub const DEFAULT_WATCHDOG_TIMEOUT_MS: u16 = 10000;
++
+ /// Default socket group name
+ pub const DEFAULT_SOCKET_GROUP: &str = "adm";
+
+@@ -76,6 +81,18 @@
+     /// Path to UNIX socket for LED override control
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub led_socket: Option<PathBuf>,
++
++    /// Hardware watchdog timeout in milliseconds
++    ///
++    /// The controller firmware feeds the watchdog on any I2C operation, so the
++    /// state machine's regular polling keeps it alive. If the timeout expires the
++    /// controller hard power-cycles the system as an emergency recovery measure.
++    ///
++    /// Set to 0 to disable the watchdog entirely -- it is then never armed, and no
++    /// unattended power-cycle can occur. Useful where an unexpected reset is worse
++    /// than a hung system, or where maintenance windows may exceed the timeout.
++    #[serde(default = "default_watchdog_timeout_ms")]
++    pub watchdog_timeout_ms: u16,
+ }
+
+ // Default value functions for serde
+@@ -95,6 +112,10 @@
+     DEFAULT_BLACKOUT_VOLTAGE_LIMIT
+ }
+
++fn default_watchdog_timeout_ms() -> u16 {
++    DEFAULT_WATCHDOG_TIMEOUT_MS
++}
++
+ fn default_socket_group() -> String {
+     DEFAULT_SOCKET_GROUP.to_string()
+ }
+@@ -114,6 +135,7 @@
+             socket_group: DEFAULT_SOCKET_GROUP.to_string(),
+             poweroff: DEFAULT_POWEROFF_COMMAND.to_string(),
+             led_socket: None,
++            watchdog_timeout_ms: DEFAULT_WATCHDOG_TIMEOUT_MS,
+         }
+     }
+ }
+@@ -176,6 +198,16 @@
+             )));
+         }
+
++        // Validate watchdog timeout. 0 disables the watchdog; any non-zero value
++        // must comfortably exceed the 100 ms state machine poll interval, or the
++        // controller would reset the system during normal operation.
++        if self.watchdog_timeout_ms != 0 && self.watchdog_timeout_ms < 1000 {
++            return Err(ConfigError::InvalidValue(format!(
++                "watchdog-timeout-ms {} is too short (use 0 to disable, or >= 1000)",
++                self.watchdog_timeout_ms
++            )));
++        }
++
+         Ok(())
+     }
+
+@@ -204,6 +236,8 @@
+         if other.led_socket.is_some() {
+             self.led_socket = other.led_socket;
+         }
++
++        self.watchdog_timeout_ms = other.watchdog_timeout_ms;
+     }
+ }
+
+@@ -234,6 +268,40 @@
+         assert_eq!(config.socket, None);
+         assert_eq!(config.socket_group, "adm");
+         assert_eq!(config.poweroff, "/sbin/poweroff");
++        assert_eq!(config.watchdog_timeout_ms, 10000);
++    }
++
++    #[test]
++    fn test_validate_watchdog_timeout() {
++        // 0 is valid and means "disabled"
++        let config = Config {
++            watchdog_timeout_ms: 0,
++            ..Default::default()
++        };
++        assert!(config.validate().is_ok());
++
++        // Anything shorter than a second races the 100 ms poll loop
++        let config = Config {
++            watchdog_timeout_ms: 500,
++            ..Default::default()
++        };
++        assert!(config.validate().is_err());
++
++        let config = Config {
++            watchdog_timeout_ms: 1000,
++            ..Default::default()
++        };
++        assert!(config.validate().is_ok());
++    }
++
++    #[test]
++    fn test_yaml_watchdog_timeout() {
++        let config: Config = serde_yaml::from_str("watchdog-timeout-ms: 0\n").unwrap();
++        assert_eq!(config.watchdog_timeout_ms, 0);
++
++        // Absent key falls back to the default
++        let config: Config = serde_yaml::from_str("i2c-bus: 1\n").unwrap();
++        assert_eq!(config.watchdog_timeout_ms, 10000);
+     }
+
+     #[test]
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' halpid-orig/halpid/src/main.rs halpid-src/halpid/src/main.rs
+--- a/halpid/src/main.rs	2026-06-04 08:17:50.000000000 -0400
++++ b/halpid/src/main.rs	2026-07-21 23:57:16.829325889 -0400
+@@ -49,6 +49,10 @@
+     /// Poweroff command (empty string for dry-run)
+     #[arg(long)]
+     poweroff: Option<String>,
++
++    /// Hardware watchdog timeout in milliseconds (0 disables the watchdog)
++    #[arg(long)]
++    watchdog_timeout_ms: Option<u16>,
+ }
+
+ #[tokio::main]
+@@ -102,6 +106,9 @@
+     if let Some(poweroff) = cli.poweroff {
+         config.poweroff = poweroff;
+     }
++    if let Some(watchdog_timeout_ms) = cli.watchdog_timeout_ms {
++        config.watchdog_timeout_ms = watchdog_timeout_ms;
++    }
+
+     info!(
+         "Configuration: I2C bus {}, address 0x{:02X}",
+@@ -254,6 +261,7 @@
+         assert!(cli.blackout_time_limit.is_none());
+         assert!(cli.blackout_voltage_limit.is_none());
+         assert!(cli.poweroff.is_none());
++        assert!(cli.watchdog_timeout_ms.is_none());
+     }
+
+     #[test]
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' halpid-orig/halpid/src/state_machine/machine.rs halpid-src/halpid/src/state_machine/machine.rs
+--- a/halpid/src/state_machine/machine.rs	2026-06-04 08:17:50.000000000 -0400
++++ b/halpid/src/state_machine/machine.rs	2026-07-21 23:57:06.436517046 -0400
+@@ -10,15 +10,17 @@
+
+ use crate::i2c::HalpiDevice;
+
+-/// Watchdog timeout in milliseconds (10 seconds)
+-///
+-/// This timeout must be longer than the state machine polling interval (100ms).
+-/// The firmware automatically feeds the watchdog on ANY I2C operation, so our
+-/// regular polling (get_measurements every 100ms) keeps it alive.
+-///
+-/// If the timeout expires (firmware cannot communicate with daemon), the system
+-/// will be hard power-cycled as an emergency recovery mechanism.
+-const WATCHDOG_TIMEOUT_MS: u16 = 10000;
++// The watchdog timeout is configurable via `watchdog-timeout-ms` (see
++// `halpi_common::config::Config`), defaulting to 10000 ms.
++//
++// The timeout must be longer than the state machine polling interval (100ms).
++// The firmware automatically feeds the watchdog on ANY I2C operation, so our
++// regular polling (get_measurements every 100ms) keeps it alive.
++//
++// If the timeout expires (firmware cannot communicate with daemon), the system
++// will be hard power-cycled as an emergency recovery mechanism. Configuring the
++// timeout to 0 disables the watchdog: it is never armed, so no unattended
++// power-cycle can occur.
+
+ /// State machine polling interval in milliseconds (100ms)
+ ///
+@@ -90,9 +92,18 @@
+
+         match self.state {
+             DaemonState::Start => {
+-                info!("Initializing watchdog");
++                let watchdog_timeout_ms = config.watchdog_timeout_ms;
++                if watchdog_timeout_ms == 0 {
++                    // Explicitly disabled. Write 0 rather than skipping the write:
++                    // the controller is a separate always-powered MCU and may still
++                    // hold an armed timeout from a previous daemon that was killed
++                    // without running its cleanup path.
++                    warn!("Watchdog disabled by configuration (watchdog-timeout-ms: 0)");
++                } else {
++                    info!("Initializing watchdog ({} ms)", watchdog_timeout_ms);
++                }
+                 let mut device = self.device.lock().await;
+-                device.set_watchdog_timeout(WATCHDOG_TIMEOUT_MS)?;
++                device.set_watchdog_timeout(watchdog_timeout_ms)?;
+                 drop(device);
+                 drop(config);

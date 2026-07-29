@@ -56,7 +56,7 @@ jobs:
           echo "$changed" | awk '{print "  " $0}'
 
           # Known addons whose tests this workflow runs.
-          ALL='container_hooks container_info_mqtt dashboard_entity_proxy dashboard_web_proxy ffmpeg_snapshotter frigate_compressor haos_configurator intel_gpu_top_mqtt signalk signalk_bridge system_resource_tuner turbostat_mqtt'
+          ALL='container_hooks container_info_mqtt dashboard_entity_proxy dashboard_web_proxy ffmpeg_snapshotter frigate_compressor halpi2_power haos_configurator intel_gpu_top_mqtt signalk signalk_bridge system_resource_tuner turbostat_mqtt'
 
           # ``WORKFLOW_PATH`` is matched as a literal (its dots are real
           # path characters, not ERE metacharacters); the other patterns
@@ -488,6 +488,62 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  halpi2-power-e2e:
+    name: HALPI2 Power e2e
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.addons), 'halpi2_power')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-dependency-glob: "uv.lock"
+          cache-suffix: halpi2-power-e2e
+      # The publisher connects to a real broker over the wire. Docker Hub is
+      # rate-limited from Actions, so install Mosquitto from apt (as the other
+      # MQTT e2e jobs do). Fail loud if the binary is missing.
+      - name: Install Mosquitto broker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+          command -v mosquitto || test -x /usr/sbin/mosquitto
+      # Build the real add-on image (cross-compiles halpid) with a GHA buildkit
+      # cache so the Rust build is reused across runs. The base version comes
+      # from the Dockerfile's BUILD_FROM default (renovate tracks it there).
+      # Surfaced to the e2e via ``HALPI2_POWER_IMAGE`` so it skips its own build.
+      # halpid needs the RP2040 over I2C (absent here), so the e2e fakes it and
+      # exercises the real s6 tree + publisher against the broker.
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./halpi2_power
+          load: true
+          tags: halpi2_power_e2e:ci
+          build-args: |
+            BUILD_VERSION=e2e
+          cache-from: type=gha,scope=halpi2-power-e2e
+          cache-to: type=gha,scope=halpi2-power-e2e,mode=max
+      - run:
+          uv run pytest halpi2_power/tests/integration/ -m e2e -v
+          --junit-xml=junit.xml
+        env:
+          HALPI2_POWER_IMAGE: halpi2_power_e2e:ci
+      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+        if: ${{ !cancelled() }}
+        with:
+          check_name: "HALPI2 Power e2e results"
+          files: junit.xml
+      - run: mv .coverage .coverage.halpi2_power_e2e
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-halpi2-power-e2e
+          path: .coverage.halpi2_power_e2e
+          include-hidden-files: true
+          if-no-files-found: error
+
   coverage:
     name: Combined coverage
     runs-on: ubuntu-24.04
@@ -503,6 +559,7 @@ jobs:
         container-hooks-e2e,
         signalk-bridge-e2e,
         signalk-e2e,
+        halpi2-power-e2e,
       ]
     # Report whatever coverage was produced even if a test job failed or was
     # skipped via the discover gate; the failing job (if any) already reds

@@ -1,0 +1,76 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+#
+# halpid's `poweroff` command, invoked when the supercapacitors are about to be
+# exhausted during a power outage.
+#
+# Running /sbin/poweroff here would only kill this container and leave the host
+# running until the caps deplete -- exactly the unclean power cut this add-on
+# exists to prevent. Ask the Supervisor to shut the host down instead.
+#
+# POST /host/shutdown is matched by ROLE_MANAGER in Supervisor's
+# api/middleware/security.py, so `hassio_role: manager` is sufficient; `admin`
+# is not required.
+set -euo pipefail
+
+# Shutdown first, forensics second.
+#
+# We are racing supercapacitor depletion, so the host-shutdown request must go
+# out before anything that could stall -- in particular before reading halpid's
+# /values, which could hang (up to its --max-time) precisely because the box is
+# in trouble. The shutdown is asynchronous; the container keeps running through
+# the shutdown grace, leaving ample time to append forensics afterward.
+#
+# Add-on stdout does NOT reach the host's persistent journal -- verified by
+# grepping /host/logs/boots/-1, which contains nothing from this add-on. The
+# host journal will prove the OS shut down cleanly, but without this record
+# there is no evidence of WHY, or of the voltages at the time.
+#
+# /share rather than /data: an add-on's /data volume is private to that add-on,
+# so evidence written there cannot be read from an SSH/Samba add-on afterwards --
+# which is exactly when you need it. /share is visible across add-ons and
+# survives the power cycle. Fall back to /data if /share is not mapped.
+if [[ -d /share ]]; then
+  EVIDENCE="/share/halpi2_power/power-outage-events.log"
+else
+  EVIDENCE="/data/power-outage-events.log"
+fi
+mkdir -p "$(dirname "${EVIDENCE}")" 2>/dev/null || true
+SOCK="/run/halpid/halpid.sock"
+STAMP="$(date -Is 2>/dev/null || date)"
+
+echo "[halpi2] Power outage shutdown requested -- calling Supervisor /host/shutdown"
+
+RESULT="FAILED -- Supervisor rejected or was unreachable"
+RC=1
+if [[ -z "${SUPERVISOR_TOKEN:-}" ]]; then
+  echo "[halpi2] SUPERVISOR_TOKEN is unset; cannot reach the Supervisor." >&2
+  RESULT="FAILED (no SUPERVISOR_TOKEN)"
+# --max-time bounds this: a hung connection here would burn the remaining
+# hold-up time silently.
+elif curl -fsS --max-time 10 \
+  -X POST \
+  -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+  http://supervisor/host/shutdown; then
+  echo "[halpi2] Supervisor accepted the shutdown request."
+  RESULT="Supervisor accepted /host/shutdown"
+  RC=0
+else
+  echo "[halpi2] Supervisor shutdown request FAILED." >&2
+  echo "[halpi2] The controller will hard-cut power when the supercaps deplete." >&2
+fi
+
+# Forensics second: the shutdown is already in flight, so a slow or wedged
+# halpid API here no longer delays the host halt.
+{
+  echo "=== ${STAMP} power outage shutdown requested ==="
+  if VALUES="$(curl -fsS --max-time 3 --unix-socket "${SOCK}" http://localhost/values 2>/dev/null)"; then
+    echo "  values: ${VALUES}"
+  else
+    echo "  values: <halpid API unreachable>"
+  fi
+  echo "  result: ${RESULT}"
+} >> "${EVIDENCE}" 2>/dev/null || true
+
+echo "[halpi2] Evidence appended to ${EVIDENCE}"
+exit "${RC}"
