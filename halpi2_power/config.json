@@ -4,7 +4,7 @@
   "description": "Runs the HALPI2 power controller daemon (halpid) in Co-op mode for graceful shutdown on power outage, and publishes controller telemetry as Home Assistant MQTT Discovery sensors.",
   "url": "https://github.com/bakerkj/hass-apps",
   "image": "ghcr.io/bakerkj/{arch}-halpi2_power",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "arch": [
     "aarch64"
   ],
@@ -22,8 +22,8 @@
   "options": {
     "mode": "coop",
     "watchdog_timeout_ms": 10000,
-    "power_outage_time_limit": 5.0,
-    "power_outage_voltage_limit": 9.0,
+    "power_outage_time_limit": 5,
+    "power_outage_voltage_limit": 9,
     "interval_seconds": 10,
     "shutdown_via": "supervisor",
     "mqtt_discovery_prefix": "homeassistant",
