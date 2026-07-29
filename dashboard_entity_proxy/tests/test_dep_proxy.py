@@ -666,7 +666,7 @@ async def test_tunnel_ws_rewrites_origin_to_match_upstream_host() -> None:
             try:
                 async with cs.ws_connect(
                     proxy_url + "/api/hassio_ingress/abc/events",
-                    headers={"Origin": "http://hass.keneli.org:8126"},
+                    headers={"Origin": "http://host.example.com:8126"},
                 ) as ws:
                     await ws.receive(timeout=2.0)
             except aiohttp.ClientError:
