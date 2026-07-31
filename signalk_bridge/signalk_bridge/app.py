@@ -91,6 +91,22 @@ def _entity(
     return ent
 
 
+def _entity_key(
+    pattern: str, spec: dict[str, Any], path: str, per_group_instance_count: int
+) -> str:
+    """Slugified entity key; drops path wildcards for single-instance
+    (no-``*``-in-group) devices, so tanks read as
+    ``sensor.signalk_tanks_freshwater_level``. Falls back to the full
+    path when the group has more than one instance, to avoid collisions
+    on multi-tank boats."""
+    if "*" not in spec["group"] and per_group_instance_count <= 1:
+        segs = path.split(".")
+        pat_segs = pattern.split(".")
+        kept = [s for s, p in zip(segs, pat_segs) if p != "*"]
+        return slugify(".".join(kept))
+    return slugify(path)
+
+
 def resolve_entities(
     tree: dict[str, Any],
     source_tags: dict[str, str] | None = None,
@@ -104,13 +120,26 @@ def resolve_entities(
     ``source_tags`` is provided, multi-source leaves fan out to per-source
     entities (see :func:`paths.flatten`).
     """
-    entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(
+    flat = flatten(
         tree,
         source_tags=source_tags,
         suppress_paths=suppress_paths,
         suppress_primary_on_fanout=suppress_primary_on_fanout,
-    ).items():
+    )
+    # Count instances per group (not per pattern): two tank leaves
+    # -- level and capacity -- for the same fluid_type collapse to one
+    # instance, and a second tank of the same type bumps the count so
+    # the entity key + group label re-include the instance segment.
+    group_instances: dict[str, set[str]] = {}
+    for path in flat:
+        for pattern, spec in PATH_MAP.items():
+            caps = match_path(path, pattern)
+            if caps is not None:
+                group_instances.setdefault(spec["group"], set()).add(".".join(caps))
+                break
+
+    entities: dict[str, dict[str, Any]] = {}
+    for path, raw in flat.items():
         for pattern, spec in PATH_MAP.items():
             caps = match_path(path, pattern)
             if caps is None:
@@ -119,8 +148,17 @@ def resolve_entities(
             if convert is None or not isinstance(raw, (int, float, bool)):
                 # Numeric-only here; text/binary/position handled elsewhere.
                 break
-            group_id, group_label = resolve_group(spec["group"], caps)
-            entities[slugify(path)] = _entity(
+            group_pattern = spec["group"]
+            n_instances = len(group_instances.get(spec["group"], set()))
+            # No-wildcard group patterns (tanks) collapse per-fluid-type
+            # devices into one; re-inject the wildcard on multi-instance
+            # so two fresh-water tanks become two HA devices, not one
+            # with silently overwritten entities.
+            if "*" not in group_pattern and n_instances > 1:
+                group_pattern = f"{group_pattern}.*"
+            group_id, group_label = resolve_group(group_pattern, caps)
+            key = _entity_key(pattern, spec, path, n_instances)
+            entities[key] = _entity(
                 path,
                 spec["name"],
                 render(convert(float(raw))),
@@ -249,6 +287,98 @@ def resolve_special(
                 icon="mdi:alarm-light",
             )
             continue
+
+    entities.update(
+        _tank_derived_entities(
+            tree, source_tags, suppress_paths, suppress_primary_on_fanout
+        )
+    )
+    return entities
+
+
+def _camel_to_snake(s: str) -> str:
+    """freshWater -> fresh_water; matches Victron's fluid_type enum values."""
+    out: list[str] = []
+    for i, c in enumerate(s):
+        if c.isupper() and i > 0:
+            out.append("_")
+        out.append(c.lower())
+    return "".join(out)
+
+
+def _tank_derived_entities(
+    tree: dict[str, Any],
+    source_tags: dict[str, str] | None,
+    suppress_paths: tuple[str, ...] | list[str] | None,
+    suppress_primary_on_fanout: bool,
+) -> dict[str, dict[str, Any]]:
+    """Per-tank ``remaining`` (gal) and ``fluid_type`` (enum), on top of
+    the ``level``/``capacity`` PATH_MAP entries -- Victron-parity fields
+    that aren't direct SignalK leaves."""
+    from collections import Counter
+
+    from .paths import _M3_TO_GAL, GROUP_LABELS
+
+    flat = flatten(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=suppress_paths,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    )
+    tanks: dict[tuple[str, str], dict[str, float]] = {}
+    for path, raw in flat.items():
+        parts = path.split(".")
+        if len(parts) != 4 or parts[0] != "tanks":
+            continue
+        if parts[3] not in ("currentLevel", "capacity"):
+            continue
+        if not isinstance(raw, (int, float)):
+            continue
+        tanks.setdefault((parts[1], parts[2]), {})[parts[3]] = float(raw)
+
+    per_type_count: Counter[str] = Counter()
+    for fluid_type, _instance in tanks:
+        per_type_count[fluid_type] += 1
+
+    entities: dict[str, dict[str, Any]] = {}
+    for (fluid_type, instance), fields in tanks.items():
+        type_slug = slugify(fluid_type)
+        if per_type_count[fluid_type] <= 1:
+            group_id = f"tank.{fluid_type}"
+            group_label = GROUP_LABELS.get(group_id, group_id)
+            key_base = f"tanks_{type_slug}"
+        else:
+            group_id = f"tank.{fluid_type}.{instance}"
+            base_label = GROUP_LABELS.get(f"tank.{fluid_type}", f"tank.{fluid_type}")
+            group_label = f"{base_label} {instance}"
+            key_base = f"tanks_{type_slug}_{instance}"
+
+        # State keeps _camel_to_snake so downstream automations can key on the
+        # same fluid_type string the Victron integration publishes.
+        entities[f"{key_base}_fluid_type"] = _entity(
+            f"tanks.{fluid_type}.{instance}",
+            "Fluid type",
+            _camel_to_snake(fluid_type),
+            group_id,
+            group_label,
+            icon="mdi:water-opacity",
+        )
+
+        current = fields.get("currentLevel")
+        capacity = fields.get("capacity")
+        if current is None or capacity is None:
+            continue
+        entities[f"{key_base}_remaining"] = _entity(
+            f"tanks.{fluid_type}.{instance}.remaining",
+            "Remaining",
+            render(capacity * current * _M3_TO_GAL),
+            group_id,
+            group_label,
+            unit="gal",
+            device_class="volume_storage",
+            state_class="measurement",
+            icon="mdi:cup-water",
+        )
 
     return entities
 
