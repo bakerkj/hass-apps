@@ -293,6 +293,11 @@ def resolve_special(
             tree, source_tags, suppress_paths, suppress_primary_on_fanout
         )
     )
+    entities.update(
+        _battery_derived_entities(
+            tree, source_tags, suppress_paths, suppress_primary_on_fanout
+        )
+    )
     return entities
 
 
@@ -380,6 +385,62 @@ def _tank_derived_entities(
             icon="mdi:cup-water",
         )
 
+    return entities
+
+
+def _battery_derived_entities(
+    tree: dict[str, Any],
+    source_tags: dict[str, str] | None,
+    suppress_paths: tuple[str, ...] | list[str] | None,
+    suppress_primary_on_fanout: bool,
+) -> dict[str, dict[str, Any]]:
+    """Per-battery ``power`` (W) = voltage × current. Not on N2K as a
+    scalar leaf, but derivable everywhere the two source leaves are.
+    Naturally covers the fanout instances too (Battery House, Battery
+    Engine, Battery Solar) since those emit voltage + current under
+    their own instance segment."""
+    flat = flatten(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=suppress_paths,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    )
+    banks: dict[str, dict[str, float]] = {}
+    for path, raw in flat.items():
+        parts = path.split(".")
+        if len(parts) != 4 or parts[0] != "electrical" or parts[1] != "batteries":
+            continue
+        if parts[3] not in ("voltage", "current"):
+            continue
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        banks.setdefault(parts[2], {})[parts[3]] = float(raw)
+
+    entities: dict[str, dict[str, Any]] = {}
+    for instance, fields in banks.items():
+        # Skip when the device reports its own power (BMV/SmartShunt);
+        # V*I is a strictly worse estimate than the shunt's averaged
+        # reading, and overwriting it silently is a regression.
+        if f"electrical.batteries.{instance}.power" in flat:
+            continue
+        v = fields.get("voltage")
+        i = fields.get("current")
+        if v is None or i is None:
+            continue
+        instance_label = (
+            instance.title() if instance.islower() and instance.isalpha() else instance
+        )
+        entities[f"electrical_batteries_{slugify(instance)}_power"] = _entity(
+            f"electrical.batteries.{instance}.power",
+            "Power",
+            render(v * i),
+            f"battery.{instance}",
+            f"Battery {instance_label}",
+            unit="W",
+            device_class="power",
+            state_class="measurement",
+            icon="mdi:flash",
+        )
     return entities
 
 

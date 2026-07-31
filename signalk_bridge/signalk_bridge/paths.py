@@ -593,6 +593,7 @@ GROUP_LABELS: dict[str, str] = {
     "solar": "Solar",
     "inverter": "Inverter",
     "charger": "Charger",
+    "converter": "Converter",
     "gps": "GPS",
     "steering": "Steering",
     "switches.bank": "Digital switches bank",
@@ -640,6 +641,15 @@ TEXT_PATTERN_MAP: dict[str, dict[str, Any]] = {
         "name": "Charging mode",
         "icon": "mdi:battery-charging",
         "group": "charger.*",
+    },
+    # DC-DC / solar converters: N2K PGN 127507 reports operating state
+    # (bulk/absorption/float/off). Two-wildcard capture matches
+    # ``electrical.converter.<instance>.<sub>.operatingState`` which is
+    # what canboatjs emits for SmartSolar chargers.
+    "electrical.converter.*.*.operatingState": {
+        "name": "Operating state",
+        "icon": "mdi:solar-power-variant",
+        "group": "converter.*",
     },
 }
 

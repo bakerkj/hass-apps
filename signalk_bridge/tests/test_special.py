@@ -158,6 +158,78 @@ def test_tank_remaining_skipped_when_capacity_missing() -> None:
     assert "tanks_fuel_remaining" not in ents
 
 
+# --------------------------------------------------------------------------
+# battery + solar parity: derived power, converter operating state
+# --------------------------------------------------------------------------
+
+
+def _battery_tree(**banks: dict[str, float]) -> dict:
+    def leaf(v):
+        return {"value": v}
+
+    result: dict = {"electrical": {"batteries": {}}}
+    for instance, fields in banks.items():
+        node: dict = {}
+        for k, v in fields.items():
+            node[k] = leaf(v)
+        result["electrical"]["batteries"][instance] = node
+    return result
+
+
+def test_battery_power_derived_from_voltage_and_current() -> None:
+    tree = _battery_tree(house={"voltage": 13.32, "current": 12.7})
+    ents = resolve_special(tree)
+    p = ents["electrical_batteries_house_power"]
+    assert p["unit"] == "W"
+    assert p["device_class"] == "power"
+    assert float(p["state"]) == pytest.approx(169.16, abs=0.1)
+    assert p["group_label"] == "Battery House"
+
+
+def test_battery_power_emitted_per_instance() -> None:
+    tree = _battery_tree(
+        house={"voltage": 12.8, "current": -5.0},
+        engine={"voltage": 12.4, "current": 0.2},
+    )
+    ents = resolve_special(tree)
+    assert float(ents["electrical_batteries_house_power"]["state"]) == pytest.approx(
+        -64.0
+    )
+    assert float(ents["electrical_batteries_engine_power"]["state"]) == pytest.approx(
+        2.48, abs=0.01
+    )
+
+
+def test_battery_power_skipped_when_current_missing() -> None:
+    tree = _battery_tree(house={"voltage": 12.8})
+    ents = resolve_special(tree)
+    assert "electrical_batteries_house_power" not in ents
+
+
+def test_battery_power_yields_to_native_power_leaf() -> None:
+    # BMV/SmartShunt publishes its own averaged power; V*I is a strictly
+    # worse estimate. The derived sensor must not clobber it.
+    tree = _battery_tree(house={"voltage": 12.8, "current": -2.5, "power": -32.4})
+    ents = {**resolve_entities(tree), **resolve_special(tree)}
+    # Native leaf survives via PATH_MAP; derived is suppressed.
+    assert float(ents["electrical_batteries_house_power"]["state"]) == pytest.approx(
+        -32.4
+    )
+
+
+def test_converter_operating_state_is_text_sensor() -> None:
+    tree = {
+        "electrical": {
+            "converter": {"36": {"0": {"operatingState": {"value": "bulk"}}}}
+        }
+    }
+    ents = resolve_special(tree)
+    s = ents[slugify("electrical.converter.36.0.operatingState")]
+    assert s["component"] == "sensor"
+    assert s["state"] == "bulk"
+    assert s["group_label"] == "Converter 36"
+
+
 def test_tank_instance_count_shared_across_field_patterns() -> None:
     # Regression: freshWater.7 has ONLY level, freshWater.8 has ONLY capacity.
     # Per-pattern counting would say each pattern matches once (single-instance)
