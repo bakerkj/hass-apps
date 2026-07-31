@@ -24,6 +24,8 @@ OPTION_KEYS: set[str] = {
     "client_id",
     "expire_after_multiplier",
     "log_level",
+    "suppress_paths",
+    "suppress_primary_on_fanout",
 }
 
 SENSITIVE_OPTION_KEYS: set[str] = {"mqtt_password", "signalk_token"}

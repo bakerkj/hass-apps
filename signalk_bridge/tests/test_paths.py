@@ -165,6 +165,106 @@ def test_flatten_synthesizes_instance_for_singleton_multisource() -> None:
     assert flat["navigation.backup.speedOverGround"] == 2.9
 
 
+def test_flatten_drops_paths_in_suppress_list() -> None:
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {"voltage": {"value": 12.8}},
+                "239": {
+                    "voltage": {"value": 12.8},
+                    "current": {"value": -4.1},
+                },
+            }
+        }
+    }
+    flat = paths.flatten(tree, suppress_paths=["electrical.batteries.239"])
+    assert "electrical.batteries.0.voltage" in flat
+    # Whole subtree gone -- both leaves under the suppressed prefix.
+    assert not any(k.startswith("electrical.batteries.239") for k in flat)
+
+
+def test_flatten_suppress_respects_segment_boundary() -> None:
+    # ``batteries.2`` must not swallow ``batteries.239``; segment
+    # boundary matters.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "2": {"voltage": {"value": 12.8}},
+                "239": {"voltage": {"value": 12.9}},
+            }
+        }
+    }
+    flat = paths.flatten(tree, suppress_paths=["electrical.batteries.2"])
+    assert "electrical.batteries.239.voltage" in flat
+    assert "electrical.batteries.2.voltage" not in flat
+
+
+def test_flatten_suppress_applies_to_fanout_paths_too() -> None:
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {
+                    "voltage": {
+                        "value": 12.8,
+                        "values": {
+                            "n2k-can0.abc": {"value": 12.9},
+                            "n2k-can0.def": {"value": 12.1},
+                        },
+                    }
+                }
+            }
+        }
+    }
+    tags = {"n2k-can0.abc": "solar", "n2k-can0.def": "house"}
+    flat = paths.flatten(
+        tree,
+        source_tags=tags,
+        suppress_paths=["electrical.batteries.solar"],
+    )
+    assert flat["electrical.batteries.0.voltage"] == 12.8
+    assert flat["electrical.batteries.house.voltage"] == 12.1
+    assert "electrical.batteries.solar.voltage" not in flat
+
+
+def test_flatten_suppress_primary_on_fanout_drops_primary() -> None:
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {
+                    "voltage": {
+                        "value": 12.8,
+                        "values": {
+                            "n2k-can0.abc": {"value": 12.9},
+                            "n2k-can0.def": {"value": 12.1},
+                        },
+                    }
+                }
+            }
+        }
+    }
+    tags = {"n2k-can0.abc": "house", "n2k-can0.def": "engine"}
+    flat = paths.flatten(tree, source_tags=tags, suppress_primary_on_fanout=True)
+    # Primary gone; per-source entities stay.
+    assert "electrical.batteries.0.voltage" not in flat
+    assert flat["electrical.batteries.house.voltage"] == 12.9
+    assert flat["electrical.batteries.engine.voltage"] == 12.1
+
+
+def test_flatten_suppress_primary_on_fanout_keeps_single_source_leaves() -> None:
+    # A leaf with only one source never fans out, so the flag is a no-op
+    # for it -- the primary must still surface. Otherwise turning the
+    # flag on would delete every non-multi-source entity on the boat.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {"voltage": {"value": 12.8}},
+            }
+        }
+    }
+    flat = paths.flatten(tree, suppress_primary_on_fanout=True)
+    assert flat["electrical.batteries.0.voltage"] == 12.8
+
+
 def test_build_source_tags_prefers_installation_description() -> None:
     sources = {
         "n2k-can0": {

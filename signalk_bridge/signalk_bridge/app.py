@@ -92,7 +92,10 @@ def _entity(
 
 
 def resolve_entities(
-    tree: dict[str, Any], source_tags: dict[str, str] | None = None
+    tree: dict[str, Any],
+    source_tags: dict[str, str] | None = None,
+    suppress_paths: tuple[str, ...] | list[str] | None = None,
+    suppress_primary_on_fanout: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Map a vessel tree onto numeric sensor definitions.
 
@@ -102,7 +105,12 @@ def resolve_entities(
     entities (see :func:`paths.flatten`).
     """
     entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(tree, source_tags=source_tags).items():
+    for path, raw in flatten(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=suppress_paths,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    ).items():
         for pattern, spec in PATH_MAP.items():
             caps = match_path(path, pattern)
             if caps is None:
@@ -138,7 +146,10 @@ def resolve_entities(
 
 
 def resolve_special(
-    tree: dict[str, Any], source_tags: dict[str, str] | None = None
+    tree: dict[str, Any],
+    source_tags: dict[str, str] | None = None,
+    suppress_paths: tuple[str, ...] | list[str] | None = None,
+    suppress_primary_on_fanout: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Map the non-numeric paths: text/enum states, switch banks, notification
     alarms, and the vessel's position (as a device_tracker)."""
@@ -152,7 +163,12 @@ def resolve_special(
     )
 
     entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(tree, source_tags=source_tags).items():
+    for path, raw in flatten(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=suppress_paths,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    ).items():
         key = slugify(path)
 
         # Position -> device_tracker (boat on the HA map).
@@ -267,6 +283,11 @@ def main(argv: list[str] | None = None) -> int:
     base_topic = str(opts.get("mqtt_base_topic") or "signalk")
     client_id = str(opts.get("client_id") or "signalk-bridge")
     expire_after_s = max(5, interval * int(opts.get("expire_after_multiplier") or 4))
+    raw_suppress = opts.get("suppress_paths") or []
+    suppress_paths: tuple[str, ...] = tuple(
+        s for s in raw_suppress if isinstance(s, str) and s
+    )
+    suppress_primary_on_fanout = bool(opts.get("suppress_primary_on_fanout"))
 
     try:
         mqtt_cfg = resolve_mqtt_config(opts)
@@ -394,8 +415,18 @@ def main(argv: list[str] | None = None) -> int:
 
             try:
                 data_entities = {
-                    **resolve_entities(tree, source_tags),
-                    **resolve_special(tree, source_tags),
+                    **resolve_entities(
+                        tree,
+                        source_tags,
+                        suppress_paths=suppress_paths,
+                        suppress_primary_on_fanout=suppress_primary_on_fanout,
+                    ),
+                    **resolve_special(
+                        tree,
+                        source_tags,
+                        suppress_paths=suppress_paths,
+                        suppress_primary_on_fanout=suppress_primary_on_fanout,
+                    ),
                 }
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
