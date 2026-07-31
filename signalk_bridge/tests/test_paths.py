@@ -49,9 +49,48 @@ def test_flatten_keeps_composite_values(vessel_tree: dict[str, Any]) -> None:
     assert isinstance(flat["navigation.position"], dict)
 
 
-def test_flatten_skips_multisource_values() -> None:
-    # A multi-source leaf carries per-source copies under "values"; only the
-    # canonical "value" should surface, never phantom per-source paths.
+_MULTISOURCE_BATTERY = {
+    "electrical": {
+        "batteries": {
+            "0": {
+                "voltage": {
+                    "value": 12.8,
+                    "values": {
+                        "n2k-can0.abc": {"value": 12.9, "timestamp": "t"},
+                        "n2k-can0.def": {"value": 12.1, "timestamp": "t"},
+                    },
+                }
+            }
+        }
+    }
+}
+
+
+def test_flatten_without_source_tags_keeps_only_primary() -> None:
+    # No source_tags map -> backwards-compat behavior: only the canonical
+    # ``value`` surfaces. Callers that don't wire /sources through never
+    # see a per-source fanout, so nothing breaks for them.
+    flat = paths.flatten(_MULTISOURCE_BATTERY)
+    assert flat["electrical.batteries.0.voltage"] == 12.8
+    assert not any(".values." in k for k in flat)
+    assert list(flat) == ["electrical.batteries.0.voltage"]
+
+
+def test_flatten_with_source_tags_fans_out_multisource() -> None:
+    tags = {"n2k-can0.abc": "house", "n2k-can0.def": "engine"}
+    flat = paths.flatten(_MULTISOURCE_BATTERY, source_tags=tags)
+    # Primary path preserved -- existing HA entity IDs never break.
+    assert flat["electrical.batteries.0.voltage"] == 12.8
+    # Per-source entities appear with the instance segment substituted
+    # for the friendly tag; downstream PATH_MAP wildcards match them
+    # transparently.
+    assert flat["electrical.batteries.house.voltage"] == 12.9
+    assert flat["electrical.batteries.engine.voltage"] == 12.1
+
+
+def test_flatten_does_not_fanout_equal_source_readings() -> None:
+    # Two sources publishing the same value is Signal K bookkeeping, not
+    # a real device collision -- so no fanout.
     tree = {
         "electrical": {
             "batteries": {
@@ -59,17 +98,156 @@ def test_flatten_skips_multisource_values() -> None:
                     "voltage": {
                         "value": 12.8,
                         "values": {
-                            "n2k-can0.abc": {"value": 12.9, "timestamp": "t"},
-                            "n2k-can0.def": {"value": 12.1, "timestamp": "t"},
+                            "n2k-can0.abc": {"value": 12.8, "timestamp": "t"},
+                            "n2k-can0.def": {"value": 12.8, "timestamp": "t"},
                         },
                     }
                 }
             }
         }
     }
-    flat = paths.flatten(tree)
+    flat = paths.flatten(tree, source_tags={"n2k-can0.abc": "a", "n2k-can0.def": "b"})
+    assert list(flat) == ["electrical.batteries.0.voltage"]
+
+
+def test_flatten_falls_back_to_hex_tail_for_untagged_sources() -> None:
+    # A source not in source_tags gets the last 4 chars of its $source
+    # string as a fallback tag; the point is disambiguation, and a hex
+    # canName tail is stable enough for that.
+    tags = {"n2k-can0.aaaaaaaa": "house"}
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {
+                    "voltage": {
+                        "value": 12.8,
+                        "values": {
+                            "n2k-can0.aaaaaaaa": {"value": 12.9, "timestamp": "t"},
+                            "n2k-can0.bbbb01f5": {"value": 12.1, "timestamp": "t"},
+                        },
+                    }
+                }
+            }
+        }
+    }
+    flat = paths.flatten(tree, source_tags=tags)
+    assert flat["electrical.batteries.house.voltage"] == 12.9
+    assert flat["electrical.batteries.01f5.voltage"] == 12.1
+
+
+def test_flatten_synthesizes_instance_for_singleton_multisource() -> None:
+    # A singleton path (no numeric instance) with multiple sources
+    # synthesizes an instance segment just before the leaf so PATH_MAP
+    # companion patterns can pick these up. Not currently in PATH_MAP,
+    # but the structural guarantee matters for future coverage.
+    tree = {
+        "navigation": {
+            "speedOverGround": {
+                "value": 3.0,
+                "values": {
+                    "n2k-can0.gps1": {"value": 3.1, "timestamp": "t"},
+                    "n2k-can0.gps2": {"value": 2.9, "timestamp": "t"},
+                },
+            }
+        }
+    }
+    tags = {"n2k-can0.gps1": "primary", "n2k-can0.gps2": "backup"}
+    flat = paths.flatten(tree, source_tags=tags)
+    assert flat["navigation.speedOverGround"] == 3.0
+    assert flat["navigation.primary.speedOverGround"] == 3.1
+    assert flat["navigation.backup.speedOverGround"] == 2.9
+
+
+def test_build_source_tags_prefers_installation_description() -> None:
+    sources = {
+        "n2k-can0": {
+            "36": {
+                "n2k": {
+                    "canName": "c046a0002cc001f6",
+                    "installationDescription1": "Solar",
+                }
+            },
+            "224": {
+                "n2k": {
+                    "canName": "c046aa002cc001f5",
+                    # no installationDescription1 -> hex fallback
+                }
+            },
+        }
+    }
+    tags = paths.build_source_tags(sources)
+    assert tags["n2k-can0.c046a0002cc001f6"] == "solar"
+    assert tags["n2k-can0.c046aa002cc001f5"] == "01f5"
+
+
+def test_build_source_tags_handles_missing_payload() -> None:
+    # A missing/empty /sources payload -> {} rather than a crash; the
+    # bridge continues in single-source mode.
+    assert paths.build_source_tags(None) == {}
+    assert paths.build_source_tags({}) == {}
+    assert paths.build_source_tags({"n2k-can0": "not-a-dict"}) == {}
+
+
+def test_build_source_tags_disambiguates_collisions() -> None:
+    # Two devices with the same installationDescription1 must not
+    # collapse to the same tag -- one would silently overwrite the
+    # other in the fanout dict, defeating the whole point of splitting
+    # them.
+    sources = {
+        "n2k-can0": {
+            "224": {
+                "n2k": {
+                    "canName": "c046aa002cc001f5",
+                    "installationDescription1": "House",
+                }
+            },
+            "225": {
+                "n2k": {
+                    "canName": "c046aa002cc001f7",
+                    "installationDescription1": "House",
+                }
+            },
+        }
+    }
+    tags = paths.build_source_tags(sources)
+    assert tags["n2k-can0.c046aa002cc001f5"] != tags["n2k-can0.c046aa002cc001f7"]
+    # Collision resolution appends the canName tail as a disambiguator.
+    assert tags["n2k-can0.c046aa002cc001f5"] == "house_01f5"
+    assert tags["n2k-can0.c046aa002cc001f7"] == "house_01f7"
+
+
+def test_flatten_skips_non_scalar_source_values() -> None:
+    # Signal K composite leaves (positions, list-valued state) show up
+    # inside per-source ``values`` dicts too. Attempting ``v in seen``
+    # on a list would raise TypeError and drop the whole poll cycle;
+    # non-scalars must be skipped instead.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {
+                    "voltage": {
+                        "value": 12.8,
+                        "values": {
+                            "n2k-can0.abc": {"value": [12.9, 13.0]},
+                            "n2k-can0.def": {"value": {"nested": 1}},
+                            "n2k-can0.ghi": {"value": 12.1},
+                        },
+                    }
+                }
+            }
+        }
+    }
+    tags = {
+        "n2k-can0.abc": "a",
+        "n2k-can0.def": "b",
+        "n2k-can0.ghi": "c",
+    }
+    # Only one scalar survives -> no fanout, no crash.
+    flat = paths.flatten(tree, source_tags=tags)
     assert flat["electrical.batteries.0.voltage"] == 12.8
-    assert not any(".values." in k for k in flat)
+    # Nothing under an alt-tag path (the two non-scalar sources are
+    # silently skipped, and one remaining scalar is not a "collision").
+    assert list(flat) == ["electrical.batteries.0.voltage"]
 
 
 # --------------------------------------------------------------------------
@@ -190,13 +368,38 @@ def test_rudder_angle_stays_signed() -> None:
 def test_group_resolution_for_battery() -> None:
     gid, label = paths.resolve_group("battery.*", ["house"])
     assert gid == "battery.house"
-    assert label == "Battery house"
+    # Alpha instance captures come from installationDescription1 tags and
+    # are title-cased for readability; numeric and hex fallbacks stay as-is.
+    assert label == "Battery House"
 
 
 def test_group_resolution_for_engine() -> None:
     gid, label = paths.resolve_group("engine.*", ["port"])
     assert gid == "engine.port"
-    assert label == "Engine port"
+    assert label == "Engine Port"
+
+
+def test_group_resolution_keeps_numeric_instance() -> None:
+    gid, label = paths.resolve_group("battery.*", ["0"])
+    assert gid == "battery.0"
+    assert label == "Battery 0"
+
+
+def test_group_resolution_keeps_hex_fallback_tag() -> None:
+    # Devices without an installationDescription1 fall back to the last
+    # four hex chars of the canName; those are alphanumeric but not
+    # alpha-only, so must not be title-cased.
+    gid, label = paths.resolve_group("battery.*", ["01f5"])
+    assert gid == "battery.01f5"
+    assert label == "Battery 01f5"
+
+
+def test_group_resolution_preserves_camelcase_instance() -> None:
+    # Signal K schema-style instance ids ("engineStart", "portAux") already
+    # read correctly and must not be flattened to "Enginestart" by title().
+    gid, label = paths.resolve_group("battery.*", ["engineStart"])
+    assert gid == "battery.engineStart"
+    assert label == "Battery engineStart"
 
 
 def test_group_resolution_for_tank() -> None:
@@ -220,6 +423,13 @@ def test_group_resolution_without_wildcard() -> None:
 # --------------------------------------------------------------------------
 
 
+def _expected_instance_label(inst: str) -> str:
+    # resolve_group title-cases all-lowercase alpha captures (friendly
+    # source tags read as names); mixed-case, numeric, and mixed-alnum
+    # captures pass through unchanged.
+    return inst.title() if inst.islower() and inst.isalpha() else inst
+
+
 @pytest.mark.parametrize("inst", ["house", "start", "0", "1", "engineStart", "aux_2"])
 def test_battery_paths_map_for_any_instance(inst: str) -> None:
     for leafname in ("voltage", "stateOfCharge", "capacity.stateOfCharge"):
@@ -228,7 +438,7 @@ def test_battery_paths_map_for_any_instance(inst: str) -> None:
         assert paths.match_path(path, pattern) == [inst]
     gid, label = paths.resolve_group("battery.*", [inst])
     assert gid == f"battery.{inst}"
-    assert label == f"Battery {inst}"
+    assert label == f"Battery {_expected_instance_label(inst)}"
 
 
 @pytest.mark.parametrize("inst", ["port", "starboard", "0", "1", "main"])
@@ -238,7 +448,7 @@ def test_engine_paths_map_for_any_instance(inst: str) -> None:
     ) == [inst]
     gid, label = paths.resolve_group("engine.*", [inst])
     assert gid == f"engine.{inst}"
-    assert label == f"Engine {inst}"
+    assert label == f"Engine {_expected_instance_label(inst)}"
 
 
 @pytest.mark.parametrize(
@@ -246,7 +456,7 @@ def test_engine_paths_map_for_any_instance(inst: str) -> None:
     [
         ("freshWater", "0", "Fresh water tank 0"),
         ("fuel", "2", "Fuel tank 2"),
-        ("blackWater", "aft", "Black water tank aft"),
+        ("blackWater", "aft", "Black water tank Aft"),
     ],
 )
 def test_tank_paths_map_for_any_instance(ttype: str, inst: str, label: str) -> None:
