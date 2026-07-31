@@ -3,7 +3,7 @@
   "container_hooks": "0.1.1",
   "container_info_mqtt": "0.1.24",
   "dashboard_entity_proxy": "0.1.4",
-  "dashboard_web_proxy": "0.0.2",
+  "dashboard_web_proxy": "0.0.3",
   "ffmpeg_snapshotter": "0.8.15",
   "frigate_compressor": "0.0.56",
   "halpi2_power": "0.0.2",
