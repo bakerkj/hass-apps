@@ -736,6 +736,17 @@ def test_prune_zero_overlap_at_or_above_threshold_refuses_wipe():
     assert client.published == []
 
 
+def test_prune_empty_expected_at_or_above_threshold_refuses_wipe():
+    retained = {
+        "container-info-mqtt_hamh": {"summary"},
+        "container-info-mqtt_airsonos": {"summary"},
+        "container-info-mqtt_core_mosquitto": {"summary"},
+    }
+    pruned, client = _prune(retained, {})
+    assert pruned == 0
+    assert client.published == []
+
+
 def test_prune_zero_overlap_below_threshold_still_prunes():
     retained = {
         "container-info-mqtt_old_a": {"summary"},
@@ -762,13 +773,15 @@ def test_prune_partial_overlap_still_prunes_the_stale_ones():
     assert "container_info/removed_container/availability" in topics
 
 
-def test_prune_multiple_stale_returns_count():
+def test_prune_multiple_stale_with_overlapping_active_still_prunes_the_stale():
     retained = {
         "container-info-mqtt_builder_a": {"summary"},
         "container-info-mqtt_builder_b": {"summary"},
         "container-info-mqtt_builder_c": {"cpu_percent", "summary"},
+        "container-info-mqtt_keepme": {"summary"},
     }
-    pruned, client = _prune(retained, {})
+    # keepme overlaps -> guard passes; the 3 builder_* nodes prune as before.
+    pruned, client = _prune(retained, {"keepme": {"summary"}})
     assert pruned == 3
     # 3 nodes × (their metrics + 1 availability) publishes.
     # builder_a: 1+1; builder_b: 1+1; builder_c: 2+1 = 7 total.

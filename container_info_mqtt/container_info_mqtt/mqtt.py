@@ -157,11 +157,7 @@ def prune_stale_discovery(
         for node_id in retained_configs
         if node_id.startswith(device_node_prefix)
     }
-    if (
-        len(retained_slugs) >= 3
-        and expected_by_slug
-        and not (retained_slugs & expected_by_slug.keys())
-    ):
+    if len(retained_slugs) >= 3 and not (retained_slugs & expected_by_slug.keys()):
         log.warning(
             "Prune skipped: %d retained slug(s) share no keys with %d expected "
             "slug(s) -- refusing to wipe everything. Retained sample: %s; "
