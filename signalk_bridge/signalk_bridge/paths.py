@@ -601,10 +601,9 @@ def notification_is_active(value: Any) -> bool:
     return bool(state) and str(state).lower() not in _ALARM_CLEAR_STATES
 
 
-def _slugify_tag(s: str) -> str:
-    """Turn a free-form source label (an N2K installationDescription, a
-    hex canName tail, etc.) into a lowercase entity-safe slug."""
-    return "".join(c if c.isalnum() else "_" for c in s.lower()).strip("_")
+def slugify(path: str) -> str:
+    """Signal K path -> MQTT/entity-safe key."""
+    return "".join(c if c.isalnum() else "_" for c in path).strip("_").lower()
 
 
 def build_source_tags(sources: Any) -> dict[str, str]:
@@ -641,7 +640,7 @@ def build_source_tags(sources: Any) -> dict[str, str]:
                 continue
             desc = n2k.get("installationDescription1")
             preferred = (
-                _slugify_tag(desc) if isinstance(desc, str) and desc else can_name[-4:]
+                slugify(desc) if isinstance(desc, str) and desc else can_name[-4:]
             )
             candidates.append((f"{bus_key}.{can_name}", preferred, can_name))
     # Detect collisions and disambiguate by appending the canName tail.
@@ -670,25 +669,25 @@ def _fanout_paths(
     matching is unchanged: the ``*`` wildcard captures the tag the same
     way it would capture ``"0"``.
     """
-    distinct: list[tuple[str, Any]] = []
-    seen: set[Any] = set()
+    # Fan out by SOURCE, not by value: two physical devices that happen
+    # to agree on a reading for a cycle are still two devices, and
+    # collapsing them for that cycle would drop the per-source entities
+    # from the publish dict long enough to trip ``expire_after_s`` and
+    # flip them to Unavailable in HA -- exactly the flapping behaviour
+    # the fanout is meant to prevent.
+    per_source: list[tuple[str, Any]] = []
     for src, sub in values.items():
         if not isinstance(sub, dict):
             continue
         v = sub.get("value")
-        # Only scalars fan out: dicts, lists, and other composites don't
-        # round-trip through an HA state string, and their presence in a
-        # ``values`` dict is rare enough not to justify special handling.
-        # (Restricting the guard to plain scalars also keeps the
-        # ``v in seen`` check hashable.)
+        # Only scalars fan out: composites (position dicts, list-valued
+        # readings) don't round-trip through an HA state string and are
+        # rare enough not to justify special handling here.
         if not isinstance(v, (int, float, str, bool)):
             continue
-        if v in seen:
-            continue
-        seen.add(v)
-        distinct.append((src, v))
+        per_source.append((src, v))
 
-    if len(distinct) < 2:
+    if len(per_source) < 2:
         return []
 
     segs = path.split(".")
@@ -699,7 +698,7 @@ def _fanout_paths(
             break
 
     fanouts: list[tuple[str, Any]] = []
-    for src, v in distinct:
+    for src, v in per_source:
         tag = source_tags.get(src) or src.rsplit(".", 1)[-1][-4:]
         if inst_idx is not None:
             alt_segs = list(segs)

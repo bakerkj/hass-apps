@@ -88,9 +88,12 @@ def test_flatten_with_source_tags_fans_out_multisource() -> None:
     assert flat["electrical.batteries.engine.voltage"] == 12.1
 
 
-def test_flatten_does_not_fanout_equal_source_readings() -> None:
-    # Two sources publishing the same value is Signal K bookkeeping, not
-    # a real device collision -- so no fanout.
+def test_flatten_fans_out_even_when_source_readings_coincide() -> None:
+    # Two physical devices are still two devices even when they report
+    # the same value for a cycle. Gating fanout on value-distinctness
+    # would drop per-source entities from the publish dict whenever
+    # readings converge, tripping expire_after_s and flipping HA to
+    # Unavailable -- flapping the fanout is meant to prevent.
     tree = {
         "electrical": {
             "batteries": {
@@ -106,8 +109,12 @@ def test_flatten_does_not_fanout_equal_source_readings() -> None:
             }
         }
     }
-    flat = paths.flatten(tree, source_tags={"n2k-can0.abc": "a", "n2k-can0.def": "b"})
-    assert list(flat) == ["electrical.batteries.0.voltage"]
+    flat = paths.flatten(
+        tree, source_tags={"n2k-can0.abc": "house", "n2k-can0.def": "engine"}
+    )
+    assert flat["electrical.batteries.0.voltage"] == 12.8
+    assert flat["electrical.batteries.house.voltage"] == 12.8
+    assert flat["electrical.batteries.engine.voltage"] == 12.8
 
 
 def test_flatten_falls_back_to_hex_tail_for_untagged_sources() -> None:

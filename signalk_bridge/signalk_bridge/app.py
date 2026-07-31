@@ -30,7 +30,7 @@ from .mqtt import (
     publish_discovery,
     state_topic,
 )
-from .paths import PATH_MAP, flatten, match_path, resolve_group
+from .paths import PATH_MAP, flatten, match_path, resolve_group, slugify
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +53,6 @@ def configure_logging(level: str) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-
-def slugify(path: str) -> str:
-    """Signal K path -> MQTT/entity-safe key."""
-    return "".join(c if c.isalnum() else "_" for c in path).strip("_").lower()
 
 
 def render(value: float) -> str:
