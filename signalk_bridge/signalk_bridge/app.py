@@ -200,13 +200,14 @@ def resolve_special(
         notification_is_active,
     )
 
-    entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(
+    flat = flatten(
         tree,
         source_tags=source_tags,
         suppress_paths=suppress_paths,
         suppress_primary_on_fanout=suppress_primary_on_fanout,
-    ).items():
+    )
+    entities: dict[str, dict[str, Any]] = {}
+    for path, raw in flat.items():
         key = slugify(path)
 
         # Position -> device_tracker (boat on the HA map).
@@ -288,16 +289,8 @@ def resolve_special(
             )
             continue
 
-    entities.update(
-        _tank_derived_entities(
-            tree, source_tags, suppress_paths, suppress_primary_on_fanout
-        )
-    )
-    entities.update(
-        _battery_derived_entities(
-            tree, source_tags, suppress_paths, suppress_primary_on_fanout
-        )
-    )
+    entities.update(_tank_derived_entities(flat))
+    entities.update(_battery_derived_entities(flat))
     return entities
 
 
@@ -311,25 +304,14 @@ def _camel_to_snake(s: str) -> str:
     return "".join(out)
 
 
-def _tank_derived_entities(
-    tree: dict[str, Any],
-    source_tags: dict[str, str] | None,
-    suppress_paths: tuple[str, ...] | list[str] | None,
-    suppress_primary_on_fanout: bool,
-) -> dict[str, dict[str, Any]]:
+def _tank_derived_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Per-tank ``remaining`` (gal) and ``fluid_type`` (enum), on top of
     the ``level``/``capacity`` PATH_MAP entries -- Victron-parity fields
     that aren't direct SignalK leaves."""
     from collections import Counter
 
-    from .paths import _M3_TO_GAL, GROUP_LABELS
+    from .paths import GROUP_LABELS, m3_to_gal
 
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
-    )
     tanks: dict[tuple[str, str], dict[str, float]] = {}
     for path, raw in flat.items():
         parts = path.split(".")
@@ -376,7 +358,7 @@ def _tank_derived_entities(
         entities[f"{key_base}_remaining"] = _entity(
             f"tanks.{fluid_type}.{instance}.remaining",
             "Remaining",
-            render(capacity * current * _M3_TO_GAL),
+            render(m3_to_gal(capacity * current)),
             group_id,
             group_label,
             unit="gal",
@@ -388,23 +370,12 @@ def _tank_derived_entities(
     return entities
 
 
-def _battery_derived_entities(
-    tree: dict[str, Any],
-    source_tags: dict[str, str] | None,
-    suppress_paths: tuple[str, ...] | list[str] | None,
-    suppress_primary_on_fanout: bool,
-) -> dict[str, dict[str, Any]]:
+def _battery_derived_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Per-battery ``power`` (W) = voltage × current. Not on N2K as a
     scalar leaf, but derivable everywhere the two source leaves are.
     Naturally covers the fanout instances too (Battery House, Battery
     Engine, Battery Solar) since those emit voltage + current under
     their own instance segment."""
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
-    )
     banks: dict[str, dict[str, float]] = {}
     for path, raw in flat.items():
         parts = path.split(".")
