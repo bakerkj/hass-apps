@@ -149,6 +149,26 @@ def prune_stale_discovery(
     device_node_prefix = f"{device_id}_"
     pruned_slugs = 0
 
+    # Guard against slug-convention drift (see the app_/addon_ prefix rename
+    # incident): refuse to prune if we'd wipe 3+ slugs *and* the current poll
+    # shares zero keys with them. Single-container renames still prune.
+    retained_slugs = {
+        node_id[len(device_node_prefix) :]
+        for node_id in retained_configs
+        if node_id.startswith(device_node_prefix)
+    }
+    if len(retained_slugs) >= 3 and not (retained_slugs & expected_by_slug.keys()):
+        log.warning(
+            "Prune skipped: %d retained slug(s) share no keys with %d expected "
+            "slug(s) -- refusing to wipe everything. Retained sample: %s; "
+            "expected sample: %s",
+            len(retained_slugs),
+            len(expected_by_slug),
+            ", ".join(sorted(retained_slugs)[:5]),
+            ", ".join(sorted(expected_by_slug)[:5]),
+        )
+        return 0
+
     for node_id, retained_metrics in retained_configs.items():
         if not node_id.startswith(device_node_prefix):
             continue
