@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
   intel-media-driver=26.2.1-r0 \
   libva=2.23.0-r0 \
   libva-utils=2.23.0-r0 \
-  mesa-va-gallium=26.1.1-r1 \
+  mesa-va-gallium=26.1.6-r0 \
   py3-paho-mqtt=1.6.1-r4 \
   python3=3.14.5-r0
 
