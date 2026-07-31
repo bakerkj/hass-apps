@@ -924,4 +924,9 @@ def resolve_group(group_pattern: str, captures: list[str]) -> tuple[str, str]:
         for r, seg in zip(resolved, parts)
         if seg == "*"
     )
+    # Collapse "Solar Solar" -> "Solar" when the venus plugin's device
+    # CustomName duplicates the fluid/device category ("solar" instance
+    # of a "solar" group).
+    if instance and instance.casefold() == label.casefold():
+        return group_id, label
     return group_id, (f"{label} {instance}" if instance else label)
