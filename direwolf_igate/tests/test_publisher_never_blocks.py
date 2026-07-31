@@ -190,8 +190,12 @@ def test_sigterm_exits_promptly_instead_of_hanging_in_the_read_loop(
         assert "W1XM-15" in _expect_tee(proc)
 
         proc.send_signal(signal.SIGTERM)
+        # 30s not 10s: the paho ``disconnect() + loop_stop()`` teardown that
+        # runs inside the signal handler has intermittently taken 10-15s on
+        # GHA runners under contention -- still well within HA supervisor's
+        # SIGKILL grace period, but tighter than a local machine's <1s.
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             pytest.fail("publisher ignored SIGTERM and stayed in the read loop")
 
@@ -214,7 +218,7 @@ def test_sigterm_is_prompt_with_mqtt_disabled_too(tmp_path: Path) -> None:
         assert "W1XM-15" in _expect_tee(proc)
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             pytest.fail("pass-through publisher ignored SIGTERM")
     finally:

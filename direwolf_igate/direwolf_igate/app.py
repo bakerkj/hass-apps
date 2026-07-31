@@ -96,9 +96,11 @@ def _run() -> int:
         The read loop never consults the stop event, so the ``finally`` below is
         unreachable on a signal and the retained "offline" has to go out here.
         """
-        pub.shutdown(farewell=True)
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
+        try:
+            pub.shutdown(farewell=True)
+        finally:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
