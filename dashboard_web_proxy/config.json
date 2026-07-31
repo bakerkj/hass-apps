@@ -66,6 +66,8 @@
         "name": "str",
         "upstream": "str",
         "upstream_port": "port?",
+        "upstream_scheme": "list(http|https)?",
+        "upstream_ssl_verify": "bool?",
         "listen_port": "list(18800|18801|18802|18803|18804|18805|18806|18807|18808|18809|18810|18811|18812|18813|18814|18815|18816|18817|18818|18819)"
       }
     ],

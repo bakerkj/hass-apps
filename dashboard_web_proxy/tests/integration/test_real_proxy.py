@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import threading
 import time
@@ -102,6 +103,59 @@ def stub_upstream() -> Iterator[int]:
         server.server_close()
 
 
+def _make_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
+    """Generate a throwaway self-signed cert/key via openssl.
+
+    Only used by the HTTPS-upstream test to model the "device has a self-signed
+    cert" case that motivates ``upstream_ssl_verify: false`` in the addon.
+    """
+    key = tmp_path / "stub.key"
+    crt = tmp_path / "stub.crt"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-days",
+            "1",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(crt),
+            "-subj",
+            "/CN=stub-upstream",
+            "-addext",
+            "subjectAltName=DNS:127.0.0.1,IP:127.0.0.1",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return crt, key
+
+
+@pytest.fixture
+def stub_https_upstream(tmp_path: Path) -> Iterator[int]:
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl not available to mint a self-signed cert")
+    crt, key = _make_self_signed_cert(tmp_path)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=str(crt), keyfile=str(key))
+    server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _run_addon(image: str, sites: list[dict], tmp_path: Path) -> str:
     """Start the add-on container with --network host and the given sites."""
     (tmp_path / "options.json").write_text(
@@ -132,6 +186,59 @@ def _get(url: str, host: str) -> Any:
         return None
 
 
+def _assert_proxied_ok(name: str, url: str, host: str) -> Any:
+    """Poll ``url`` (up to 30s) for the proxied 200; assert the shipped
+    surgery (X-Frame-Options / CSP stripped, Set-Cookie domain rewritten from
+    upstream 127.0.0.1 to request host). Returns the response so tests can add
+    scheme-specific assertions. On failure, dumps container state + logs."""
+    deadline = time.monotonic() + 30
+    resp = None
+    while time.monotonic() < deadline:
+        resp = _get(url, host)
+        if resp is not None and resp.status == 200:
+            break
+        time.sleep(0.5)
+    if resp is None or resp.status != 200:
+        pytest.fail(
+            f"proxy never served 200 on {url}; "
+            f"running={_docker('inspect', '-f', '{{.State.Running}}', name, check=False).strip()}\n"
+            f"{_docker('logs', name, check=False)[-3000:]}"
+        )
+
+    body = resp.read().decode()
+    assert "hello from upstream device" in body  # actually proxied
+    assert resp.headers.get("X-Frame-Options") is None
+    assert resp.headers.get("Content-Security-Policy") is None
+
+    set_cookie = resp.headers.get("Set-Cookie", "")
+    assert "session=abc" in set_cookie
+    assert "127.0.0.1" not in set_cookie, set_cookie
+    assert host in set_cookie, set_cookie
+    return resp
+
+
+def _assert_config_rejected(
+    sites: list[dict], expected_log: str, tmp_path: Path
+) -> None:
+    """Start the addon with a site config the run.sh guards should reject;
+    assert the container exits and its log names the offending field."""
+    image = _build_image()
+    name = _run_addon(image, sites, tmp_path)
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            running = _docker(
+                "inspect", "-f", "{{.State.Running}}", name, check=False
+            ).strip()
+            if running == "false":
+                break
+            time.sleep(0.5)
+        logs = _docker("logs", name, check=False)
+        assert expected_log in logs, logs
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
 def test_proxy_strips_frame_headers_and_rewrites_cookie(
     stub_upstream: int, tmp_path: Path
 ) -> None:
@@ -149,34 +256,87 @@ def test_proxy_strips_frame_headers_and_rewrites_cookie(
     ]
     name = _run_addon(image, sites, tmp_path)
     try:
+        _assert_proxied_ok(name, f"http://127.0.0.1:{LISTEN_PORT}/", PROXY_HOST)
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
+def test_https_upstream_proxied_through_self_signed(
+    stub_https_upstream: int, tmp_path: Path
+) -> None:
+    """upstream_scheme=https + upstream_ssl_verify=false: the proxy should
+    connect via TLS to a self-signed stub, skip peer verification, and still
+    perform the same X-Frame-Options / cookie surgery as the http path.
+    Covers the SNI + proxy_ssl_verify off branch emitted by run.sh."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    image = _build_image()
+    sites = [
+        {
+            "name": "device",
+            "upstream": "127.0.0.1",
+            "upstream_port": stub_https_upstream,
+            "upstream_scheme": "https",
+            "upstream_ssl_verify": False,
+            "listen_port": LISTEN_PORT,
+        }
+    ]
+    name = _run_addon(image, sites, tmp_path)
+    try:
+        _assert_proxied_ok(name, f"http://127.0.0.1:{LISTEN_PORT}/", PROXY_HOST)
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
+def test_https_upstream_verify_on_rejects_self_signed(
+    stub_https_upstream: int, tmp_path: Path
+) -> None:
+    """upstream_ssl_verify=true: nginx must find /etc/ssl/cert.pem to start
+    (proves the ca-certificates apk pin), then must actually enforce the check
+    -- our stub's self-signed cert is not in the system CA bundle, so the
+    upstream handshake fails and nginx returns 502. If /etc/ssl/cert.pem were
+    missing, nginx -t would fail and the container would exit before serving
+    anything; if verify=on were silently downgraded, we'd see the same 200 the
+    verify=off test asserts. This test catches both regressions."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    image = _build_image()
+    sites = [
+        {
+            "name": "device",
+            "upstream": "127.0.0.1",
+            "upstream_port": stub_https_upstream,
+            "upstream_scheme": "https",
+            "upstream_ssl_verify": True,
+            "listen_port": LISTEN_PORT,
+        }
+    ]
+    name = _run_addon(image, sites, tmp_path)
+    try:
         url = f"http://127.0.0.1:{LISTEN_PORT}/"
         deadline = time.monotonic() + 30
         resp = None
         while time.monotonic() < deadline:
             resp = _get(url, PROXY_HOST)
-            if resp is not None and resp.status == 200:
+            if resp is not None:
                 break
             time.sleep(0.5)
-        if resp is None or resp.status != 200:
-            pytest.fail(
-                f"proxy never served 200 on {url}; "
-                f"running={_docker('inspect', '-f', '{{.State.Running}}', name, check=False).strip()}\n"
-                f"{_docker('logs', name, check=False)[-3000:]}"
-            )
-
-        body = resp.read().decode()
-        assert "hello from upstream device" in body  # actually proxied
-
-        # the frame-blocking headers are stripped so HA can iframe it
-        assert resp.headers.get("X-Frame-Options") is None
-        assert resp.headers.get("Content-Security-Policy") is None
-
-        # the session cookie's Domain is rewritten from the upstream (127.0.0.1)
-        # to the request host, so login sticks through the proxy
-        set_cookie = resp.headers.get("Set-Cookie", "")
-        assert "session=abc" in set_cookie
-        assert "127.0.0.1" not in set_cookie, set_cookie
-        assert PROXY_HOST in set_cookie, set_cookie
+        # The container must be running (nginx -t passed => CA bundle present)
+        # and the proxy must have returned a non-200 upstream-error status.
+        running = _docker(
+            "inspect", "-f", "{{.State.Running}}", name, check=False
+        ).strip()
+        assert running == "true", (
+            f"container exited (nginx likely failed to start -- CA bundle?): "
+            f"{_docker('logs', name, check=False)[-3000:]}"
+        )
+        assert resp is not None, "no response at all from listen port"
+        assert resp.status in (502, 504), (
+            f"expected upstream-verify failure (502/504), got {resp.status}: "
+            f"{_docker('logs', name, check=False)[-2000:]}"
+        )
     finally:
         _docker("rm", "-f", name, check=False)
 
@@ -187,26 +347,57 @@ def test_invalid_upstream_is_rejected(tmp_path: Path) -> None:
     if not _have_docker():
         pytest.skip("docker daemon not reachable")
 
-    image = _build_image()
-    sites = [
-        {
-            "name": "evil",
-            "upstream": "127.0.0.1; return 500",
-            "listen_port": LISTEN_PORT,
-        }
-    ]
-    name = _run_addon(image, sites, tmp_path)
-    try:
-        # give it a moment to parse config and exit
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            running = _docker(
-                "inspect", "-f", "{{.State.Running}}", name, check=False
-            ).strip()
-            if running == "false":
-                break
-            time.sleep(0.5)
-        logs = _docker("logs", name, check=False)
-        assert "invalid upstream" in logs, logs
-    finally:
-        _docker("rm", "-f", name, check=False)
+    _assert_config_rejected(
+        [
+            {
+                "name": "evil",
+                "upstream": "127.0.0.1; return 500",
+                "listen_port": LISTEN_PORT,
+            }
+        ],
+        "invalid upstream",
+        tmp_path,
+    )
+
+
+def test_invalid_upstream_scheme_is_rejected(tmp_path: Path) -> None:
+    """Bypasses the Supervisor JSON schema (tests write options.json direct);
+    the run.sh guard on ${scheme} must still refuse anything other than
+    http/https so a stale supervisor manifest or hand-edited config can't
+    inject arbitrary text into the generated proxy_pass directive."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "upstream_scheme": "gopher",
+                "listen_port": LISTEN_PORT,
+            }
+        ],
+        "invalid upstream_scheme",
+        tmp_path,
+    )
+
+
+def test_invalid_upstream_ssl_verify_is_rejected(tmp_path: Path) -> None:
+    """Symmetric guard for upstream_ssl_verify -- must be strict true|false
+    even when a non-bool slips past Supervisor validation."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "upstream_scheme": "https",
+                "upstream_ssl_verify": "maybe",
+                "listen_port": LISTEN_PORT,
+            }
+        ],
+        "invalid upstream_ssl_verify",
+        tmp_path,
+    )
