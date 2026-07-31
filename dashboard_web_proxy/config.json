@@ -4,7 +4,7 @@
   "description": "Reverse-proxies LAN device web UIs so they can be embedded in Home Assistant dashboards -- strips X-Frame-Options and rewrites the session-cookie domain. One device per port.",
   "url": "https://github.com/bakerkj/hass-apps",
   "image": "ghcr.io/bakerkj/{arch}-dashboard_web_proxy",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "arch": [
     "aarch64",
     "amd64"
@@ -66,6 +66,8 @@
         "name": "str",
         "upstream": "str",
         "upstream_port": "port?",
+        "upstream_scheme": "list(http|https)?",
+        "upstream_ssl_verify": "bool?",
         "listen_port": "list(18800|18801|18802|18803|18804|18805|18806|18807|18808|18809|18810|18811|18812|18813|18814|18815|18816|18817|18818|18819)"
       }
     ],

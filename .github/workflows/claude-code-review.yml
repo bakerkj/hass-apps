@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 1
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -67,6 +67,9 @@ jobs:
               device web UIs embeddable in HA dashboards (strips
               X-Frame-Options/CSP, rewrites the session-cookie domain);
               one device per port.
+            - direwolf_igate — receive-only APRS IGate: rtl_fm demodulates
+              from an RTL-SDR dongle into direwolf over a FIFO, which
+              decodes AX.25 packets and forwards them to APRS-IS.
             - ffmpeg_snapshotter — captures timestamped JPEG snapshots
               from RTSP streams on demand (VAAPI-capable).
             - frigate_compressor — long-running daemon that re-encodes

@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.14"
 
 [tool.uv]
-required-version = "==0.11.*"
+required-version = "==0.12.*"
 
 [dependency-groups]
 dev = [
@@ -42,6 +42,8 @@ mypy_path = [
     "container_info_mqtt/tests",
     "dashboard_entity_proxy",
     "dashboard_entity_proxy/tests",
+    "direwolf_igate",
+    "direwolf_igate/tests",
     "ffmpeg_snapshotter",
     "ffmpeg_snapshotter/tests",
     "frigate_compressor",
@@ -79,6 +81,8 @@ pythonpath = [
     "container_info_mqtt/tests",
     "dashboard_entity_proxy",
     "dashboard_entity_proxy/tests",
+    "direwolf_igate",
+    "direwolf_igate/tests",
     "ffmpeg_snapshotter",
     "ffmpeg_snapshotter/tests",
     "frigate_compressor",
@@ -99,7 +103,7 @@ pythonpath = [
 # No --cov-fail-under here: the unit and integration jobs each collect only
 # part of the picture (integration exercises the real ffmpeg/ffprobe paths).
 # The threshold is enforced once on the combined total in the `coverage` CI job.
-addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=halpi2_power --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=signalk_bridge --cov=system_resource_tuner --cov=turbostat_mqtt"
+addopts = "--cov=container_info_mqtt --cov=dashboard_entity_proxy --cov=direwolf_igate --cov=ffmpeg_snapshotter --cov=frigate_compressor --cov=halpi2_power --cov=haos_configurator --cov=intel_gpu_top_mqtt --cov=container_hooks --cov=signalk_bridge --cov=system_resource_tuner --cov=turbostat_mqtt"
 markers = [
     "e2e: tests that exercise real external systems (ffmpeg/ffprobe binaries, docker daemon, full HA + Chrome stack). Skipped by default to keep the unit run hermetic; each per-addon e2e CI job runs them with the relevant externals installed.",
 ]

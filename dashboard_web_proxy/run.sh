@@ -50,6 +50,8 @@ for ((i = 0; i < count; i++)); do
   name="$(jq -r ".sites[${i}].name" "${OPTIONS}")"
   upstream="$(jq -r ".sites[${i}].upstream" "${OPTIONS}")"
   uport="$(jq -r ".sites[${i}].upstream_port // 80" "${OPTIONS}")"
+  scheme="$(jq -r ".sites[${i}].upstream_scheme // \"http\"" "${OPTIONS}")"
+  ssl_verify="$(jq -r ".sites[${i}].upstream_ssl_verify // false" "${OPTIONS}")"
   lport="$(jq -r ".sites[${i}].listen_port" "${OPTIONS}")"
 
   # Reject anything that isn't a bare host/IP -- prevents config injection into
@@ -64,6 +66,16 @@ for ((i = 0; i < count; i++)); do
     bashio::log.fatal "site '${name}': invalid upstream_port '${uport}' (1-65535)"
     bashio::exit.nok
   fi
+  # scheme is interpolated into proxy_pass; restrict to a known set even though
+  # the Supervisor schema already narrows it.
+  if [[ "${scheme}" != "http" && "${scheme}" != "https" ]]; then
+    bashio::log.fatal "site '${name}': invalid upstream_scheme '${scheme}' (http|https)"
+    bashio::exit.nok
+  fi
+  if [[ "${ssl_verify}" != "true" && "${ssl_verify}" != "false" ]]; then
+    bashio::log.fatal "site '${name}': invalid upstream_ssl_verify '${ssl_verify}' (true|false)"
+    bashio::exit.nok
+  fi
   if [[ " ${ALLOWED_PORTS} " != *" ${lport} "* ]]; then
     bashio::log.fatal "site '${name}': listen_port ${lport} must be one of: ${ALLOWED_PORTS}"
     bashio::exit.nok
@@ -74,7 +86,21 @@ for ((i = 0; i < count; i++)); do
   fi
   used_ports="${used_ports} ${lport}"
 
-  bashio::log.info "Proxying '${name}': :${lport} -> ${upstream}:${uport}"
+  bashio::log.info "Proxying '${name}': :${lport} -> ${scheme}://${upstream}:${uport}"
+
+  # HTTPS upstream needs SNI (many device UIs share an IP with vhosts) and
+  # usually skips verify since LAN devices use self-signed certs.
+  ssl_block=""
+  if [[ "${scheme}" == "https" ]]; then
+    ssl_block=$'        proxy_ssl_server_name on;\n'
+    ssl_block+="        proxy_ssl_name ${upstream};"$'\n'
+    if [[ "${ssl_verify}" == "true" ]]; then
+      ssl_block+=$'        proxy_ssl_verify on;\n'
+      ssl_block+=$'        proxy_ssl_trusted_certificate /etc/ssl/cert.pem;\n'
+    else
+      ssl_block+=$'        proxy_ssl_verify off;\n'
+    fi
+  fi
 
   # Relay to the device and, on the way back, make the page embeddable:
   #   - drop X-Frame-Options / CSP so HA can iframe it
@@ -86,17 +112,17 @@ server {
     server_name _;
 
     location / {
-        proxy_pass http://${upstream}:${uport};
+        proxy_pass ${scheme}://${upstream}:${uport};
         proxy_set_header Host ${upstream};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
-
+${ssl_block}
         proxy_hide_header X-Frame-Options;
         proxy_hide_header Content-Security-Policy;
         proxy_cookie_domain ${upstream} \$host;
-        proxy_redirect http://${upstream}:${uport}/ /;
-        proxy_redirect http://${upstream}/ /;
+        proxy_redirect ${scheme}://${upstream}:${uport}/ /;
+        proxy_redirect ${scheme}://${upstream}/ /;
 
         proxy_buffering off;
     }
