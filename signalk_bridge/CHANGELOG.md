@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.3](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.2...signalk_bridge-v0.0.3) (2026-07-31)
+
+
+### Features
+
+* **signalk_bridge:** add suppress_paths + suppress_primary_on_fanout options ([#381](https://github.com/bakerkj/hass-apps/issues/381)) ([470d41f](https://github.com/bakerkj/hass-apps/commit/470d41fed1ef78d95d85606d0507f424df296597))
+* **signalk_bridge:** fan out multi-source paths to per-source entities ([#376](https://github.com/bakerkj/hass-apps/issues/376)) ([5f67a92](https://github.com/bakerkj/hass-apps/commit/5f67a920aec34e21d37c4f15714b9604b85edbdd))
+
+
+### Code Refactoring
+
+* **tests:** let Dockerfile BUILD_FROM default be the single base pin ([#355](https://github.com/bakerkj/hass-apps/issues/355)) ([55c1efd](https://github.com/bakerkj/hass-apps/commit/55c1efd30e1650e08d687d671260b171d359e6b5))
+
 ## [0.0.2](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.1...signalk_bridge-v0.0.2) (2026-07-26)
 
 
