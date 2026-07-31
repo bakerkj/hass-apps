@@ -15,7 +15,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
-from . import __version__, auth
+from . import __version__, auth, paths
 from .busstats import BusStats
 from .client import (
     SignalKAuthError,
@@ -30,7 +30,7 @@ from .mqtt import (
     publish_discovery,
     state_topic,
 )
-from .paths import PATH_MAP, flatten, match_path, resolve_group
+from .paths import PATH_MAP, flatten, match_path, resolve_group, slugify
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +53,6 @@ def configure_logging(level: str) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-
-def slugify(path: str) -> str:
-    """Signal K path -> MQTT/entity-safe key."""
-    return "".join(c if c.isalnum() else "_" for c in path).strip("_").lower()
 
 
 def render(value: float) -> str:
@@ -96,14 +91,18 @@ def _entity(
     return ent
 
 
-def resolve_entities(tree: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def resolve_entities(
+    tree: dict[str, Any], source_tags: dict[str, str] | None = None
+) -> dict[str, dict[str, Any]]:
     """Map a vessel tree onto numeric sensor definitions.
 
     Only paths present in the tree produce entities, so PATH_MAP can cover more
-    equipment than any single boat carries without inventing sensors.
+    equipment than any single boat carries without inventing sensors. When
+    ``source_tags`` is provided, multi-source leaves fan out to per-source
+    entities (see :func:`paths.flatten`).
     """
     entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(tree).items():
+    for path, raw in flatten(tree, source_tags=source_tags).items():
         for pattern, spec in PATH_MAP.items():
             caps = match_path(path, pattern)
             if caps is None:
@@ -138,7 +137,9 @@ def resolve_entities(tree: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return deduped
 
 
-def resolve_special(tree: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def resolve_special(
+    tree: dict[str, Any], source_tags: dict[str, str] | None = None
+) -> dict[str, dict[str, Any]]:
     """Map the non-numeric paths: text/enum states, switch banks, notification
     alarms, and the vessel's position (as a device_tracker)."""
     from .paths import (
@@ -151,7 +152,7 @@ def resolve_special(tree: dict[str, Any]) -> dict[str, dict[str, Any]]:
     )
 
     entities: dict[str, dict[str, Any]] = {}
-    for path, raw in flatten(tree).items():
+    for path, raw in flatten(tree, source_tags=source_tags).items():
         key = slugify(path)
 
         # Position -> device_tracker (boat on the HA map).
@@ -299,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     access_href: str | None = None
     bus = BusStats()
     sources_cache: dict[str, Any] = {}
+    source_tags: dict[str, str] = {}
     cycle = 0
     # /sources is a large payload; refresh the device inventory ~once a minute.
     sources_every = max(1, 60 // max(1, interval))
@@ -380,8 +382,21 @@ def main(argv: list[str] | None = None) -> int:
                 _stop.wait(max(1, interval))
                 continue
 
+            # Refresh /sources first so resolve_entities can disambiguate
+            # multi-source leaves (two BMVs on the same batteries.0 path,
+            # etc.) via friendly source tags.
+            if cycle % sources_every == 0:
+                try:
+                    sources_cache = get_sources(base_url, token)
+                    source_tags = paths.build_source_tags(sources_cache)
+                except SignalKError as exc:
+                    log.debug("sources fetch failed: %s", exc)
+
             try:
-                data_entities = {**resolve_entities(tree), **resolve_special(tree)}
+                data_entities = {
+                    **resolve_entities(tree, source_tags),
+                    **resolve_special(tree, source_tags),
+                }
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
                 _stop.wait(max(1, interval))
@@ -402,11 +417,6 @@ def main(argv: list[str] | None = None) -> int:
 
             bus_entities: dict[str, dict[str, Any]] = {}
             if bus.available():
-                if cycle % sources_every == 0:
-                    try:
-                        sources_cache = get_sources(base_url, token)
-                    except SignalKError as exc:
-                        log.debug("sources fetch failed: %s", exc)
                 try:
                     bus_entities = bus.sample(sources_cache)
                 except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon

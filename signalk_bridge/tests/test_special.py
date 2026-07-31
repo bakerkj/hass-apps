@@ -6,7 +6,8 @@ binary sensors, and the vessel position device_tracker."""
 
 from typing import Any
 
-from signalk_bridge.app import resolve_entities, resolve_special, slugify
+from signalk_bridge.app import resolve_entities, resolve_special
+from signalk_bridge.paths import slugify
 
 
 def test_state_of_charge_under_capacity_becomes_sensor(
