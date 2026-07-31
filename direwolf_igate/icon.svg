@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c2d12"/><stop offset="1" stop-color="#ea580c"/></linearGradient></defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+
+  <!-- The tower is drawn from its own baseline at y=200, which leaves it riding
+       high in the tile. Its ink spans y 16.9-204 (arc tops to the stroked base),
+       so shifting the whole group down 18 puts that span dead-centre on 128. -->
+  <g transform="translate(0,18)">
+    <g fill="none" stroke="#fff7ed" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M94 200 L118 86"/>
+      <path d="M162 200 L138 86"/>
+      <path d="M100.3 170 H155.7"/>
+      <path d="M111.3 118 H144.7"/>
+      <path d="M94 200 L155.7 170 L105.8 144 L144.7 118 L118 86"/>
+      <path d="M76 200 H180"/>
+      <path d="M128 86 V56"/>
+    </g>
+
+    <circle cx="128" cy="52" r="7" fill="#fff7ed"/>
+
+    <g fill="none" stroke="#fde68a" stroke-width="8" stroke-linecap="round">
+      <path d="M147.8 32.2 A28 28 0 0 1 147.8 71.8"/>
+      <path d="M159.1 20.9 A44 44 0 0 1 159.1 83.1"/>
+      <path d="M108.2 32.2 A28 28 0 0 0 108.2 71.8"/>
+      <path d="M96.9 20.9 A44 44 0 0 0 96.9 83.1"/>
+    </g>
+  </g>
+</svg>

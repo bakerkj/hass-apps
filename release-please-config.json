@@ -80,6 +80,18 @@
         }
       ]
     },
+    "direwolf_igate": {
+      "release-type": "simple",
+      "package-name": "direwolf_igate",
+      "component": "direwolf_igate",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "config.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "ffmpeg_snapshotter": {
       "release-type": "simple",
       "package-name": "ffmpeg_snapshotter",

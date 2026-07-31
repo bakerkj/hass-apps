@@ -149,12 +149,13 @@ repos:
         # so the type-checker doesn't fight test-only ergonomics
         # (literal dicts seeded via .update, etc.) the way the source
         # contract does. Tests run in the test job and catch real bugs.
-        files: ^(container_hooks/container_hooks|container_info_mqtt/container_info_mqtt|dashboard_entity_proxy/dashboard_entity_proxy|ffmpeg_snapshotter/ffmpeg_snapshotter|frigate_compressor/frigate_compressor|halpi2_power/halpi2_power|haos_configurator/haos_configurator|intel_gpu_top_mqtt/intel_gpu_mqtt|signalk_bridge/signalk_bridge|system_resource_tuner/system_resource_tuner|turbostat_mqtt/turbostat_mqtt)/.*\.py$
+        files: ^(container_hooks/container_hooks|container_info_mqtt/container_info_mqtt|dashboard_entity_proxy/dashboard_entity_proxy|direwolf_igate/direwolf_igate|ffmpeg_snapshotter/ffmpeg_snapshotter|frigate_compressor/frigate_compressor|halpi2_power/halpi2_power|haos_configurator/haos_configurator|intel_gpu_top_mqtt/intel_gpu_mqtt|signalk_bridge/signalk_bridge|system_resource_tuner/system_resource_tuner|turbostat_mqtt/turbostat_mqtt)/.*\.py$
         pass_filenames: false
         args:
           - container_hooks/container_hooks
           - container_info_mqtt/container_info_mqtt
           - dashboard_entity_proxy/dashboard_entity_proxy
+          - direwolf_igate/direwolf_igate
           - ffmpeg_snapshotter/ffmpeg_snapshotter
           - frigate_compressor/frigate_compressor
           - halpi2_power/halpi2_power

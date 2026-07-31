@@ -34,7 +34,7 @@ jobs:
           uv run mypy container_hooks/container_hooks
           container_info_mqtt/container_info_mqtt
           dashboard_entity_proxy/dashboard_entity_proxy
-          ffmpeg_snapshotter/ffmpeg_snapshotter
+          direwolf_igate/direwolf_igate ffmpeg_snapshotter/ffmpeg_snapshotter
           frigate_compressor/frigate_compressor halpi2_power/halpi2_power
           haos_configurator/haos_configurator intel_gpu_top_mqtt/intel_gpu_mqtt
           signalk_bridge/signalk_bridge
