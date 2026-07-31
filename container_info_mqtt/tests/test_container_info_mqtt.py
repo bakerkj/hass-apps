@@ -87,6 +87,24 @@ def test_container_display_name_addon_prefix_non_hex_left_alone():
     assert name != "Unknown"
 
 
+def test_container_display_name_app_prefix_strips_hash():
+    assert (
+        cim.container_display_name("app_0f7b38ce_container_info_mqtt")
+        == "Container Info Mqtt"
+    )
+    assert cim.container_display_name("app_3fd9e6b0_hamh") == "Hamh"
+
+
+def test_container_display_name_app_core_prefix_not_stripped():
+    assert cim.container_display_name("app_core_mosquitto") == "Core Mosquitto"
+    assert cim.container_display_name("app_core_mariadb") == "Core Mariadb"
+
+
+def test_container_display_name_bare_container_unchanged():
+    assert cim.container_display_name("hassio_observer") == "Hassio Observer"
+    assert cim.container_display_name("homeassistant") == "Homeassistant"
+
+
 def test_container_display_name_capitalizes_words():
     result = cim.container_display_name("my_cool_app")
     assert result == "My Cool App"

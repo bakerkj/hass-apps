@@ -23,11 +23,14 @@ def container_display_name(value: str) -> str:
     if not display:
         return "Unknown"
 
-    if display.lower().startswith("addon_"):
-        display = display[6:]
-        parts = display.split("_", 1)
-        if len(parts) == 2 and re.fullmatch(r"[0-9a-f]+", parts[0], re.IGNORECASE):
-            display = parts[1]
+    # Retained MQTT topics may use either historical prefix — treat both alike.
+    for prefix in ("addon_", "app_"):
+        if display.lower().startswith(prefix):
+            display = display[len(prefix) :]
+            parts = display.split("_", 1)
+            if len(parts) == 2 and re.fullmatch(r"[0-9a-f]+", parts[0], re.IGNORECASE):
+                display = parts[1]
+            break
 
     display = re.sub(r"[_\-]+", " ", display)
     display = re.sub(r"\s+", " ", display).strip()
