@@ -18,11 +18,17 @@ sites:
   - name: mydevice
     upstream: 192.0.2.10
     upstream_port: 80 # optional, default 80
+    upstream_scheme: http # optional, http|https, default http
+    upstream_ssl_verify: false # optional, only meaningful with https, default false
     listen_port: 18800 # must be one of 18800-18819
 ```
 
 Then embed it — e.g. a Webpage dashboard pointing at
 `http://<this-host>:18800/`.
+
+For an HTTPS-only device UI, set `upstream_scheme: https` (and typically leave
+`upstream_ssl_verify` at its default `false`, since LAN devices normally present
+self-signed certs). The proxy sends SNI so vhost-based upstreams work.
 
 ## Notes
 
