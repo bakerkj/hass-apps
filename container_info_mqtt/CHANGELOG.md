@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.25](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.24...container_info_mqtt-v0.1.25) (2026-07-31)
+
+
+### Bug Fixes
+
+* **container_info_mqtt:** guard prune_stale_discovery against slug-convention drift ([#386](https://github.com/bakerkj/hass-apps/issues/386)) ([8a1e572](https://github.com/bakerkj/hass-apps/commit/8a1e5720729868ae1989ff9f444342404314c8d7))
+* **container_info_mqtt:** strip app_ prefix like addon_ in display name ([#383](https://github.com/bakerkj/hass-apps/issues/383)) ([605e9d1](https://github.com/bakerkj/hass-apps/commit/605e9d163bee1631554cda9ba275586d07368fae))
+
 ## [0.1.24](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.23...container_info_mqtt-v0.1.24) (2026-07-24)
 
 
