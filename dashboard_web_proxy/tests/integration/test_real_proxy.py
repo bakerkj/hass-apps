@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import threading
 import time
@@ -102,6 +103,59 @@ def stub_upstream() -> Iterator[int]:
         server.server_close()
 
 
+def _make_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
+    """Generate a throwaway self-signed cert/key via openssl.
+
+    Only used by the HTTPS-upstream test to model the "device has a self-signed
+    cert" case that motivates ``upstream_ssl_verify: false`` in the addon.
+    """
+    key = tmp_path / "stub.key"
+    crt = tmp_path / "stub.crt"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-days",
+            "1",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(crt),
+            "-subj",
+            "/CN=stub-upstream",
+            "-addext",
+            "subjectAltName=DNS:127.0.0.1,IP:127.0.0.1",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return crt, key
+
+
+@pytest.fixture
+def stub_https_upstream(tmp_path: Path) -> Iterator[int]:
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl not available to mint a self-signed cert")
+    crt, key = _make_self_signed_cert(tmp_path)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=str(crt), keyfile=str(key))
+    server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _run_addon(image: str, sites: list[dict], tmp_path: Path) -> str:
     """Start the add-on container with --network host and the given sites."""
     (tmp_path / "options.json").write_text(
@@ -173,6 +227,58 @@ def test_proxy_strips_frame_headers_and_rewrites_cookie(
 
         # the session cookie's Domain is rewritten from the upstream (127.0.0.1)
         # to the request host, so login sticks through the proxy
+        set_cookie = resp.headers.get("Set-Cookie", "")
+        assert "session=abc" in set_cookie
+        assert "127.0.0.1" not in set_cookie, set_cookie
+        assert PROXY_HOST in set_cookie, set_cookie
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
+def test_https_upstream_proxied_through_self_signed(
+    stub_https_upstream: int, tmp_path: Path
+) -> None:
+    """upstream_scheme=https + upstream_ssl_verify=false: the proxy should
+    connect via TLS to a self-signed stub, skip peer verification, and still
+    perform the same X-Frame-Options / cookie surgery as the http path.
+    Covers the SNI + proxy_ssl_verify block emitted by run.sh."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    image = _build_image()
+    sites = [
+        {
+            "name": "device",
+            "upstream": "127.0.0.1",
+            "upstream_port": stub_https_upstream,
+            "upstream_scheme": "https",
+            "upstream_ssl_verify": False,
+            "listen_port": LISTEN_PORT,
+        }
+    ]
+    name = _run_addon(image, sites, tmp_path)
+    try:
+        url = f"http://127.0.0.1:{LISTEN_PORT}/"
+        deadline = time.monotonic() + 30
+        resp = None
+        while time.monotonic() < deadline:
+            resp = _get(url, PROXY_HOST)
+            if resp is not None and resp.status == 200:
+                break
+            time.sleep(0.5)
+        if resp is None or resp.status != 200:
+            pytest.fail(
+                f"https-upstream proxy never served 200 on {url}; "
+                f"running={_docker('inspect', '-f', '{{.State.Running}}', name, check=False).strip()}\n"
+                f"{_docker('logs', name, check=False)[-3000:]}"
+            )
+
+        body = resp.read().decode()
+        assert "hello from upstream device" in body
+
+        assert resp.headers.get("X-Frame-Options") is None
+        assert resp.headers.get("Content-Security-Policy") is None
+
         set_cookie = resp.headers.get("Set-Cookie", "")
         assert "session=abc" in set_cookie
         assert "127.0.0.1" not in set_cookie, set_cookie
