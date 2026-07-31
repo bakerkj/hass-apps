@@ -43,3 +43,17 @@ configuration:
   log_level:
     name: Log level
     description: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
+  suppress_paths:
+    name: Suppress paths
+    description: >-
+      Dotted Signal K paths to drop entirely (primary and any per-source
+      fanouts). Segment boundary is respected, so "electrical.batteries.2" does
+      not match "electrical.batteries.239". Useful for hiding N2K instance-ID
+      duplicates or entries the fanout gives better replacements for.
+  suppress_primary_on_fanout:
+    name: Suppress primary on fanout
+    description: >-
+      When a leaf fans out to per-source entities, also drop its primary path.
+      The primary reflects whichever source Signal K arbitrarily picks as
+      canonical; once the named per-source entities exist, it is a noisy alias
+      for one of them.

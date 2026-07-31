@@ -24,7 +24,9 @@
     "mqtt_base_topic": "signalk",
     "client_id": "signalk-bridge",
     "expire_after_multiplier": 4,
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "suppress_paths": [],
+    "suppress_primary_on_fanout": false
   },
   "schema": {
     "signalk_url": "str",
@@ -38,7 +40,11 @@
     "mqtt_base_topic": "str",
     "client_id": "str",
     "expire_after_multiplier": "int(2,10)",
-    "log_level": "list(DEBUG|INFO|WARNING|ERROR)"
+    "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
+    "suppress_paths": [
+      "str"
+    ],
+    "suppress_primary_on_fanout": "bool"
   },
   "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
 }

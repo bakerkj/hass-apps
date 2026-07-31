@@ -709,10 +709,22 @@ def _fanout_paths(
     return fanouts
 
 
+def _is_suppressed(path: str, suppress: tuple[str, ...]) -> bool:
+    """Return True when ``path`` is at or below any of the suppress-list
+    prefixes (dotted-segment boundary respected, so ``batteries.2`` does
+    not match ``batteries.239``)."""
+    for pref in suppress:
+        if path == pref or path.startswith(pref + "."):
+            return True
+    return False
+
+
 def flatten(
     tree: Any,
     prefix: str = "",
     source_tags: dict[str, str] | None = None,
+    suppress_paths: tuple[str, ...] | list[str] | None = None,
+    suppress_primary_on_fanout: bool = False,
 ) -> dict[str, Any]:
     """Flatten a Signal K vessel tree into ``dotted.path -> value``.
 
@@ -726,8 +738,21 @@ def flatten(
     fanout paths -- disambiguating same-schema devices (e.g. two BMVs
     both publishing under ``electrical.batteries.0``). The primary path
     is preserved either way so existing entity IDs never break.
+
+    ``suppress_paths`` is an optional list of dotted-path prefixes. Any
+    path at or below one of the prefixes -- primary or fanout -- is
+    dropped entirely, for hiding schema duplicates (a N2K device that
+    broadcasts under two instance IDs) or misnamed entities that the
+    fanout gives better replacements for.
+
+    ``suppress_primary_on_fanout``, when True, drops the primary path
+    on any leaf that fanned out. The primary reflects whichever source
+    Signal K arbitrarily promoted to canonical -- once the per-source
+    entities exist, the primary is a noisy alias for one of them.
+    Off by default so existing entity IDs stay stable across upgrades.
     """
     tags = source_tags or {}
+    suppress = tuple(suppress_paths) if suppress_paths else ()
     out: dict[str, Any] = {}
     if not isinstance(tree, dict):
         return out
@@ -742,11 +767,17 @@ def flatten(
         ):
             continue
         path = f"{prefix}{key}"
+        if suppress and _is_suppressed(path, suppress):
+            continue
         if isinstance(node, dict) and "value" in node:
-            out[path] = node["value"]
             values = node.get("values")
+            fanouts: list[tuple[str, Any]] = []
             if isinstance(values, dict) and tags:
-                for alt_path, alt_val in _fanout_paths(path, values, tags):
+                fanouts = _fanout_paths(path, values, tags)
+            if not (fanouts and suppress_primary_on_fanout):
+                out[path] = node["value"]
+            for alt_path, alt_val in fanouts:
+                if not suppress or not _is_suppressed(alt_path, suppress):
                     out[alt_path] = alt_val
             # Some leaves nest further (e.g. propulsion.x.fuel.rate sits under a
             # node that itself has no value); keep walking siblings.
@@ -761,9 +792,25 @@ def flatten(
                     "values",
                 ):
                     continue
-                out.update(flatten({sub: subnode}, f"{path}.", source_tags=tags))
+                out.update(
+                    flatten(
+                        {sub: subnode},
+                        f"{path}.",
+                        source_tags=tags,
+                        suppress_paths=suppress,
+                        suppress_primary_on_fanout=suppress_primary_on_fanout,
+                    )
+                )
         elif isinstance(node, dict):
-            out.update(flatten(node, f"{path}.", source_tags=tags))
+            out.update(
+                flatten(
+                    node,
+                    f"{path}.",
+                    source_tags=tags,
+                    suppress_paths=suppress,
+                    suppress_primary_on_fanout=suppress_primary_on_fanout,
+                )
+            )
     return out
 
 
