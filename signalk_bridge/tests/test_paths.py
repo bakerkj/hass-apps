@@ -515,6 +515,17 @@ def test_group_resolution_for_tank() -> None:
     assert label == "Fresh water tank 0"
 
 
+def test_group_resolution_for_tank_without_wildcard() -> None:
+    gid, label = paths.resolve_group("tank.freshWater", [])
+    assert gid == "tank.freshWater"
+    assert label == "Fresh water tank"
+
+
+def test_m3_to_gal_conversion() -> None:
+    assert paths.m3_to_gal(1.0) == pytest.approx(264.172, abs=0.01)
+    assert paths.m3_to_gal(0.2839) == pytest.approx(75.0, abs=0.05)
+
+
 def test_group_resolution_without_wildcard() -> None:
     gid, label = paths.resolve_group("navigation", [])
     assert gid == "navigation"
@@ -615,8 +626,13 @@ def test_whole_boat_resolves_to_expected_values(vessel_tree: dict[str, Any]) -> 
         "electrical.batteries.house.voltage": (12.84, "V", "battery.house"),
         "electrical.batteries.start.voltage": (12.61, "V", "battery.start"),
         "electrical.solar.mppt1.panelPower": (77.5, "W", "solar.mppt1"),
-        "tanks.freshWater.0.currentLevel": (62.0, "%", "tank.freshWater.0"),
-        "tanks.fuel.0.currentLevel": (45.0, "%", "tank.fuel.0"),
+        # Tank group has no wildcard by design: N2K's per-fluid-type
+        # instance ID isn't human-meaningful, so the device is grouped
+        # per fluid type ("Fresh water tank") and the app-side entity
+        # key drops the instance too on single-tank boats. See
+        # signalk_bridge/signalk_bridge/paths.py PATH_MAP tank block.
+        "tanks.freshWater.0.currentLevel": (62.0, "%", "tank.freshWater"),
+        "tanks.fuel.0.currentLevel": (45.0, "%", "tank.fuel"),
     }
 
     for path, (value, unit, group) in expected.items():

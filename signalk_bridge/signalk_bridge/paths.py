@@ -53,6 +53,15 @@ def pa_to_kpa(v: float) -> float:
     return v / 1000.0
 
 
+# Cubic metres to US gallons -- N2K PGN 127505 reports tank capacity in m3;
+# HA users on any US boat expect gallons.
+_M3_TO_GAL = 264.172052
+
+
+def m3_to_gal(v: float) -> float:
+    return v * _M3_TO_GAL
+
+
 def identity(v: float) -> float:
     return v
 
@@ -482,45 +491,95 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         **VOLT,
     },
     # ---- tanks (N2K senders) ----
+    # ``group`` intentionally has no ``*``: N2K's per-fluid-type instance
+    # is bookkeeping, and single-instance boats read "Fresh water tank"
+    # instead of "Fresh water tank 7". app.py's ``_entity_key`` also drops
+    # the captured instance for these, falling back to the digit form
+    # only when multiple tanks of the same fluid type exist.
     "tanks.freshWater.*.currentLevel": {
-        "name": "Fresh water level",
+        "name": "Level",
         "unit": "%",
         "convert": ratio_to_percent,
         "icon": "mdi:water",
         "state_class": "measurement",
-        "group": "tank.freshWater.*",
+        "group": "tank.freshWater",
+    },
+    "tanks.freshWater.*.capacity": {
+        "name": "Capacity",
+        "unit": "gal",
+        "convert": m3_to_gal,
+        "icon": "mdi:water",
+        "device_class": "volume_storage",
+        "state_class": "measurement",
+        "group": "tank.freshWater",
     },
     "tanks.fuel.*.currentLevel": {
-        "name": "Fuel level",
+        "name": "Level",
         "unit": "%",
         "convert": ratio_to_percent,
         "icon": "mdi:fuel",
         "state_class": "measurement",
-        "group": "tank.fuel.*",
+        "group": "tank.fuel",
+    },
+    "tanks.fuel.*.capacity": {
+        "name": "Capacity",
+        "unit": "gal",
+        "convert": m3_to_gal,
+        "icon": "mdi:fuel",
+        "device_class": "volume_storage",
+        "state_class": "measurement",
+        "group": "tank.fuel",
     },
     "tanks.blackWater.*.currentLevel": {
-        "name": "Black water level",
+        "name": "Level",
         "unit": "%",
         "convert": ratio_to_percent,
         "icon": "mdi:toilet",
         "state_class": "measurement",
-        "group": "tank.blackWater.*",
+        "group": "tank.blackWater",
+    },
+    "tanks.blackWater.*.capacity": {
+        "name": "Capacity",
+        "unit": "gal",
+        "convert": m3_to_gal,
+        "icon": "mdi:toilet",
+        "device_class": "volume_storage",
+        "state_class": "measurement",
+        "group": "tank.blackWater",
     },
     "tanks.wasteWater.*.currentLevel": {
-        "name": "Waste water level",
+        "name": "Level",
         "unit": "%",
         "convert": ratio_to_percent,
         "icon": "mdi:water-percent",
         "state_class": "measurement",
-        "group": "tank.wasteWater.*",
+        "group": "tank.wasteWater",
+    },
+    "tanks.wasteWater.*.capacity": {
+        "name": "Capacity",
+        "unit": "gal",
+        "convert": m3_to_gal,
+        "icon": "mdi:water-percent",
+        "device_class": "volume_storage",
+        "state_class": "measurement",
+        "group": "tank.wasteWater",
     },
     "tanks.liveWell.*.currentLevel": {
-        "name": "Live well level",
+        "name": "Level",
         "unit": "%",
         "convert": ratio_to_percent,
         "icon": "mdi:fishbowl",
         "state_class": "measurement",
-        "group": "tank.liveWell.*",
+        "group": "tank.liveWell",
+    },
+    "tanks.liveWell.*.capacity": {
+        "name": "Capacity",
+        "unit": "gal",
+        "convert": m3_to_gal,
+        "icon": "mdi:fishbowl",
+        "device_class": "volume_storage",
+        "state_class": "measurement",
+        "group": "tank.liveWell",
     },
 }
 
@@ -534,6 +593,7 @@ GROUP_LABELS: dict[str, str] = {
     "solar": "Solar",
     "inverter": "Inverter",
     "charger": "Charger",
+    "converter": "Converter",
     "gps": "GPS",
     "steering": "Steering",
     "switches.bank": "Digital switches bank",
@@ -581,6 +641,15 @@ TEXT_PATTERN_MAP: dict[str, dict[str, Any]] = {
         "name": "Charging mode",
         "icon": "mdi:battery-charging",
         "group": "charger.*",
+    },
+    # DC-DC / solar converters: N2K PGN 127507 reports operating state
+    # (bulk/absorption/float/off). Two-wildcard capture matches
+    # ``electrical.converter.<instance>.<sub>.operatingState`` which is
+    # what canboatjs emits for SmartSolar chargers.
+    "electrical.converter.*.*.operatingState": {
+        "name": "Operating state",
+        "icon": "mdi:solar-power-variant",
+        "group": "converter.*",
     },
 }
 
