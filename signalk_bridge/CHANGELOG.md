@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.3...signalk_bridge-v0.0.4) (2026-07-31)
+
+
+### Features
+
+* **signalk_bridge:** Victron parity for tanks, battery power, MPPT state ([#382](https://github.com/bakerkj/hass-apps/issues/382)) ([a01a54b](https://github.com/bakerkj/hass-apps/commit/a01a54b1ce0d76e147c25439bc72f4de829e7dad))
+
 ## [0.0.3](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.2...signalk_bridge-v0.0.3) (2026-07-31)
 
 
