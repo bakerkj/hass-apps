@@ -657,9 +657,11 @@ def _fanout_paths(
 ) -> list[tuple[str, Any]]:
     """Yield per-source ``(alt_path, value)`` pairs for a multi-source leaf.
 
-    Returns empty when there are fewer than two genuinely-distinct
-    readings -- a "values" dict with all-equal payloads is not a real
-    collision, just Signal K bookkeeping.
+    Returns empty when fewer than two sources report a scalar value.
+    Fans out per source regardless of whether the readings currently
+    agree -- two physical devices are still two devices, and gating on
+    value equality would flap the per-source entities to Unavailable in
+    HA every time the readings converged.
 
     The instance segment of the path (the last numeric segment, if any)
     is replaced with the friendly source tag, so
@@ -669,12 +671,6 @@ def _fanout_paths(
     matching is unchanged: the ``*`` wildcard captures the tag the same
     way it would capture ``"0"``.
     """
-    # Fan out by SOURCE, not by value: two physical devices that happen
-    # to agree on a reading for a cycle are still two devices, and
-    # collapsing them for that cycle would drop the per-source entities
-    # from the publish dict long enough to trip ``expire_after_s`` and
-    # flip them to Unavailable in HA -- exactly the flapping behaviour
-    # the fanout is meant to prevent.
     per_source: list[tuple[str, Any]] = []
     for src, sub in values.items():
         if not isinstance(sub, dict):
