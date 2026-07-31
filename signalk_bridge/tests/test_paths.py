@@ -509,6 +509,16 @@ def test_group_resolution_preserves_camelcase_instance() -> None:
     assert label == "Battery engineStart"
 
 
+def test_group_resolution_collapses_repeated_label() -> None:
+    # signalk-venus-plugin's "Use the device names for paths" mode turns
+    # a MPPT named "Solar" into path ``electrical.solar.solar`` -> device
+    # "Solar Solar". Collapse to just "Solar" so the duplicated word
+    # doesn't survive to HA.
+    gid, label = paths.resolve_group("solar.*", ["solar"])
+    assert gid == "solar.solar"
+    assert label == "Solar"
+
+
 def test_group_resolution_for_tank() -> None:
     gid, label = paths.resolve_group("tank.freshWater.*", ["0"])
     assert gid == "tank.freshWater.0"
