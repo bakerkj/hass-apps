@@ -67,6 +67,9 @@ jobs:
               device web UIs embeddable in HA dashboards (strips
               X-Frame-Options/CSP, rewrites the session-cookie domain);
               one device per port.
+            - direwolf_igate — receive-only APRS IGate: rtl_fm demodulates
+              from an RTL-SDR dongle into direwolf over a FIFO, which
+              decodes AX.25 packets and forwards them to APRS-IS.
             - ffmpeg_snapshotter — captures timestamped JPEG snapshots
               from RTSP streams on demand (VAAPI-capable).
             - frigate_compressor — long-running daemon that re-encodes

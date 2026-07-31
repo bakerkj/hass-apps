@@ -1,0 +1,106 @@
+configuration:
+  mycall:
+    name: Callsign
+    description: >-
+      Amateur radio callsign with SSID used as MYCALL and APRS-IS login (e.g.
+      N0CALL-10).
+  iglogin_passcode:
+    name: APRS-IS passcode
+    description: APRS-IS passcode matching the callsign.
+  igserver:
+    name: APRS-IS server
+    description: >-
+      Tier 2 rotate address (noam.aprs2.net, soam.aprs2.net, euro.aprs2.net,
+      asia.aprs2.net, aunz.aprs2.net).
+  frequency:
+    name: RF frequency
+    description: >-
+      Frequency for rtl_fm (e.g. 144.390M for US 2 m APRS, 144.800M for Europe).
+  rtl_device:
+    name: RTL-SDR device
+    description: >-
+      RTL-SDR device index or serial number. Use 0 if you have a single dongle;
+      use the serial when multiple dongles are attached.
+  rtl_gain:
+    name: RTL-SDR gain
+    description: >-
+      Tuner gain in dB (e.g. 49.6). Leave blank for automatic gain.
+  rtl_ppm:
+    name: RTL-SDR frequency correction
+    description: Frequency correction in ppm; 0 is fine for most dongles.
+  latitude:
+    name: Latitude
+    description: Station latitude in decimal degrees (-90 to 90).
+  longitude:
+    name: Longitude
+    description: Station longitude in decimal degrees (-180 to 180).
+  beacon_comment:
+    name: Beacon comment
+    description: Free-form comment text appended to the position beacon.
+  beacon_symbol:
+    name: Beacon symbol
+    description: APRS symbol name for the position beacon (e.g. igate).
+  beacon_overlay:
+    name: Beacon overlay
+    description: Single-character overlay shown on top of the symbol.
+  beacon_delay:
+    name: Beacon initial delay
+    description: Direwolf PBEACON delay parameter (mm:ss).
+  beacon_every:
+    name: Beacon interval
+    description: Direwolf PBEACON every parameter (mm:ss).
+  send_status_beacon:
+    name: Send status beacon
+    description: >-
+      Emit an IBEACON status report to APRS-IS on the same schedule as the
+      position beacon. Also the source of the gated-packet counters published
+      over MQTT, so turning it off leaves those sensors without data.
+  mqtt_enabled:
+    name: Publish statistics to MQTT
+    description: >-
+      Publish IGate statistics to Home Assistant as MQTT Discovery sensors.
+      Leave off to run the add-on as a plain IGate with no MQTT connection.
+  mqtt_host:
+    name: MQTT host
+    description: Broker hostname; core-mosquitto is the Home Assistant add-on.
+  mqtt_port:
+    name: MQTT port
+    description: Broker port (1883 plain, 8883 TLS).
+  mqtt_username:
+    name: MQTT username
+    description: Broker username. Leave blank for an anonymous broker.
+  mqtt_password:
+    name: MQTT password
+    description: Broker password. Leave blank for an anonymous broker.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description: >-
+      Home Assistant MQTT Discovery prefix; homeassistant unless you changed it
+      in the MQTT integration.
+  mqtt_base_topic:
+    name: MQTT base topic
+    description: Topic prefix for the published state and availability topics.
+  client_id:
+    name: MQTT client ID
+    description: >-
+      Client identifier used with the broker, and the basis for the Home
+      Assistant device and entity IDs.
+  interval_seconds:
+    name: Publish interval
+    description: >-
+      How often statistics are published, in seconds. Packet counters come from
+      direwolf's own status beacon, so they only advance on the beacon schedule
+      regardless of this value.
+  expire_after_multiplier:
+    name: Expire-after multiplier
+    description: >-
+      Multiplied by the publish interval to set how long Home Assistant keeps
+      the IGate-connected sensor before marking it unavailable.
+  mqtt_disconnect_timeout_seconds:
+    name: MQTT disconnect timeout
+    description: >-
+      How long the broker may stay unreachable before an error is logged. Gating
+      continues regardless; only the statistics go stale.
+  log_level:
+    name: Log level
+    description: Verbosity of the statistics publisher's own log output.
