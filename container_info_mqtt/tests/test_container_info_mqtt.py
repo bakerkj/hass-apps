@@ -720,6 +720,48 @@ def test_prune_mix_stale_and_active_only_clears_stale():
         assert "keepme" not in topic
 
 
+def test_prune_zero_overlap_at_or_above_threshold_refuses_wipe():
+    retained = {
+        "container-info-mqtt_hamh": {"cpu_percent", "summary"},
+        "container-info-mqtt_airsonos": {"summary"},
+        "container-info-mqtt_core_mosquitto": {"summary"},
+    }
+    expected = {
+        "app_3fd9e6b0_hamh": {"cpu_percent", "summary"},
+        "app_605cee21_airsonos": {"summary"},
+        "app_core_mosquitto": {"summary"},
+    }
+    pruned, client = _prune(retained, expected)
+    assert pruned == 0
+    assert client.published == []
+
+
+def test_prune_zero_overlap_below_threshold_still_prunes():
+    retained = {
+        "container-info-mqtt_old_a": {"summary"},
+        "container-info-mqtt_old_b": {"summary"},
+    }
+    expected = {"new_a": {"summary"}, "new_b": {"summary"}}
+    pruned, _client = _prune(retained, expected)
+    assert pruned == 2
+
+
+def test_prune_partial_overlap_still_prunes_the_stale_ones():
+    retained = {
+        "container-info-mqtt_hamh": {"summary"},
+        "container-info-mqtt_removed_container": {"summary"},
+    }
+    expected = {"hamh": {"summary"}}
+    pruned, client = _prune(retained, expected)
+    assert pruned == 1
+    topics = {t for (t, _, _, _) in client.published}
+    assert (
+        "homeassistant/sensor/container-info-mqtt_removed_container/summary/config"
+        in topics
+    )
+    assert "container_info/removed_container/availability" in topics
+
+
 def test_prune_multiple_stale_returns_count():
     retained = {
         "container-info-mqtt_builder_a": {"summary"},
