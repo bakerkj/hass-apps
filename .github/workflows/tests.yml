@@ -590,6 +590,55 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  tests-all:
+    # Static-named fan-in over the unit + per-addon e2e jobs, so branch
+    # protection has one stable context to require. The per-addon jobs cannot
+    # be required directly: their names are fine, but they are gated on
+    # ``discover`` and legitimately report ``skipped`` whenever the PR touches
+    # no addon dir (the common case for a renovate action or pre-commit bump).
+    # A required check that reports ``skipped`` still satisfies the gate, but a
+    # required check that never *starts* blocks forever -- hence one always-run
+    # aggregator rather than ten conditional contexts.
+    #
+    # ``skipped`` therefore counts as a pass here; only ``failure`` and
+    # ``cancelled`` may red this job. ``discover`` is in ``needs`` on purpose:
+    # if it fails, every e2e job skips, and without it the aggregator would go
+    # green on a scope that was never actually computed.
+    needs:
+      [
+        discover,
+        unit-tests,
+        frigate-compressor-e2e,
+        ffmpeg-snapshotter-e2e,
+        dashboard-entity-proxy-e2e,
+        dashboard-web-proxy-e2e,
+        container-hooks-e2e,
+        signalk-bridge-e2e,
+        signalk-e2e,
+        halpi2-power-e2e,
+        direwolf-igate-e2e,
+      ]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check test job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success | skipped) ;;
+              *)
+                echo "::error::a test job reported '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "all test jobs passed or were out of scope"
+
   coverage:
     name: Combined coverage
     runs-on: ubuntu-24.04
