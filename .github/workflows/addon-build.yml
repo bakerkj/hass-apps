@@ -195,3 +195,35 @@ jobs:
           cache-gha-scope: ${{ matrix.addon }}
           cosign: "false"
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  addon-build-all:
+    # Static-named fan-in over the build matrix, so branch protection has one
+    # stable context to require. The matrix jobs cannot be required directly:
+    # their contexts are ``Build <addon> (<arch>)``, which vary per addon and
+    # go stale the moment an addon is added or renamed.
+    #
+    # ``build`` is skipped whenever discover resolves to mode 'skip' or an
+    # empty matrix, so ``skipped`` counts as a pass; only ``failure`` and
+    # ``cancelled`` may red this job. ``discover`` is in ``needs`` so a failure
+    # there cannot present as "nothing to build, all green".
+    needs: [discover, build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check build matrix results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success | skipped) ;;
+              *)
+                echo "::error::a build job reported '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "all build jobs passed or were out of scope"
