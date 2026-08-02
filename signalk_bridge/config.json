@@ -26,7 +26,9 @@
     "expire_after_multiplier": 4,
     "log_level": "INFO",
     "suppress_paths": [],
-    "suppress_primary_on_fanout": false
+    "suppress_primary_on_fanout": false,
+    "stale_after_seconds": 0,
+    "stale_learning_max_age": 1800
   },
   "schema": {
     "signalk_url": "str",
@@ -44,7 +46,9 @@
     "suppress_paths": [
       "str"
     ],
-    "suppress_primary_on_fanout": "bool"
+    "suppress_primary_on_fanout": "bool",
+    "stale_after_seconds": "int(0,86400)",
+    "stale_learning_max_age": "int(0,86400)"
   },
   "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
 }

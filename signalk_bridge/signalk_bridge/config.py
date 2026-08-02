@@ -26,6 +26,8 @@ OPTION_KEYS: set[str] = {
     "log_level",
     "suppress_paths",
     "suppress_primary_on_fanout",
+    "stale_after_seconds",
+    "stale_learning_max_age",
 }
 
 SENSITIVE_OPTION_KEYS: set[str] = {"mqtt_password", "signalk_token"}
