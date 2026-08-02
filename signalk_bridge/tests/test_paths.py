@@ -435,6 +435,10 @@ def test_bearings_wrap_to_0_360() -> None:
         "navigation.courseOverGroundTrue",
         "navigation.headingMagnetic",
         "environment.wind.directionTrue",
+        "navigation.courseGreatCircle.bearingTrackTrue",
+        "navigation.courseGreatCircle.nextPoint.bearingTrue",
+        "steering.autopilot.target.headingMagnetic",
+        "steering.autopilot.target.headingTrue",
     ):
         assert paths.PATH_MAP[path]["convert"] is paths.rad_to_deg_positive
 

@@ -76,6 +76,142 @@ def test_position_becomes_device_tracker(vessel_tree: dict[str, Any]) -> None:
     assert pos["attributes"]["longitude"] == -70.0
 
 
+def test_course_waypoint_numeric_sensors(vessel_tree: dict[str, Any]) -> None:
+    ents = resolve_entities(vessel_tree)
+    xte = ents[slugify("navigation.courseGreatCircle.crossTrackError")]
+    assert xte["state"] == "28.81"
+    assert xte["unit"] == "m"
+    assert xte["device_class"] is None  # signed; not an HA distance
+    assert xte["group_label"] == "Course"
+    btw = ents[slugify("navigation.courseGreatCircle.nextPoint.bearingTrue")]
+    assert btw["unit"] == "°"
+    assert float(btw["state"]) == pytest.approx(320.4, abs=0.2)  # 5.592 rad -> 0..360
+    dtw = ents[slugify("navigation.courseGreatCircle.nextPoint.distance")]
+    assert dtw["state"] == "233"
+    ttg = ents[slugify("navigation.courseGreatCircle.nextPoint.timeToGo")]
+    assert ttg["device_class"] == "duration"
+    assert ttg["unit"] == "s"
+
+
+def test_course_names_are_text_sensors(vessel_tree: dict[str, Any]) -> None:
+    spc = resolve_special(vessel_tree)
+    wp = spc[slugify("navigation.courseGreatCircle.nextPoint.name")]
+    assert wp["component"] == "sensor"
+    assert wp["state"] == "GOTO CURSOR"
+    assert wp["group_label"] == "Course"
+    route = spc[slugify("navigation.courseGreatCircle.activeRoute.name")]
+    assert route["state"] == "Route"
+
+
+def test_autopilot_target_heading_is_numeric(vessel_tree: dict[str, Any]) -> None:
+    ents = resolve_entities(vessel_tree)
+    tgt = ents[slugify("steering.autopilot.target.headingMagnetic")]
+    assert tgt["unit"] == "°"
+    assert float(tgt["state"]) == pytest.approx(62.0, abs=0.2)  # 1.0825 rad
+    assert tgt["group_label"] == "Steering"
+
+
+def test_water_current_splits_into_set_and_drift(vessel_tree: dict[str, Any]) -> None:
+    # environment.current is one composite leaf ({setTrue, drift}); it must
+    # surface as two scalar sensors, not be dropped like other dict values.
+    spc = resolve_special(vessel_tree)
+    cset = spc["environment_current_set"]
+    cdrift = spc["environment_current_drift"]
+    assert cset["unit"] == "°"
+    assert float(cset["state"]) == pytest.approx(90.0, abs=0.1)  # 1.5708 rad
+    assert cset["group_label"] == "Environment"
+    assert cdrift["unit"] == "m/s"
+    assert cdrift["device_class"] == "speed"
+    assert float(cdrift["state"]) == pytest.approx(0.5, abs=0.01)
+
+
+def _tree_from(paths_: dict[str, Any]) -> dict:
+    """Build a minimal SK vessel tree from {dotted.path: value}."""
+    root: dict = {}
+    for dotted, v in paths_.items():
+        node = root
+        segs = dotted.split(".")
+        for seg in segs[:-1]:
+            node = node.setdefault(seg, {})
+        node[segs[-1]] = {"value": v}
+    return root
+
+
+def test_vmg_is_signed_and_has_no_device_class() -> None:
+    # VMG goes negative when losing ground to the mark; it must keep the sign
+    # and (like crossTrackError) carry no speed device_class.
+    tree = _tree_from({"navigation.courseGreatCircle.nextPoint.velocityMadeGood": -0.5})
+    vmg = resolve_entities(tree)[
+        slugify("navigation.courseGreatCircle.nextPoint.velocityMadeGood")
+    ]
+    assert vmg["state"] == "-0.5"
+    assert vmg["unit"] == "m/s"
+    assert vmg["device_class"] is None
+    assert vmg["group_label"] == "Course"
+
+
+def test_cross_track_error_preserves_negative() -> None:
+    tree = _tree_from({"navigation.courseGreatCircle.crossTrackError": -28.81})
+    xte = resolve_entities(tree)[
+        slugify("navigation.courseGreatCircle.crossTrackError")
+    ]
+    assert xte["state"] == "-28.81"
+    assert xte["device_class"] is None
+
+
+def test_time_to_go_value_passes_through_in_seconds() -> None:
+    tree = _tree_from({"navigation.courseGreatCircle.nextPoint.timeToGo": 3881.839})
+    ttg = resolve_entities(tree)[
+        slugify("navigation.courseGreatCircle.nextPoint.timeToGo")
+    ]
+    assert ttg["state"] == "3881.839"
+    assert ttg["unit"] == "s"
+    assert ttg["device_class"] == "duration"
+
+
+def test_current_set_wraps_past_180() -> None:
+    # 5.7596 rad = 330 deg. Signed conversion would give -30, so this is the
+    # case that actually exercises the 0..360 wrap (the fixture's 90 deg cannot).
+    tree = _tree_from({"environment.current": {"setTrue": 5.7596, "drift": 0.5}})
+    spc = resolve_special(tree)
+    assert float(spc["environment_current_set"]["state"]) == pytest.approx(
+        330.0, abs=0.2
+    )
+
+
+def test_current_set_falls_back_to_set_magnetic() -> None:
+    # A device reporting only magnetic set must still yield a set sensor.
+    tree = _tree_from({"environment.current": {"setMagnetic": 1.5708, "drift": 0.5}})
+    spc = resolve_special(tree)
+    assert float(spc["environment_current_set"]["state"]) == pytest.approx(
+        90.0, abs=0.1
+    )
+    assert float(spc["environment_current_drift"]["state"]) == pytest.approx(0.5)
+
+
+def test_current_composite_not_leaked_as_numeric_sensor() -> None:
+    # The composite leaf must split into set+drift, never leak as a phantom
+    # numeric sensor keyed on the composite path itself.
+    tree = _tree_from({"environment.current": {"setTrue": 1.5708, "drift": 0.5}})
+    assert "environment_current" not in resolve_entities(tree)
+    spc = resolve_special(tree)
+    assert {k for k in spc if k.startswith("environment_current")} == {
+        "environment_current_set",
+        "environment_current_drift",
+    }
+
+
+def test_current_absent_or_non_dict_yields_nothing() -> None:
+    assert not any(
+        k.startswith("environment_current")
+        for k in resolve_special(
+            {"environment": {"water": {"temperature": {"value": 288.0}}}}
+        )
+    )
+    scalar = _tree_from({"environment.current": 1.23})  # not a dict -> ignored
+    assert not any(k.startswith("environment_current") for k in resolve_special(scalar))
+
+
 def test_charging_mode_is_text_sensor(vessel_tree: dict[str, Any]) -> None:
     # A wildcard text path (electrical.chargers.*.chargingMode) must resolve to a
     # plain sensor grouped under the captured charger id -- not be silently
