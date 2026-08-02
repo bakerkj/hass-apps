@@ -204,6 +204,76 @@
       "matchDatasources": ["docker"],
       "matchPackageNames": ["signalk/signalk-server"],
       "allowedVersions": "/^v\\d+\\.\\d+\\.\\d+-alpine$/"
+    },
+    {
+      "description": "Auto-merge rules below are order-dependent: renovate applies packageRules in array order and the last match wins. Deny anything that could reach a shipped artifact, so a future Dockerfile or runtime requirement defaults to manual review.",
+      "matchDatasources": [
+        "docker",
+        "deb",
+        "custom.aports",
+        "github-releases",
+        "git-refs",
+        "github-tags"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Actions here run in lint, test and release jobs that never produce an image. The container users install is built only on a release tag, by home-assistant/builder, which is carved out below and stays manual. The docker/build-push-action uses in the test workflows build throwaway images with load:true and never push, so they cannot reach a user either.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "Lint and format tooling. Never shipped.",
+      "matchManagers": ["pre-commit"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "npm packages pinned in .pre-commit-config.yaml additional_dependencies. These come from the custom regex manager, which renovate names custom.regex, so the pre-commit rule above does not reach them.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "CI runner images.",
+      "matchDatasources": ["github-runners"],
+      "matchUpdateTypes": ["minor", "patch", "pin"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "Dev and test tooling only, scoped by depType: dependency-groups and tool.uv.dev-dependencies. Deliberately excludes project.dependencies, project.optional-dependencies and build-system.requires, so a runtime dependency added later defaults to manual review instead of inheriting auto-merge -- the pypi datasource is not in the denial above, so scoping here is the only guard. Repos that already ship runtime packages also deny them by name in the final rule. Only pep621 is listed because renovate has no separate uv manager: pep621 is the manager that handles uv projects, covering pyproject.toml, uv.lock and uv workspaces, so naming uv here would match nothing.",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true,
+      "matchDepTypes": ["dependency-groups", "tool.uv.dev-dependencies"]
+    },
+    {
+      "description": "The uv required-version pin in [tool.uv], which comes from the custom regex manager rather than the native pep621 manager and so is not covered by the rule above. Scoped by depName so it does not sweep in the other custom.regex managers.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["uv"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "Majors always get a human. Must stay last to override every opt-in above.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "MANUAL REVIEW: home-assistant/builder builds the container users install. Also broken out of the github-actions group so a builder bump does not block auto-merge of every other action riding in the same PR. Every other action here runs in jobs that never produce an image, so they auto-merge.",
+      "matchPackageNames": ["home-assistant/builder"],
+      "groupName": "home-assistant builder",
+      "automerge": false
     }
-  ]
+  ],
+  "prConcurrentLimit": 5,
+  "automergeStrategy": "squash"
 }
