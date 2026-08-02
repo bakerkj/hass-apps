@@ -78,6 +78,7 @@ def publish_discovery(
         ("device_class", "device_class"),
         ("state_class", "state_class"),
         ("icon", "icon"),
+        ("entity_category", "entity_category"),
     ):
         if entity.get(src):
             payload[dst] = entity[src]
