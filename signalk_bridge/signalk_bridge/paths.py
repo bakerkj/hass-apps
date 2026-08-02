@@ -53,6 +53,12 @@ def pa_to_kpa(v: float) -> float:
     return v / 1000.0
 
 
+# Joules to kilowatt-hours -- Victron MPPT yield counters report SI joules; HA's
+# Energy dashboard wants kWh.
+def j_to_kwh(v: float) -> float:
+    return v / 3_600_000.0
+
+
 # Cubic metres to US gallons -- N2K PGN 127505 reports tank capacity in m3;
 # HA users on any US boat expect gallons.
 _M3_TO_GAL = 264.172052
@@ -562,6 +568,44 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         "state_class": "measurement",
         "group": "solar.*",
     },
+    "electrical.solar.*.panelVoltage": {
+        # PV-array side, distinct from the battery-side ``voltage`` above.
+        "name": "Panel voltage",
+        "unit": "V",
+        "convert": identity,
+        "icon": "mdi:solar-panel",
+        "group": "solar.*",
+        **VOLT,
+    },
+    "electrical.solar.*.yieldToday": {
+        "name": "Yield today",
+        "unit": "kWh",
+        "convert": j_to_kwh,
+        "icon": "mdi:solar-power",
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "group": "solar.*",
+    },
+    "electrical.solar.*.yieldYesterday": {
+        # A fixed daily figure, not a running meter -- plain total, not
+        # total_increasing (it never rises through the day).
+        "name": "Yield yesterday",
+        "unit": "kWh",
+        "convert": j_to_kwh,
+        "icon": "mdi:solar-power",
+        "device_class": "energy",
+        "state_class": "total",
+        "group": "solar.*",
+    },
+    "electrical.solar.*.systemYield": {
+        "name": "Total yield",
+        "unit": "kWh",
+        "convert": j_to_kwh,
+        "icon": "mdi:solar-power",
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "group": "solar.*",
+    },
     "electrical.inverters.*.dc.voltage": {
         "name": "Inverter DC voltage",
         "unit": "V",
@@ -741,6 +785,12 @@ TEXT_PATTERN_MAP: dict[str, dict[str, Any]] = {
         "name": "Operating state",
         "icon": "mdi:solar-power-variant",
         "group": "converter.*",
+    },
+    # MPPT charge stage (bulk / absorption / float / off).
+    "electrical.solar.*.controllerMode": {
+        "name": "Charge mode",
+        "icon": "mdi:solar-power-variant",
+        "group": "solar.*",
     },
 }
 
