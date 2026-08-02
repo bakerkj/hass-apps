@@ -223,6 +223,30 @@ def test_charging_mode_is_text_sensor(vessel_tree: dict[str, Any]) -> None:
     assert mode["group_label"] == "Charger ac1"
 
 
+def test_solar_yield_and_panel_voltage(vessel_tree: dict[str, Any]) -> None:
+    ents = resolve_entities(vessel_tree)
+    yt = ents[slugify("electrical.solar.mppt1.yieldToday")]
+    assert yt["unit"] == "kWh"
+    assert yt["device_class"] == "energy"
+    assert yt["state_class"] == "total_increasing"
+    assert float(yt["state"]) == pytest.approx(2.59, abs=0.01)  # 9.324e6 J
+    sy = ents[slugify("electrical.solar.mppt1.systemYield")]
+    assert float(sy["state"]) == pytest.approx(340.69, abs=0.1)  # 1.226e9 J
+    pv = ents[slugify("electrical.solar.mppt1.panelVoltage")]
+    assert pv["unit"] == "V"
+    assert pv["device_class"] == "voltage"
+    assert float(pv["state"]) == pytest.approx(70.4)
+
+
+def test_solar_charge_mode_is_text_sensor(vessel_tree: dict[str, Any]) -> None:
+    spc = resolve_special(vessel_tree)
+    cm = spc[slugify("electrical.solar.mppt1.controllerMode")]
+    assert cm["component"] == "sensor"
+    assert cm["state"] == "bulk"
+    assert cm["name"] == "Charge mode"
+    assert cm["group_label"] == "Solar mppt1"
+
+
 def test_active_alarm_is_on_normal_is_off(vessel_tree: dict[str, Any]) -> None:
     spc = resolve_special(vessel_tree)
     alarm = spc[slugify("notifications.instrument.PilotOffCourse")]

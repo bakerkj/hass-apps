@@ -49,6 +49,50 @@ def test_flatten_keeps_composite_values(vessel_tree: dict[str, Any]) -> None:
     assert isinstance(flat["navigation.position"], dict)
 
 
+def test_flatten_with_meta_carries_timestamp(vessel_tree: dict[str, Any]) -> None:
+    meta = paths.flatten_with_meta(vessel_tree)
+    value, ts = meta["navigation.speedOverGround"]
+    assert value == pytest.approx(3.086)
+    assert ts == "2026-07-22T04:00:00.000Z"  # the fixture leaf() timestamp
+
+
+def test_flatten_matches_meta_values(vessel_tree: dict[str, Any]) -> None:
+    # flatten is a thin wrapper; its values must equal meta's, timestamp aside.
+    flat = paths.flatten(vessel_tree)
+    meta = paths.flatten_with_meta(vessel_tree)
+    assert flat == {p: v for p, (v, _ts) in meta.items()}
+
+
+def test_flatten_with_meta_fanout_carries_per_source_timestamps() -> None:
+    # Each fanned-out source keeps its OWN timestamp, so one source going stale
+    # is distinguishable from another under the same primary path.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "0": {
+                    "voltage": {
+                        "value": 12.8,
+                        "values": {
+                            "n2k-can0.abc": {
+                                "value": 12.9,
+                                "timestamp": "2026-01-01T00:00:01Z",
+                            },
+                            "n2k-can0.def": {
+                                "value": 12.1,
+                                "timestamp": "2026-01-01T00:00:05Z",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    tags = {"n2k-can0.abc": "house", "n2k-can0.def": "engine"}
+    meta = paths.flatten_with_meta(tree, source_tags=tags)
+    assert meta["electrical.batteries.house.voltage"] == (12.9, "2026-01-01T00:00:01Z")
+    assert meta["electrical.batteries.engine.voltage"] == (12.1, "2026-01-01T00:00:05Z")
+
+
 _MULTISOURCE_BATTERY = {
     "electrical": {
         "batteries": {
@@ -538,6 +582,19 @@ def test_group_resolution_for_tank_without_wildcard() -> None:
 def test_m3_to_gal_conversion() -> None:
     assert paths.m3_to_gal(1.0) == pytest.approx(264.172, abs=0.01)
     assert paths.m3_to_gal(0.2839) == pytest.approx(75.0, abs=0.05)
+
+
+def test_solar_yield_joules_to_kwh() -> None:
+    assert paths.j_to_kwh(3_600_000.0) == pytest.approx(1.0)
+    assert paths.j_to_kwh(9_324_000.0) == pytest.approx(2.59, abs=0.01)
+    for p in (
+        "electrical.solar.*.yieldToday",
+        "electrical.solar.*.yieldYesterday",
+        "electrical.solar.*.systemYield",
+    ):
+        assert paths.PATH_MAP[p]["unit"] == "kWh"
+        assert paths.PATH_MAP[p]["device_class"] == "energy"
+        assert paths.PATH_MAP[p]["convert"] is paths.j_to_kwh
 
 
 def test_group_resolution_without_wildcard() -> None:

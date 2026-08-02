@@ -10,12 +10,13 @@ import signal
 import sys
 import threading
 import time
+from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
 import paho.mqtt.client as mqtt
 
-from . import __version__, auth, paths
+from . import __version__, auth, paths, staleness
 from .busstats import BusStats
 from .client import (
     SignalKAuthError,
@@ -120,12 +121,22 @@ def resolve_entities(
     ``source_tags`` is provided, multi-source leaves fan out to per-source
     entities (see :func:`paths.flatten`).
     """
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    return _entities_from_flat(
+        flatten(
+            tree,
+            source_tags=source_tags,
+            suppress_paths=suppress_paths,
+            suppress_primary_on_fanout=suppress_primary_on_fanout,
+        )
     )
+
+
+def _entities_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Numeric sensor definitions from an already-flattened vessel tree.
+
+    Split from :func:`resolve_entities` so the poll loop can share one flatten
+    across the numeric and special resolvers instead of re-walking per call.
+    """
     # Count instances per group (not per pattern): two tank leaves
     # -- level and capacity -- for the same fluid_type collapse to one
     # instance, and a second tank of the same type bumps the count so
@@ -191,6 +202,20 @@ def resolve_special(
 ) -> dict[str, dict[str, Any]]:
     """Map the non-numeric paths: text/enum states, switch banks, notification
     alarms, and the vessel's position (as a device_tracker)."""
+    return _special_from_flat(
+        flatten(
+            tree,
+            source_tags=source_tags,
+            suppress_paths=suppress_paths,
+            suppress_primary_on_fanout=suppress_primary_on_fanout,
+        )
+    )
+
+
+def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Non-numeric entities (text/enum states, switch and alarm binary sensors,
+    the vessel position device_tracker, and the derived tank/battery/current
+    sensors) from an already-flattened vessel tree."""
     from .paths import (
         NOTIFICATION_PREFIX,
         POSITION_PATH,
@@ -200,12 +225,6 @@ def resolve_special(
         notification_is_active,
     )
 
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
-    )
     entities: dict[str, dict[str, Any]] = {}
     for path, raw in flat.items():
         key = slugify(path)
@@ -459,6 +478,47 @@ def _current_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return entities
 
 
+def _map_tree(
+    tracker: staleness.StalenessTracker | None,
+    tree: dict[str, Any],
+    source_tags: dict[str, str],
+    base_suppress: tuple[str, ...],
+    suppress_primary_on_fanout: bool,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Flatten the vessel tree ONCE and map it to entity definitions.
+
+    Sharing a single flatten across the numeric and special resolvers (and the
+    staleness scan) keeps a low ``interval_seconds`` cheap. Paths the staleness
+    tracker reports stale are withheld so Home Assistant's ``expire_after``
+    clears them; ``navigation.position`` is exempt (a device_tracker with no
+    ``expire_after`` -- withholding it would freeze the last fix on the map
+    rather than clear it).
+    """
+    meta = paths.flatten_with_meta(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=base_suppress,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    )
+    stale: set[str] = set()
+    if tracker is not None:
+        ts_map = {
+            p: parsed
+            for p, (_v, raw_ts) in meta.items()
+            if (parsed := staleness.parse_ts(raw_ts)) is not None
+        }
+        tracker.observe(ts_map)
+        stale = tracker.stale_paths(ts_map, now)
+        stale.discard(paths.POSITION_PATH)
+        if stale:
+            log.debug(
+                "Staleness: withholding %d path(s) past their cadence", len(stale)
+            )
+    flat = {p: v for p, (v, _ts) in meta.items() if p not in stale}
+    return {**_entities_from_flat(flat), **_special_from_flat(flat)}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="signalk_bridge")
     ap.add_argument("--options", default="/data/options.json")
@@ -494,6 +554,8 @@ def main(argv: list[str] | None = None) -> int:
         s for s in raw_suppress if isinstance(s, str) and s
     )
     suppress_primary_on_fanout = bool(opts.get("suppress_primary_on_fanout"))
+    stale_after_s = int(opts.get("stale_after_seconds") or 0)
+    stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
 
     try:
         mqtt_cfg = resolve_mqtt_config(opts)
@@ -529,6 +591,31 @@ def main(argv: list[str] | None = None) -> int:
     sources_cache: dict[str, Any] = {}
     source_tags: dict[str, str] = {}
     cycle = 0
+    tracker: staleness.StalenessTracker | None = None
+    if stale_after_s > 0:
+        if stale_after_s < expire_after_s:
+            log.warning(
+                "stale_after_seconds (%ss) is below expire_after (%ss); the cap "
+                "then floors every threshold and can flap slow sensors. Set it "
+                "above the slowest device's broadcast interval.",
+                stale_after_s,
+                expire_after_s,
+            )
+        tracker = staleness.StalenessTracker(
+            floor_s=expire_after_s,
+            cap_s=stale_after_s,
+            data_dir=data_dir,
+            learning_max_age_s=stale_learning_max_age,
+        )
+        tracker.load(datetime.now(UTC))
+        log.info(
+            "Staleness detection on: cap=%ss, learned-cadence persistence=%s",
+            stale_after_s,
+            f"{stale_learning_max_age}s" if stale_learning_max_age > 0 else "off",
+        )
+    # Learned cadences change slowly; persist ~every 5 min (plus on shutdown) to
+    # spare the flash rather than rewriting the snapshot every cycle.
+    save_every = max(1, 300 // max(1, interval))
     # /sources is a large payload; refresh the device inventory ~once a minute.
     sources_every = max(1, 60 // max(1, interval))
 
@@ -620,20 +707,14 @@ def main(argv: list[str] | None = None) -> int:
                     log.debug("sources fetch failed: %s", exc)
 
             try:
-                data_entities = {
-                    **resolve_entities(
-                        tree,
-                        source_tags,
-                        suppress_paths=suppress_paths,
-                        suppress_primary_on_fanout=suppress_primary_on_fanout,
-                    ),
-                    **resolve_special(
-                        tree,
-                        source_tags,
-                        suppress_paths=suppress_paths,
-                        suppress_primary_on_fanout=suppress_primary_on_fanout,
-                    ),
-                }
+                data_entities = _map_tree(
+                    tracker,
+                    tree,
+                    source_tags,
+                    suppress_paths,
+                    suppress_primary_on_fanout,
+                    datetime.now(UTC),
+                )
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
                 _stop.wait(max(1, interval))
@@ -659,6 +740,8 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon
                     log.debug("bus stats sample failed: %s", exc)
             cycle += 1
+            if tracker is not None and cycle % save_every == 0:
+                tracker.save(datetime.now(UTC))
 
             entities = {**data_entities, **bus_entities}
 
@@ -689,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
             _stop.wait(max(0.0, interval - (time.monotonic() - started)))
     finally:
         log.info("Publishing offline availability and disconnecting")
+        if tracker is not None:
+            tracker.save(datetime.now(UTC))
         try:
             pub = client.publish(
                 availability_topic(base_topic), "offline", qos=1, retain=True
