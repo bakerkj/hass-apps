@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.5](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.4...signalk_bridge-v0.0.5) (2026-08-02)
+
+
+### Features
+
+* **signalk_bridge:** map waypoint/course, autopilot target, water current ([#395](https://github.com/bakerkj/hass-apps/issues/395)) ([bb0c3b1](https://github.com/bakerkj/hass-apps/commit/bb0c3b1f859efdddf5cd84623ad678d6629f6ca1))
+
+
+### Bug Fixes
+
+* **signalk_bridge:** collapse duplicated instance-vs-label ("Solar Solar" -&gt; "Solar") ([#391](https://github.com/bakerkj/hass-apps/issues/391)) ([d74a15e](https://github.com/bakerkj/hass-apps/commit/d74a15e3aeaf07e28cbf540e442625d6de1fe02b))
+
 ## [0.0.4](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.3...signalk_bridge-v0.0.4) (2026-07-31)
 
 
