@@ -10,12 +10,13 @@ import signal
 import sys
 import threading
 import time
+from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
 import paho.mqtt.client as mqtt
 
-from . import __version__, auth, paths
+from . import __version__, auth, paths, staleness
 from .busstats import BusStats
 from .client import (
     SignalKAuthError,
@@ -459,6 +460,45 @@ def _current_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return entities
 
 
+def _stale_suppress(
+    tracker: staleness.StalenessTracker | None,
+    tree: dict[str, Any],
+    source_tags: dict[str, str],
+    base_suppress: tuple[str, ...],
+    suppress_primary_on_fanout: bool,
+    now: datetime,
+) -> tuple[str, ...]:
+    """Extend ``base_suppress`` with paths that have gone stale.
+
+    Withholding a stale leaf lets Home Assistant's ``expire_after`` mark its
+    entity unavailable. ``navigation.position`` is excluded: it is a
+    device_tracker with no ``expire_after``, so withholding it would leave the
+    last fix frozen on the map (worse than the stale-but-labelled default)
+    rather than clear it. Returns ``base_suppress`` unchanged when the tracker
+    is disabled or nothing is stale.
+    """
+    if tracker is None:
+        return base_suppress
+    meta = paths.flatten_with_meta(
+        tree,
+        source_tags=source_tags,
+        suppress_paths=base_suppress,
+        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    )
+    ts_map = {
+        p: parsed
+        for p, (_v, raw_ts) in meta.items()
+        if (parsed := staleness.parse_ts(raw_ts)) is not None
+    }
+    tracker.observe(ts_map)
+    stale = tracker.stale_paths(ts_map, now)
+    stale.discard(paths.POSITION_PATH)
+    if not stale:
+        return base_suppress
+    log.debug("Staleness: withholding %d path(s) past their cadence", len(stale))
+    return base_suppress + tuple(sorted(stale))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="signalk_bridge")
     ap.add_argument("--options", default="/data/options.json")
@@ -494,6 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         s for s in raw_suppress if isinstance(s, str) and s
     )
     suppress_primary_on_fanout = bool(opts.get("suppress_primary_on_fanout"))
+    stale_after_s = int(opts.get("stale_after_seconds") or 0)
+    stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
 
     try:
         mqtt_cfg = resolve_mqtt_config(opts)
@@ -529,6 +571,31 @@ def main(argv: list[str] | None = None) -> int:
     sources_cache: dict[str, Any] = {}
     source_tags: dict[str, str] = {}
     cycle = 0
+    tracker: staleness.StalenessTracker | None = None
+    if stale_after_s > 0:
+        if stale_after_s < expire_after_s:
+            log.warning(
+                "stale_after_seconds (%ss) is below expire_after (%ss); the cap "
+                "then floors every threshold and can flap slow sensors. Set it "
+                "above the slowest device's broadcast interval.",
+                stale_after_s,
+                expire_after_s,
+            )
+        tracker = staleness.StalenessTracker(
+            floor_s=expire_after_s,
+            cap_s=stale_after_s,
+            data_dir=data_dir,
+            learning_max_age_s=stale_learning_max_age,
+        )
+        tracker.load(datetime.now(UTC))
+        log.info(
+            "Staleness detection on: cap=%ss, learned-cadence persistence=%s",
+            stale_after_s,
+            f"{stale_learning_max_age}s" if stale_learning_max_age > 0 else "off",
+        )
+    # Learned cadences change slowly; persist ~every 5 min (plus on shutdown) to
+    # spare the flash rather than rewriting the snapshot every cycle.
+    save_every = max(1, 300 // max(1, interval))
     # /sources is a large payload; refresh the device inventory ~once a minute.
     sources_every = max(1, 60 // max(1, interval))
 
@@ -620,17 +687,25 @@ def main(argv: list[str] | None = None) -> int:
                     log.debug("sources fetch failed: %s", exc)
 
             try:
+                effective_suppress = _stale_suppress(
+                    tracker,
+                    tree,
+                    source_tags,
+                    suppress_paths,
+                    suppress_primary_on_fanout,
+                    datetime.now(UTC),
+                )
                 data_entities = {
                     **resolve_entities(
                         tree,
                         source_tags,
-                        suppress_paths=suppress_paths,
+                        suppress_paths=effective_suppress,
                         suppress_primary_on_fanout=suppress_primary_on_fanout,
                     ),
                     **resolve_special(
                         tree,
                         source_tags,
-                        suppress_paths=suppress_paths,
+                        suppress_paths=effective_suppress,
                         suppress_primary_on_fanout=suppress_primary_on_fanout,
                     ),
                 }
@@ -659,6 +734,8 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon
                     log.debug("bus stats sample failed: %s", exc)
             cycle += 1
+            if tracker is not None and cycle % save_every == 0:
+                tracker.save(datetime.now(UTC))
 
             entities = {**data_entities, **bus_entities}
 
@@ -689,6 +766,8 @@ def main(argv: list[str] | None = None) -> int:
             _stop.wait(max(0.0, interval - (time.monotonic() - started)))
     finally:
         log.info("Publishing offline availability and disconnecting")
+        if tracker is not None:
+            tracker.save(datetime.now(UTC))
         try:
             pub = client.publish(
                 availability_topic(base_topic), "offline", qos=1, retain=True

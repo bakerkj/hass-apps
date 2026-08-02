@@ -814,7 +814,7 @@ def build_source_tags(sources: Any) -> dict[str, str]:
 
 def _fanout_paths(
     path: str, values: dict[str, Any], source_tags: dict[str, str]
-) -> list[tuple[str, Any]]:
+) -> list[tuple[str, Any, str | None]]:
     """Yield per-source ``(alt_path, value)`` pairs for a multi-source leaf.
 
     Returns empty when fewer than two sources report a scalar value.
@@ -831,7 +831,7 @@ def _fanout_paths(
     matching is unchanged: the ``*`` wildcard captures the tag the same
     way it would capture ``"0"``.
     """
-    per_source: list[tuple[str, Any]] = []
+    per_source: list[tuple[str, Any, str | None]] = []
     for src, sub in values.items():
         if not isinstance(sub, dict):
             continue
@@ -841,7 +841,8 @@ def _fanout_paths(
         # rare enough not to justify special handling here.
         if not isinstance(v, (int, float, str, bool)):
             continue
-        per_source.append((src, v))
+        ts = sub.get("timestamp")
+        per_source.append((src, v, ts if isinstance(ts, str) else None))
 
     if len(per_source) < 2:
         return []
@@ -853,8 +854,8 @@ def _fanout_paths(
             inst_idx = i
             break
 
-    fanouts: list[tuple[str, Any]] = []
-    for src, v in per_source:
+    fanouts: list[tuple[str, Any, str | None]] = []
+    for src, v, ts in per_source:
         tag = source_tags.get(src) or src.rsplit(".", 1)[-1][-4:]
         if inst_idx is not None:
             alt_segs = list(segs)
@@ -865,7 +866,7 @@ def _fanout_paths(
             # before the leaf so PATH_MAP entries can pick these up via a
             # companion ``x.*.y`` pattern.
             alt_path = ".".join(segs[:-1] + [tag, segs[-1]])
-        fanouts.append((alt_path, v))
+        fanouts.append((alt_path, v, ts))
     return fanouts
 
 
@@ -879,14 +880,20 @@ def _is_suppressed(path: str, suppress: tuple[str, ...]) -> bool:
     return False
 
 
-def flatten(
+def flatten_with_meta(
     tree: Any,
     prefix: str = "",
     source_tags: dict[str, str] | None = None,
     suppress_paths: tuple[str, ...] | list[str] | None = None,
     suppress_primary_on_fanout: bool = False,
-) -> dict[str, Any]:
-    """Flatten a Signal K vessel tree into ``dotted.path -> value``.
+) -> dict[str, tuple[Any, str | None]]:
+    """Flatten a Signal K vessel tree into ``dotted.path -> (value, timestamp)``.
+
+    The same walk as :func:`flatten`, but each Signal K ``timestamp`` string is
+    carried through (``None`` when a leaf has no parseable timestamp) so callers
+    can reason about freshness -- see :mod:`signalk_bridge.staleness`. Fanout
+    paths carry their own per-source timestamp, so one source going stale is
+    distinguishable from another under the same primary path.
 
     Signal K leaves are objects carrying a ``value`` key alongside metadata
     (``$source``, ``timestamp``, ``pgn``). Anything without a ``value`` is an
@@ -913,7 +920,7 @@ def flatten(
     """
     tags = source_tags or {}
     suppress = tuple(suppress_paths) if suppress_paths else ()
-    out: dict[str, Any] = {}
+    out: dict[str, tuple[Any, str | None]] = {}
     if not isinstance(tree, dict):
         return out
 
@@ -930,15 +937,16 @@ def flatten(
         if suppress and _is_suppressed(path, suppress):
             continue
         if isinstance(node, dict) and "value" in node:
+            ts = node.get("timestamp")
             values = node.get("values")
-            fanouts: list[tuple[str, Any]] = []
+            fanouts: list[tuple[str, Any, str | None]] = []
             if isinstance(values, dict) and tags:
                 fanouts = _fanout_paths(path, values, tags)
             if not (fanouts and suppress_primary_on_fanout):
-                out[path] = node["value"]
-            for alt_path, alt_val in fanouts:
+                out[path] = (node["value"], ts if isinstance(ts, str) else None)
+            for alt_path, alt_val, alt_ts in fanouts:
                 if not suppress or not _is_suppressed(alt_path, suppress):
-                    out[alt_path] = alt_val
+                    out[alt_path] = (alt_val, alt_ts)
             # Some leaves nest further (e.g. propulsion.x.fuel.rate sits under a
             # node that itself has no value); keep walking siblings.
             for sub, subnode in node.items():
@@ -953,7 +961,7 @@ def flatten(
                 ):
                     continue
                 out.update(
-                    flatten(
+                    flatten_with_meta(
                         {sub: subnode},
                         f"{path}.",
                         source_tags=tags,
@@ -963,7 +971,7 @@ def flatten(
                 )
         elif isinstance(node, dict):
             out.update(
-                flatten(
+                flatten_with_meta(
                     node,
                     f"{path}.",
                     source_tags=tags,
@@ -972,6 +980,30 @@ def flatten(
                 )
             )
     return out
+
+
+def flatten(
+    tree: Any,
+    prefix: str = "",
+    source_tags: dict[str, str] | None = None,
+    suppress_paths: tuple[str, ...] | list[str] | None = None,
+    suppress_primary_on_fanout: bool = False,
+) -> dict[str, Any]:
+    """Flatten a Signal K vessel tree into ``dotted.path -> value``.
+
+    Thin wrapper over :func:`flatten_with_meta` that drops the timestamp; see
+    that function for the fanout and suppression semantics.
+    """
+    return {
+        path: value
+        for path, (value, _ts) in flatten_with_meta(
+            tree,
+            prefix,
+            source_tags=source_tags,
+            suppress_paths=suppress_paths,
+            suppress_primary_on_fanout=suppress_primary_on_fanout,
+        ).items()
+    }
 
 
 def match_path(actual: str, pattern: str) -> list[str] | None:
