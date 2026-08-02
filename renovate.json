@@ -137,7 +137,7 @@
       "groupName": "pre-commit hooks"
     },
     {
-      "matchManagers": ["uv"],
+      "matchManagers": ["pep621"],
       "groupName": "python dependencies"
     },
     {
