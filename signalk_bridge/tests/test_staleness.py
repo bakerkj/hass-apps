@@ -5,7 +5,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from signalk_bridge.app import _stale_suppress
+from signalk_bridge.app import _map_tree
 from signalk_bridge.staleness import StalenessTracker, parse_ts
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -211,9 +211,9 @@ def test_future_saved_at_is_rejected(tmp_path) -> None:
     assert t2.stale_paths({"p": at(0)}, at(700)) == {"p"}
 
 
-def test_stale_suppress_withholds_dead_device_but_exempts_position() -> None:
-    # Integration of the app-loop glue: a dead sounder is folded into suppression
-    # so HA expire_after clears it; navigation.position (a device_tracker with no
+def test_map_tree_withholds_dead_device_but_keeps_position() -> None:
+    # Integration of the app-loop glue: a dead sounder's entity is withheld so
+    # HA expire_after clears it; navigation.position (a device_tracker with no
     # expire_after) is exempt so it isn't frozen-hidden on the map.
     tracker = StalenessTracker(floor_s=40.0, cap_s=600.0)
 
@@ -224,22 +224,27 @@ def test_stale_suppress_withholds_dead_device_but_exempts_position() -> None:
         }
 
     for s in (0, 2, 4):  # warm up both paths to a ~2s cadence
-        _stale_suppress(tracker, tree(_iso(s)), {}, (), False, at(s))
-    eff = _stale_suppress(tracker, tree(_iso(4)), {}, (), False, at(204))
-    assert "environment.depth.belowKeel" in eff  # dead sounder withheld
-    assert "navigation.position" not in eff  # position exempt (device_tracker)
+        _map_tree(tracker, tree(_iso(s)), {}, (), False, at(s))
+    ents = _map_tree(tracker, tree(_iso(4)), {}, (), False, at(204))
+    assert "environment_depth_belowkeel" not in ents  # dead sounder withheld
+    assert ents["navigation_position"]["component"] == "device_tracker"  # exempt
 
 
-def test_stale_suppress_noop_disabled_and_recovers() -> None:
-    assert _stale_suppress(None, {}, {}, ("keep",), False, at(0)) == ("keep",)
+def test_map_tree_noop_disabled_and_recovers() -> None:
+    tree_now = {"environment": {"depth": {"belowKeel": _leaf(10.0, _iso(0))}}}
+    # tracker=None: nothing withheld, entities still produced from one flatten.
+    assert "environment_depth_belowkeel" in _map_tree(
+        None, tree_now, {}, (), False, at(0)
+    )
+
     tracker = StalenessTracker(floor_s=40.0, cap_s=600.0)
 
     def tree(ts: str) -> dict:
         return {"environment": {"depth": {"belowKeel": _leaf(10.0, ts)}}}
 
     for s in (0, 2, 4):
-        _stale_suppress(tracker, tree(_iso(s)), {}, (), False, at(s))
-    dead = _stale_suppress(tracker, tree(_iso(4)), {}, (), False, at(204))
-    assert "environment.depth.belowKeel" in dead
-    back = _stale_suppress(tracker, tree(_iso(300)), {}, (), False, at(300))
-    assert back == ()  # fresh data -> recovered, nothing withheld
+        _map_tree(tracker, tree(_iso(s)), {}, (), False, at(s))
+    dead = _map_tree(tracker, tree(_iso(4)), {}, (), False, at(204))
+    assert "environment_depth_belowkeel" not in dead  # withheld
+    back = _map_tree(tracker, tree(_iso(300)), {}, (), False, at(300))
+    assert "environment_depth_belowkeel" in back  # fresh data -> recovered

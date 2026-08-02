@@ -121,12 +121,22 @@ def resolve_entities(
     ``source_tags`` is provided, multi-source leaves fan out to per-source
     entities (see :func:`paths.flatten`).
     """
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
+    return _entities_from_flat(
+        flatten(
+            tree,
+            source_tags=source_tags,
+            suppress_paths=suppress_paths,
+            suppress_primary_on_fanout=suppress_primary_on_fanout,
+        )
     )
+
+
+def _entities_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Numeric sensor definitions from an already-flattened vessel tree.
+
+    Split from :func:`resolve_entities` so the poll loop can share one flatten
+    across the numeric and special resolvers instead of re-walking per call.
+    """
     # Count instances per group (not per pattern): two tank leaves
     # -- level and capacity -- for the same fluid_type collapse to one
     # instance, and a second tank of the same type bumps the count so
@@ -192,6 +202,20 @@ def resolve_special(
 ) -> dict[str, dict[str, Any]]:
     """Map the non-numeric paths: text/enum states, switch banks, notification
     alarms, and the vessel's position (as a device_tracker)."""
+    return _special_from_flat(
+        flatten(
+            tree,
+            source_tags=source_tags,
+            suppress_paths=suppress_paths,
+            suppress_primary_on_fanout=suppress_primary_on_fanout,
+        )
+    )
+
+
+def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Non-numeric entities (text/enum states, switch and alarm binary sensors,
+    the vessel position device_tracker, and the derived tank/battery/current
+    sensors) from an already-flattened vessel tree."""
     from .paths import (
         NOTIFICATION_PREFIX,
         POSITION_PATH,
@@ -201,12 +225,6 @@ def resolve_special(
         notification_is_active,
     )
 
-    flat = flatten(
-        tree,
-        source_tags=source_tags,
-        suppress_paths=suppress_paths,
-        suppress_primary_on_fanout=suppress_primary_on_fanout,
-    )
     entities: dict[str, dict[str, Any]] = {}
     for path, raw in flat.items():
         key = slugify(path)
@@ -460,43 +478,45 @@ def _current_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return entities
 
 
-def _stale_suppress(
+def _map_tree(
     tracker: staleness.StalenessTracker | None,
     tree: dict[str, Any],
     source_tags: dict[str, str],
     base_suppress: tuple[str, ...],
     suppress_primary_on_fanout: bool,
     now: datetime,
-) -> tuple[str, ...]:
-    """Extend ``base_suppress`` with paths that have gone stale.
+) -> dict[str, dict[str, Any]]:
+    """Flatten the vessel tree ONCE and map it to entity definitions.
 
-    Withholding a stale leaf lets Home Assistant's ``expire_after`` mark its
-    entity unavailable. ``navigation.position`` is excluded: it is a
-    device_tracker with no ``expire_after``, so withholding it would leave the
-    last fix frozen on the map (worse than the stale-but-labelled default)
-    rather than clear it. Returns ``base_suppress`` unchanged when the tracker
-    is disabled or nothing is stale.
+    Sharing a single flatten across the numeric and special resolvers (and the
+    staleness scan) keeps a low ``interval_seconds`` cheap. Paths the staleness
+    tracker reports stale are withheld so Home Assistant's ``expire_after``
+    clears them; ``navigation.position`` is exempt (a device_tracker with no
+    ``expire_after`` -- withholding it would freeze the last fix on the map
+    rather than clear it).
     """
-    if tracker is None:
-        return base_suppress
     meta = paths.flatten_with_meta(
         tree,
         source_tags=source_tags,
         suppress_paths=base_suppress,
         suppress_primary_on_fanout=suppress_primary_on_fanout,
     )
-    ts_map = {
-        p: parsed
-        for p, (_v, raw_ts) in meta.items()
-        if (parsed := staleness.parse_ts(raw_ts)) is not None
-    }
-    tracker.observe(ts_map)
-    stale = tracker.stale_paths(ts_map, now)
-    stale.discard(paths.POSITION_PATH)
-    if not stale:
-        return base_suppress
-    log.debug("Staleness: withholding %d path(s) past their cadence", len(stale))
-    return base_suppress + tuple(sorted(stale))
+    stale: set[str] = set()
+    if tracker is not None:
+        ts_map = {
+            p: parsed
+            for p, (_v, raw_ts) in meta.items()
+            if (parsed := staleness.parse_ts(raw_ts)) is not None
+        }
+        tracker.observe(ts_map)
+        stale = tracker.stale_paths(ts_map, now)
+        stale.discard(paths.POSITION_PATH)
+        if stale:
+            log.debug(
+                "Staleness: withholding %d path(s) past their cadence", len(stale)
+            )
+    flat = {p: v for p, (v, _ts) in meta.items() if p not in stale}
+    return {**_entities_from_flat(flat), **_special_from_flat(flat)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -687,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                     log.debug("sources fetch failed: %s", exc)
 
             try:
-                effective_suppress = _stale_suppress(
+                data_entities = _map_tree(
                     tracker,
                     tree,
                     source_tags,
@@ -695,20 +715,6 @@ def main(argv: list[str] | None = None) -> int:
                     suppress_primary_on_fanout,
                     datetime.now(UTC),
                 )
-                data_entities = {
-                    **resolve_entities(
-                        tree,
-                        source_tags,
-                        suppress_paths=effective_suppress,
-                        suppress_primary_on_fanout=suppress_primary_on_fanout,
-                    ),
-                    **resolve_special(
-                        tree,
-                        source_tags,
-                        suppress_paths=effective_suppress,
-                        suppress_primary_on_fanout=suppress_primary_on_fanout,
-                    ),
-                }
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
                 _stop.wait(max(1, interval))
