@@ -62,11 +62,27 @@ def vessel_tree() -> dict[str, Any]:
                 "methodQuality": leaf("DGNSS fix"),  # enum -> text sensor
                 "type": leaf("GPS+SBAS/WAAS"),
             },
+            # Active GOTO/route -- the MFD only emits these while navigating.
+            "courseGreatCircle": {
+                "crossTrackError": leaf(28.81),  # m (starboard of track)
+                "bearingTrackTrue": leaf(1.1589),  # rad  = 66.4 deg
+                "nextPoint": {
+                    "distance": leaf(233.0),  # m
+                    "bearingTrue": leaf(5.592),  # rad  = 320.4 deg
+                    "velocityMadeGood": leaf(0.06),  # m/s
+                    "timeToGo": leaf(3881.839),  # s
+                    "name": leaf("GOTO CURSOR"),  # enum -> text sensor
+                },
+                "activeRoute": {"name": leaf("Route")},  # enum -> text sensor
+            },
         },
         # --- autopilot / rudder ---
         "steering": {
             "rudderAngle": leaf(-0.0872665),  # rad  = -5 deg
-            "autopilot": {"state": leaf("standby")},  # enum -> text sensor
+            "autopilot": {
+                "state": leaf("standby"),  # enum -> text sensor
+                "target": {"headingMagnetic": leaf(1.0825)},  # rad = 62 deg
+            },
         },
         # --- wind / depth ---
         "environment": {
@@ -81,6 +97,8 @@ def vessel_tree() -> dict[str, Any]:
                 "angleTrueWater": leaf(-1.0472),  # rad  = -60 deg
             },
             "water": {"temperature": leaf(288.15)},  # K    = 15 C
+            # Water set & drift -- one composite leaf, split into two sensors.
+            "current": leaf({"setTrue": 1.5708, "drift": 0.5}),  # 90 deg, 0.5 m/s
             "outside": {
                 "temperature": leaf(293.15),  # K    = 20 C
                 "pressure": leaf(101325.0),  # Pa   = 1013.25 hPa

@@ -193,6 +193,85 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         "group": "steering",
         **ANGLE,
     },
+    "steering.autopilot.target.headingMagnetic": {
+        "name": "Target heading (mag)",
+        "unit": "°",
+        "convert": rad_to_deg_positive,
+        "icon": "mdi:ship-wheel",
+        "group": "steering",
+        **ANGLE,
+    },
+    "steering.autopilot.target.headingTrue": {
+        "name": "Target heading (true)",
+        "unit": "°",
+        "convert": rad_to_deg_positive,
+        "icon": "mdi:ship-wheel",
+        "group": "steering",
+        **ANGLE,
+    },
+    "steering.autopilot.target.windAngleApparent": {
+        "name": "Target wind angle",
+        "unit": "°",
+        "convert": rad_to_deg,
+        "icon": "mdi:windsock",
+        "group": "steering",
+        **ANGLE,
+    },
+    # ---- active waypoint / course (MFD navigating to a mark or route) ----
+    # Present only while a GOTO/route is active; N2K PGN 129283/129284/129285.
+    "navigation.courseGreatCircle.crossTrackError": {
+        # Signed: negative = vessel left of track. No distance device_class,
+        # which HA treats as non-negative.
+        "name": "Cross track error",
+        "unit": "m",
+        "convert": identity,
+        "icon": "mdi:arrow-expand-horizontal",
+        "state_class": "measurement",
+        "group": "course",
+    },
+    "navigation.courseGreatCircle.bearingTrackTrue": {
+        "name": "Track bearing",
+        "unit": "°",
+        "convert": rad_to_deg_positive,
+        "icon": "mdi:compass-outline",
+        "group": "course",
+        **ANGLE,
+    },
+    "navigation.courseGreatCircle.nextPoint.distance": {
+        "name": "Distance to waypoint",
+        "unit": "m",
+        "convert": identity,
+        "icon": "mdi:map-marker-distance",
+        "group": "course",
+        **DISTANCE,
+    },
+    "navigation.courseGreatCircle.nextPoint.bearingTrue": {
+        "name": "Bearing to waypoint",
+        "unit": "°",
+        "convert": rad_to_deg_positive,
+        "icon": "mdi:compass",
+        "group": "course",
+        **ANGLE,
+    },
+    "navigation.courseGreatCircle.nextPoint.velocityMadeGood": {
+        # Signed: negative while losing ground to the mark. No speed
+        # device_class, matching crossTrackError's signed-value handling.
+        "name": "VMG to waypoint",
+        "unit": "m/s",
+        "convert": identity,
+        "icon": "mdi:speedometer",
+        "state_class": "measurement",
+        "group": "course",
+    },
+    "navigation.courseGreatCircle.nextPoint.timeToGo": {
+        "name": "Time to go",
+        "unit": "s",
+        "convert": identity,
+        "icon": "mdi:timer-sand",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "group": "course",
+    },
     # ---- GPS / GNSS ----
     "navigation.gnss.satellites": {
         "name": "Satellites in use",
@@ -596,6 +675,7 @@ GROUP_LABELS: dict[str, str] = {
     "converter": "Converter",
     "gps": "GPS",
     "steering": "Steering",
+    "course": "Course",
     "switches.bank": "Digital switches bank",
     "alarms": "Alarms",
     "n2k_bus": "NMEA 2000 Bus",
@@ -630,6 +710,17 @@ TEXT_MAP: dict[str, dict[str, Any]] = {
         "name": "GPS type",
         "icon": "mdi:satellite-variant",
         "group": "gps",
+    },
+    # Active waypoint / route names (companion to the numeric course entries).
+    "navigation.courseGreatCircle.nextPoint.name": {
+        "name": "Next waypoint",
+        "icon": "mdi:map-marker",
+        "group": "course",
+    },
+    "navigation.courseGreatCircle.activeRoute.name": {
+        "name": "Active route",
+        "icon": "mdi:map-marker-path",
+        "group": "course",
     },
 }
 

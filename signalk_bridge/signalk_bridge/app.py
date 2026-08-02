@@ -291,6 +291,7 @@ def resolve_special(
 
     entities.update(_tank_derived_entities(flat))
     entities.update(_battery_derived_entities(flat))
+    entities.update(_current_entities(flat))
     return entities
 
 
@@ -411,6 +412,49 @@ def _battery_derived_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]
             device_class="power",
             state_class="measurement",
             icon="mdi:flash",
+        )
+    return entities
+
+
+def _current_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Water set & drift arrive as a single Signal K composite leaf
+    (``environment.current`` = {setTrue, drift, ...}); HA states are scalar,
+    so split it into a set-direction (°) and a drift-speed (m/s) sensor."""
+    from .paths import rad_to_deg_positive
+
+    cur = flat.get("environment.current")
+    if not isinstance(cur, dict):
+        return {}
+    entities: dict[str, dict[str, Any]] = {}
+    # Prefer true set; fall back to magnetic when a device reports only that.
+    set_dir = cur.get("setTrue")
+    set_path = "environment.current.setTrue"
+    if not (isinstance(set_dir, (int, float)) and not isinstance(set_dir, bool)):
+        set_dir = cur.get("setMagnetic")
+        set_path = "environment.current.setMagnetic"
+    if isinstance(set_dir, (int, float)) and not isinstance(set_dir, bool):
+        entities["environment_current_set"] = _entity(
+            set_path,
+            "Current set",
+            render(rad_to_deg_positive(float(set_dir))),
+            "environment",
+            "Environment",
+            unit="°",
+            state_class="measurement",
+            icon="mdi:sync",
+        )
+    drift = cur.get("drift")
+    if isinstance(drift, (int, float)) and not isinstance(drift, bool):
+        entities["environment_current_drift"] = _entity(
+            "environment.current.drift",
+            "Current drift",
+            render(float(drift)),
+            "environment",
+            "Environment",
+            unit="m/s",
+            device_class="speed",
+            state_class="measurement",
+            icon="mdi:waves-arrow-right",
         )
     return entities
 
