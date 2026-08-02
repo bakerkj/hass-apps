@@ -6,6 +6,7 @@
 import argparse
 import json
 import logging
+import re
 import signal
 import sys
 import threading
@@ -293,6 +294,23 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
             continue
 
+        # GNSS satellites in view: composite {count, satellites[...]} -> count.
+        if (
+            path == "navigation.gnss.satellitesInView"
+            and isinstance(raw, dict)
+            and isinstance(raw.get("count"), int)
+        ):
+            gid, label = resolve_group("gps", [])
+            entities[key] = _entity(
+                path,
+                "Satellites in view",
+                str(raw["count"]),
+                gid,
+                label,
+                icon="mdi:satellite-variant",
+            )
+            continue
+
         # Notifications -> binary_sensor alarms.
         if path.startswith(NOTIFICATION_PREFIX) and isinstance(raw, dict):
             name = str(raw.get("message") or path.split(".")[-1])
@@ -519,6 +537,46 @@ def _map_tree(
     return {**_entities_from_flat(flat), **_special_from_flat(flat)}
 
 
+def _humanize_path(path: str) -> str:
+    """A readable entity name from a dotted, camelCase Signal K path."""
+    rest = path.split(".")
+    rest = rest[1:] if len(rest) > 1 else rest
+    spaced = " ".join(
+        re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", seg).replace("_", " ") for seg in rest
+    ).strip()
+    return spaced[:1].upper() + spaced[1:] if spaced else path
+
+
+def _unmapped_entities(
+    flat: dict[str, Any], emitted_paths: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Every remaining SCALAR leaf as a diagnostic sensor (``publish_unmapped``).
+
+    Paths already covered by an explicit mapping are skipped, as are ``.name``
+    device labels, composite (dict/list), and null leaves. Each is grouped under
+    a per-branch ``<Top> (other)`` diagnostic device so nothing is dropped on a
+    judgement call, without cluttering the primary devices.
+    """
+    entities: dict[str, dict[str, Any]] = {}
+    for path, raw in flat.items():
+        if path in emitted_paths or path.startswith("notifications."):
+            continue
+        if path.endswith(".name"):
+            continue  # device labels, not telemetry
+        if not isinstance(raw, (int, float, str, bool)):
+            continue
+        top = path.split(".")[0]
+        entities[slugify(path)] = _entity(
+            path,
+            _humanize_path(path),
+            str(raw),
+            f"other.{top}",
+            f"{top.title()} (other)",
+            entity_category="diagnostic",
+        )
+    return entities
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="signalk_bridge")
     ap.add_argument("--options", default="/data/options.json")
@@ -554,6 +612,7 @@ def main(argv: list[str] | None = None) -> int:
         s for s in raw_suppress if isinstance(s, str) and s
     )
     suppress_primary_on_fanout = bool(opts.get("suppress_primary_on_fanout"))
+    publish_unmapped = bool(opts.get("publish_unmapped"))
     stale_after_s = int(opts.get("stale_after_seconds") or 0)
     stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
 
@@ -715,6 +774,16 @@ def main(argv: list[str] | None = None) -> int:
                     suppress_primary_on_fanout,
                     datetime.now(UTC),
                 )
+                if publish_unmapped:
+                    flat_all = flatten(
+                        tree,
+                        source_tags=source_tags,
+                        suppress_paths=suppress_paths,
+                        suppress_primary_on_fanout=suppress_primary_on_fanout,
+                    )
+                    emitted = {e["path"] for e in data_entities.values()}
+                    for _k, _ent in _unmapped_entities(flat_all, emitted).items():
+                        data_entities.setdefault(_k, _ent)
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
                 _stop.wait(max(1, interval))

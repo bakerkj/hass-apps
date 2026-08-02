@@ -247,6 +247,38 @@ def test_solar_charge_mode_is_text_sensor(vessel_tree: dict[str, Any]) -> None:
     assert cm["group_label"] == "Solar mppt1"
 
 
+def test_satellites_in_view_from_composite() -> None:
+    tree = {
+        "navigation": {
+            "gnss": {"satellitesInView": {"value": {"count": 12, "satellites": []}}}
+        }
+    }
+    s = resolve_special(tree)[slugify("navigation.gnss.satellitesInView")]
+    assert s["state"] == "12"
+    assert s["group_label"] == "GPS"
+
+
+def test_unmapped_scalars_become_diagnostic_sensors_excluding_names() -> None:
+    from signalk_bridge.app import _humanize_path, _unmapped_entities
+
+    flat = {
+        "electrical.venus.totalPanelPower": 111.0,
+        "electrical.batteries.house.name": "House",  # .name -> skipped
+        "environment.current": {"setTrue": 1.0},  # composite -> skipped
+        "navigation.datetime": None,  # null -> skipped
+        "electrical.batteries.house.voltage": 12.8,  # already emitted -> skipped
+        "notifications.foo": {"state": "alarm"},  # notification -> skipped
+    }
+    ents = _unmapped_entities(flat, {"electrical.batteries.house.voltage"})
+    assert set(ents) == {slugify("electrical.venus.totalPanelPower")}
+    e = ents[slugify("electrical.venus.totalPanelPower")]
+    assert e["state"] == "111.0"
+    assert e["component"] == "sensor"
+    assert e["entity_category"] == "diagnostic"
+    assert e["group_label"] == "Electrical (other)"
+    assert _humanize_path("electrical.venus.dcPower").startswith("Venus")
+
+
 def test_active_alarm_is_on_normal_is_off(vessel_tree: dict[str, Any]) -> None:
     spc = resolve_special(vessel_tree)
     alarm = spc[slugify("notifications.instrument.PilotOffCourse")]

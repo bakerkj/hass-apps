@@ -597,6 +597,25 @@ def test_solar_yield_joules_to_kwh() -> None:
         assert paths.PATH_MAP[p]["convert"] is paths.j_to_kwh
 
 
+def test_battery_consumed_charge_coulombs_to_ah() -> None:
+    assert paths.coulombs_to_ah(3600.0) == pytest.approx(1.0)
+    assert paths.coulombs_to_ah(-19800.0) == pytest.approx(-5.5)
+    spec = paths.PATH_MAP["electrical.batteries.*.capacity.consumedCharge"]
+    assert spec["unit"] == "Ah"
+    assert spec["convert"] is paths.coulombs_to_ah
+    de = paths.PATH_MAP["electrical.batteries.*.capacity.dischargedEnergy"]
+    assert de["unit"] == "kWh"
+    assert de["device_class"] == "energy"
+
+
+def test_dc_power_is_system_group_power() -> None:
+    spec = paths.PATH_MAP["electrical.venus.dcPower"]
+    assert spec["unit"] == "W"
+    assert spec["device_class"] == "power"
+    assert spec["group"] == "system"
+    assert paths.resolve_group("system", []) == ("system", "System")
+
+
 def test_group_resolution_without_wildcard() -> None:
     gid, label = paths.resolve_group("navigation", [])
     assert gid == "navigation"
