@@ -584,6 +584,19 @@ def test_m3_to_gal_conversion() -> None:
     assert paths.m3_to_gal(0.2839) == pytest.approx(75.0, abs=0.05)
 
 
+def test_solar_yield_joules_to_kwh() -> None:
+    assert paths.j_to_kwh(3_600_000.0) == pytest.approx(1.0)
+    assert paths.j_to_kwh(9_324_000.0) == pytest.approx(2.59, abs=0.01)
+    for p in (
+        "electrical.solar.*.yieldToday",
+        "electrical.solar.*.yieldYesterday",
+        "electrical.solar.*.systemYield",
+    ):
+        assert paths.PATH_MAP[p]["unit"] == "kWh"
+        assert paths.PATH_MAP[p]["device_class"] == "energy"
+        assert paths.PATH_MAP[p]["convert"] is paths.j_to_kwh
+
+
 def test_group_resolution_without_wildcard() -> None:
     gid, label = paths.resolve_group("navigation", [])
     assert gid == "navigation"

@@ -153,6 +153,11 @@ def vessel_tree() -> dict[str, Any]:
                     "voltage": leaf(18.9),
                     "current": leaf(4.1),
                     "panelPower": leaf(77.5),
+                    "panelVoltage": leaf(70.4),  # V (PV array side)
+                    "yieldToday": leaf(9_324_000.0),  # J = 2.59 kWh
+                    "yieldYesterday": leaf(10_728_000.0),  # J = 2.98 kWh
+                    "systemYield": leaf(1_226_484_000.0),  # J = 340.69 kWh
+                    "controllerMode": leaf("bulk"),  # enum -> text sensor
                 },
             },
             "chargers": {
