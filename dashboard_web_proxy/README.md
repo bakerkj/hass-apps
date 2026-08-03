@@ -42,9 +42,13 @@ Contract:
 - Anchored on `</head>`; the response must contain that close tag verbatim.
 - The upstream `Content-Encoding` is cleared for sites with a non-empty
   `head_prepend` so nginx `sub_filter` sees plain HTML.
-- The string is inserted verbatim into an nginx single-quoted string, so it must
-  not contain a literal `'` (use `"` in JS) or `</head>` (would confuse the
-  anchor). Both are rejected at addon start with a clear error.
+- The string is inserted verbatim into an nginx `sub_filter` replacement, so it
+  must not contain a literal `'` (would close the enclosing string), `</head>`
+  (would confuse the anchor), or `$` (nginx variable-interpolates the
+  replacement regardless of quoting — a template-literal `${…}` in JS would fail
+  `nginx -t` and take the container down, and a name that collides with a real
+  nginx variable would silently substitute request state into the served HTML).
+  All three are rejected at addon start with a clear error.
 - The proxy performs no authentication, so treat `head_prepend` as running with
   the device UI's own trust — anything you inject executes same-origin with it.
 

@@ -413,6 +413,28 @@ def test_head_prepend_rejects_head_close(tmp_path: Path) -> None:
     )
 
 
+def test_head_prepend_rejects_dollar(tmp_path: Path) -> None:
+    """nginx's ``sub_filter`` interpolates ``$var`` in the replacement string
+    regardless of quoting; a stray ``$`` (e.g. a JS template literal) would
+    either fail ``nginx -t`` or silently leak a real nginx variable into the
+    served HTML. The guard must refuse it before the config is written."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "listen_port": LISTEN_PORT,
+                "head_prepend": "<script>const x = `hello ${world}`</script>",
+            }
+        ],
+        "must not contain",
+        tmp_path,
+    )
+
+
 def test_https_upstream_proxied_through_self_signed(
     stub_https_upstream: int, tmp_path: Path
 ) -> None:

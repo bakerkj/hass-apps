@@ -77,15 +77,22 @@ for ((i = 0; i < count; i++)); do
     bashio::log.fatal "site '${name}': invalid upstream_ssl_verify '${ssl_verify}' (true|false)"
     bashio::exit.nok
   fi
-  # head_prepend is inserted verbatim into an nginx ``sub_filter '</head>' '...'``
-  # directive: a single quote would close the string, and ``</head>`` (any case)
-  # would confuse the anchor.
+  # head_prepend lands inside an nginx ``sub_filter '</head>' '...'`` replacement
+  # string: a single quote would close it, ``</head>`` (any case) would confuse
+  # the anchor, and ``$`` triggers nginx's own variable interpolation (which
+  # sub_filter does on the replacement regardless of quoting) -- either failing
+  # ``nginx -t`` and taking the container down, or silently substituting a real
+  # variable (e.g. ``$http_cookie``) into the served page.
   if [[ "${head_prepend}" == *"'"* ]]; then
     bashio::log.fatal "site '${name}': head_prepend must not contain single quotes (use double quotes in JS)"
     bashio::exit.nok
   fi
   if echo "${head_prepend}" | grep -qi '</head>'; then
     bashio::log.fatal "site '${name}': head_prepend must not contain </head>"
+    bashio::exit.nok
+  fi
+  if [[ "${head_prepend}" == *'$'* ]]; then
+    bashio::log.fatal "site '${name}': head_prepend must not contain '\$' (nginx sub_filter interpolates variables in the replacement)"
     bashio::exit.nok
   fi
   if [[ " ${ALLOWED_PORTS} " != *" ${lport} "* ]]; then
