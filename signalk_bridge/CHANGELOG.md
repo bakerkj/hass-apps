@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.6](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.5...signalk_bridge-v0.0.6) (2026-08-03)
+
+
+### Features
+
+* **signalk_bridge:** adaptive staleness detection (device-gone → unavailable) ([#397](https://github.com/bakerkj/hass-apps/issues/397)) ([d37ddc4](https://github.com/bakerkj/hass-apps/commit/d37ddc4e1e1857173541f9cb2d51fca5a469cdcb))
+* **signalk_bridge:** map remaining Victron MPPT solar values ([#399](https://github.com/bakerkj/hass-apps/issues/399)) ([d0365e1](https://github.com/bakerkj/hass-apps/commit/d0365e196a1fabc46705707878b1bcb8bba57d26))
+* **signalk_bridge:** surface every value (full audit + publish_unmapped) ([#401](https://github.com/bakerkj/hass-apps/issues/401)) ([68b717f](https://github.com/bakerkj/hass-apps/commit/68b717fa73c939e241c37c074aaff4a14587d5ab))
+
 ## [0.0.5](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.4...signalk_bridge-v0.0.5) (2026-08-02)
 
 
