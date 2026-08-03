@@ -52,6 +52,7 @@ for ((i = 0; i < count; i++)); do
   uport="$(jq -r ".sites[${i}].upstream_port // 80" "${OPTIONS}")"
   scheme="$(jq -r ".sites[${i}].upstream_scheme // \"http\"" "${OPTIONS}")"
   ssl_verify="$(jq -r ".sites[${i}].upstream_ssl_verify // false" "${OPTIONS}")"
+  head_prepend="$(jq -r ".sites[${i}].head_prepend // \"\"" "${OPTIONS}")"
   lport="$(jq -r ".sites[${i}].listen_port" "${OPTIONS}")"
 
   # Reject anything that isn't a bare host/IP -- prevents config injection into
@@ -76,6 +77,17 @@ for ((i = 0; i < count; i++)); do
     bashio::log.fatal "site '${name}': invalid upstream_ssl_verify '${ssl_verify}' (true|false)"
     bashio::exit.nok
   fi
+  # head_prepend is inserted verbatim into an nginx ``sub_filter '</head>' '...'``
+  # directive: a single quote would close the string, and ``</head>`` (any case)
+  # would confuse the anchor.
+  if [[ "${head_prepend}" == *"'"* ]]; then
+    bashio::log.fatal "site '${name}': head_prepend must not contain single quotes (use double quotes in JS)"
+    bashio::exit.nok
+  fi
+  if echo "${head_prepend}" | grep -qi '</head>'; then
+    bashio::log.fatal "site '${name}': head_prepend must not contain </head>"
+    bashio::exit.nok
+  fi
   if [[ " ${ALLOWED_PORTS} " != *" ${lport} "* ]]; then
     bashio::log.fatal "site '${name}': listen_port ${lport} must be one of: ${ALLOWED_PORTS}"
     bashio::exit.nok
@@ -87,6 +99,18 @@ for ((i = 0; i < count; i++)); do
   used_ports="${used_ports} ${lport}"
 
   bashio::log.info "Proxying '${name}': :${lport} -> ${scheme}://${upstream}:${uport}"
+
+  # Splice the operator-provided HTML before ``</head>``. Anchoring on the close
+  # tag (rather than the open one) is a literal string with a fixed spelling,
+  # so an attributed opening tag like ``<head lang="en">`` doesn't slip past.
+  # Accept-Encoding is cleared so upstream sends plain text that sub_filter can
+  # actually rewrite.
+  inject_block=""
+  if [[ -n "${head_prepend}" ]]; then
+    inject_block=$'        proxy_set_header Accept-Encoding "";\n'
+    inject_block+=$'        sub_filter_once on;\n'
+    inject_block+="        sub_filter '</head>' '${head_prepend}</head>';"$'\n'
+  fi
 
   # HTTPS upstream needs SNI (many device UIs share an IP with vhosts) and
   # usually skips verify since LAN devices use self-signed certs.
@@ -117,7 +141,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
-${ssl_block}
+${ssl_block}${inject_block}
         proxy_hide_header X-Frame-Options;
         proxy_hide_header Content-Security-Policy;
         proxy_cookie_domain ${upstream} \$host;

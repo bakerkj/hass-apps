@@ -20,6 +20,7 @@ sites:
     upstream_port: 80 # optional, default 80
     upstream_scheme: http # optional, http|https, default http
     upstream_ssl_verify: false # optional, only meaningful with https, default false
+    head_prepend: "" # optional; HTML spliced before </head> (see below)
     listen_port: 18800 # must be one of 18800-18819
 ```
 
@@ -29,6 +30,44 @@ Then embed it — e.g. a Webpage dashboard pointing at
 For an HTTPS-only device UI, set `upstream_scheme: https` (and typically leave
 `upstream_ssl_verify` at its default `false`, since LAN devices normally present
 self-signed certs). The proxy sends SNI so vhost-based upstreams work.
+
+`head_prepend` is an arbitrary HTML fragment that the proxy splices in just
+before the upstream response's `</head>`. Any per-device workaround — a `<meta>`
+tweak, a polyfill, a `<script>` that stubs an object the SPA expects — lives
+here, in operator configuration, so the add-on itself doesn't grow a new option
+every time a device firmware changes shape.
+
+Contract:
+
+- Anchored on `</head>`; the response must contain that close tag verbatim.
+- The upstream `Content-Encoding` is cleared for sites with a non-empty
+  `head_prepend` so nginx `sub_filter` sees plain HTML.
+- The string is inserted verbatim into an nginx single-quoted string, so it must
+  not contain a literal `'` (use `"` in JS) or `</head>` (would confuse the
+  anchor). Both are rejected at addon start with a clear error.
+- The proxy performs no authentication, so treat `head_prepend` as running with
+  the device UI's own trust — anything you inject executes same-origin with it.
+
+Example — a device SPA that runs cross-origin-nested throws `SecurityError` on
+`window.parent`/`window.top` reads and any click-handler that touches them dies.
+This snippet swallows those reads (returning a chainable no-op), and routes a
+named global (`layer`, from layui's popup lib loaded locally) through so the
+SPA's `parent.layer.open(...)` calls still work:
+
+```yaml
+head_prepend: >-
+  <script>(function(){try{void window.parent.location.href;return}catch(_){}var
+  s=new Proxy(function(){},{get:function(_,k){return
+  k==="layer"?window.layer:s},apply:function(){return s},set:function(){return
+  true}});Object.defineProperty(window,"parent",{configurable:true,get:function(){return
+  s}});Object.defineProperty(window,"top",{configurable:true,get:function(){return
+  s}});})();</script>
+```
+
+The same-origin check at the top keeps the shim from breaking legitimate
+sub-frames that need to reach their real parent. Leave `head_prepend` empty for
+a plain pass-through — that's the default and preferred where a device doesn't
+need help.
 
 ## Notes
 
