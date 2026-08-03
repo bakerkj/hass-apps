@@ -20,7 +20,9 @@ LABEL \
 # Start as root only so the wrapper can chown /data/signalk (root-owned by the
 # Supervisor) to `node`, then drop to it -- the user the upstream image runs the
 # server as. Opening the SocketCAN can0 socket needs no privilege. su-exec drops.
-# hadolint ignore=DL3002
+# DL3066 (non-numeric user-id) doesn't apply: `root` is uid 0 everywhere, and we
+# drop to `node` at runtime anyway.
+# hadolint ignore=DL3002,DL3066
 USER root
 RUN apk add --no-cache su-exec
 
