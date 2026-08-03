@@ -91,9 +91,44 @@ class _StubHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class _HtmlStubHandler(http.server.BaseHTTPRequestHandler):
+    """Upstream device UI serving text/html so ``sub_filter`` can rewrite it.
+
+    ``<head lang="en">`` (attributed opening tag) is the common real-world
+    spelling that a literal ``<head>`` string match would miss; using it here
+    keeps the anchor honest.
+    """
+
+    def do_GET(self) -> None:
+        body = (
+            b'<!doctype html><html><head lang="en">'
+            b"<title>upstream</title></head><body>upstream-html-marker</body></html>"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_a: object) -> None:
+        pass
+
+
 @pytest.fixture
 def stub_upstream() -> Iterator[int]:
     server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def stub_html_upstream() -> Iterator[int]:
+    server = http.server.HTTPServer(("127.0.0.1", 0), _HtmlStubHandler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -259,6 +294,145 @@ def test_proxy_strips_frame_headers_and_rewrites_cookie(
         _assert_proxied_ok(name, f"http://127.0.0.1:{LISTEN_PORT}/", PROXY_HOST)
     finally:
         _docker("rm", "-f", name, check=False)
+
+
+def test_head_prepend_splices_before_head_close(
+    stub_html_upstream: int, tmp_path: Path
+) -> None:
+    """``head_prepend`` must land immediately before ``</head>``, survive an
+    attributed opening tag (the stub uses ``<head lang="en">``), and pass the
+    operator's HTML through verbatim -- the addon must not interpret or wrap
+    it."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    image = _build_image()
+    snippet = '<meta name="test-marker" content="head-prepend-worked">'
+    sites = [
+        {
+            "name": "device",
+            "upstream": "127.0.0.1",
+            "upstream_port": stub_html_upstream,
+            "listen_port": LISTEN_PORT,
+            "head_prepend": snippet,
+        }
+    ]
+    name = _run_addon(image, sites, tmp_path)
+    try:
+        url = f"http://127.0.0.1:{LISTEN_PORT}/"
+        deadline = time.monotonic() + 30
+        resp = None
+        while time.monotonic() < deadline:
+            resp = _get(url, PROXY_HOST)
+            if resp is not None and resp.status == 200:
+                break
+            time.sleep(0.5)
+        assert resp is not None and resp.status == 200, (
+            f"proxy never served 200: {_docker('logs', name, check=False)[-2000:]}"
+        )
+        body = resp.read().decode()
+        assert "upstream-html-marker" in body
+        assert snippet + "</head>" in body
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
+def test_head_prepend_absent_leaves_body_untouched(
+    stub_html_upstream: int, tmp_path: Path
+) -> None:
+    """No ``head_prepend`` (default) must pass the upstream HTML through
+    byte-for-byte -- confirms the feature is truly opt-in."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    image = _build_image()
+    sites = [
+        {
+            "name": "device",
+            "upstream": "127.0.0.1",
+            "upstream_port": stub_html_upstream,
+            "listen_port": LISTEN_PORT,
+        }
+    ]
+    name = _run_addon(image, sites, tmp_path)
+    try:
+        url = f"http://127.0.0.1:{LISTEN_PORT}/"
+        deadline = time.monotonic() + 30
+        resp = None
+        while time.monotonic() < deadline:
+            resp = _get(url, PROXY_HOST)
+            if resp is not None and resp.status == 200:
+                break
+            time.sleep(0.5)
+        assert resp is not None and resp.status == 200
+        body = resp.read().decode()
+        assert "upstream-html-marker" in body
+        assert "test-marker" not in body
+    finally:
+        _docker("rm", "-f", name, check=False)
+
+
+def test_head_prepend_rejects_single_quote(tmp_path: Path) -> None:
+    """A single quote in ``head_prepend`` would break out of the nginx
+    single-quoted ``sub_filter`` string; the guard must refuse it before the
+    config file is generated."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "listen_port": LISTEN_PORT,
+                "head_prepend": "<script>x='bad'</script>",
+            }
+        ],
+        "must not contain single quotes",
+        tmp_path,
+    )
+
+
+def test_head_prepend_rejects_head_close(tmp_path: Path) -> None:
+    """``</head>`` inside the value would corrupt the sub_filter anchor, so
+    the guard must reject any casing of it."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "listen_port": LISTEN_PORT,
+                "head_prepend": "<script>x=1</SCRIPT></HEAD>",
+            }
+        ],
+        "must not contain </head>",
+        tmp_path,
+    )
+
+
+def test_head_prepend_rejects_dollar(tmp_path: Path) -> None:
+    """nginx's ``sub_filter`` interpolates ``$var`` in the replacement string
+    regardless of quoting; a stray ``$`` (e.g. a JS template literal) would
+    either fail ``nginx -t`` or silently leak a real nginx variable into the
+    served HTML. The guard must refuse it before the config is written."""
+    if not _have_docker():
+        pytest.skip("docker daemon not reachable")
+
+    _assert_config_rejected(
+        [
+            {
+                "name": "bad",
+                "upstream": "127.0.0.1",
+                "listen_port": LISTEN_PORT,
+                "head_prepend": "<script>const x = `hello ${world}`</script>",
+            }
+        ],
+        "must not contain",
+        tmp_path,
+    )
 
 
 def test_https_upstream_proxied_through_self_signed(
