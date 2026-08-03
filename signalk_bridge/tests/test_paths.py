@@ -606,6 +606,11 @@ def test_battery_consumed_charge_coulombs_to_ah() -> None:
     de = paths.PATH_MAP["electrical.batteries.*.capacity.dischargedEnergy"]
     assert de["unit"] == "kWh"
     assert de["device_class"] == "energy"
+    # A wrong J->kWh factor here would publish ~3.6M "kWh" on a real boat and
+    # still pass a unit/device_class-only check, so pin the converter and class.
+    assert de["convert"] is paths.j_to_kwh
+    assert de["state_class"] == "total_increasing"
+    assert de["convert"](9_324_000.0) == pytest.approx(2.59, abs=0.01)
 
 
 def test_dc_power_is_system_group_power() -> None:

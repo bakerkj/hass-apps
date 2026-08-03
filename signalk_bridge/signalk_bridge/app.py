@@ -180,6 +180,7 @@ def _entities_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 device_class=spec.get("device_class"),
                 state_class=spec.get("state_class"),
                 icon=spec.get("icon"),
+                suggested_display_precision=spec.get("suggested_display_precision"),
             )
             break
     # Collapse duplicates that resolve to the same device + entity name (e.g. a
@@ -295,16 +296,18 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             continue
 
         # GNSS satellites in view: composite {count, satellites[...]} -> count.
+        # Servers emit count as 12 or 12.0; accept both, reject bool.
+        sat_count = raw.get("count") if isinstance(raw, dict) else None
         if (
             path == "navigation.gnss.satellitesInView"
-            and isinstance(raw, dict)
-            and isinstance(raw.get("count"), int)
+            and isinstance(sat_count, (int, float))
+            and not isinstance(sat_count, bool)
         ):
             gid, label = resolve_group("gps", [])
             entities[key] = _entity(
                 path,
                 "Satellites in view",
-                str(raw["count"]),
+                str(int(sat_count)),
                 gid,
                 label,
                 icon="mdi:satellite-variant",
@@ -569,6 +572,17 @@ def _is_mapped(path: str) -> bool:
 
     if path == POSITION_PATH or path in TEXT_MAP:
         return True
+    # Derived tank entities (Remaining / Fluid type) consume any fluid type's
+    # currentLevel/capacity -- including types with no explicit PATH_MAP entry
+    # (greyWater, etc.) -- so treat those source leaves as mapped and keep the
+    # catch-all from re-emitting them as diagnostics.
+    parts = path.split(".")
+    if (
+        len(parts) == 4
+        and parts[0] == "tanks"
+        and parts[3] in ("currentLevel", "capacity")
+    ):
+        return True
     if match_path(path, SWITCH_PATTERN) is not None:
         return True
     return any(match_path(path, pat) is not None for pat in PATH_MAP) or any(
@@ -594,15 +608,32 @@ def _unmapped_entities(
             continue  # mapped (possibly deduped away) -- don't duplicate it
         if path.endswith(".name"):
             continue  # device labels, not telemetry
-        if not isinstance(raw, (int, float, str, bool)):
-            continue
         top = path.split(".")[0]
+        gid, label = f"other.{top}", f"{top.title()} (other)"
+        # Bool leaves are on/off, not numbers: a binary_sensor keeps HA's
+        # is_state(...,'on') and template bool checks working.
+        if isinstance(raw, bool):
+            entities[slugify(path)] = _entity(
+                path,
+                _humanize_path(path),
+                "ON" if raw else "OFF",
+                gid,
+                label,
+                component="binary_sensor",
+                entity_category="diagnostic",
+            )
+            continue
+        if not isinstance(raw, (int, float, str)):
+            continue
+        # render() floats for parity with mapped sensors; clamp to HA's 255-char
+        # state limit (a longer state is dropped and the entity stays unknown).
+        state = render(raw) if isinstance(raw, float) else str(raw)
         entities[slugify(path)] = _entity(
             path,
             _humanize_path(path),
-            str(raw),
-            f"other.{top}",
-            f"{top.title()} (other)",
+            state[:255],
+            gid,
+            label,
             entity_category="diagnostic",
         )
     return entities

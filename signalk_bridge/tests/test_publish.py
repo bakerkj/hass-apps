@@ -70,6 +70,16 @@ def test_numeric_sensor_discovery_and_state(vessel_tree: dict[str, Any]) -> None
     assert by["signalk/navigation_speedoverground/state"][0] == "3.086"
 
 
+def test_voltage_display_precision_is_two(vessel_tree: dict[str, Any]) -> None:
+    # Voltage should default to 2 decimals in HA; the state keeps full precision.
+    by = _by_topic(_publish_all(vessel_tree))
+    cfg = json.loads(
+        by["homeassistant/sensor/signalk/electrical_batteries_house_voltage/config"][0]
+    )
+    assert cfg["device_class"] == "voltage"
+    assert cfg["suggested_display_precision"] == 2
+
+
 def test_conversions_reach_mqtt(vessel_tree: dict[str, Any]) -> None:
     by = _by_topic(_publish_all(vessel_tree))
     # 1.5708 rad -> ~90 deg (bearing, wrapped 0..360)
@@ -100,3 +110,30 @@ def test_binary_sensor_and_device_tracker(vessel_tree: dict[str, Any]) -> None:
 def test_availability_online_published(vessel_tree: dict[str, Any]) -> None:
     by = _by_topic(_publish_all(vessel_tree))
     assert by["signalk/availability"] == ("online", 1, True)
+
+
+def test_diagnostic_catch_all_reaches_discovery_payload() -> None:
+    # The catch-all's entity_category (and the bool->binary_sensor path) must
+    # survive all the way into the published discovery config, not just the
+    # entity dict -- a typo in the mqtt passthrough would silently promote every
+    # "(other)" sensor onto the primary device pages.
+    from signalk_bridge.app import _unmapped_entities
+
+    client = RecordingClient()
+    ents = _unmapped_entities(
+        {"electrical.venus.totalPanelPower": 111.0, "electrical.venus.relay": True},
+        set(),
+    )
+    for key, ent in ents.items():
+        publish_discovery(client, "homeassistant", "signalk", key, ent, 40)
+    by = _by_topic(client)
+    scfg = json.loads(
+        by["homeassistant/sensor/signalk/electrical_venus_totalpanelpower/config"][0]
+    )
+    assert scfg["entity_category"] == "diagnostic"
+    bcfg = json.loads(
+        by["homeassistant/binary_sensor/signalk/electrical_venus_relay/config"][0]
+    )
+    assert bcfg["entity_category"] == "diagnostic"
+    assert bcfg["payload_on"] == "ON"
+    assert bcfg["payload_off"] == "OFF"

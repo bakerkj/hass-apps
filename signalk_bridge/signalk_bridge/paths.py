@@ -90,7 +90,13 @@ def identity(v: float) -> float:
 
 SPEED = {"device_class": "speed", "state_class": "measurement"}
 TEMP = {"device_class": "temperature", "state_class": "measurement"}
-VOLT = {"device_class": "voltage", "state_class": "measurement"}
+# Voltage defaults to 2 decimals in HA (12.84 V, not 12.8 or 12.8442); the raw
+# state keeps full precision, this only sets the displayed rounding.
+VOLT = {
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "suggested_display_precision": 2,
+}
 CURRENT = {"device_class": "current", "state_class": "measurement"}
 PRESSURE = {"device_class": "pressure", "state_class": "measurement"}
 ANGLE = {"state_class": "measurement"}
