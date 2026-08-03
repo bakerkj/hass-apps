@@ -190,12 +190,12 @@ def test_sigterm_exits_promptly_instead_of_hanging_in_the_read_loop(
         assert "W1XM-15" in _expect_tee(proc)
 
         proc.send_signal(signal.SIGTERM)
-        # 30s not 10s: the paho ``disconnect() + loop_stop()`` teardown that
-        # runs inside the signal handler has intermittently taken 10-15s on
-        # GHA runners under contention -- still well within HA supervisor's
-        # SIGKILL grace period, but tighter than a local machine's <1s.
+        # No live session, so ``shutdown()`` returns immediately and re-raises
+        # SIGTERM; the only work between signal delivery and exit is Python
+        # unwinding. 5s covers even a heavily-contended GHA runner and still
+        # catches any regression that reintroduces a blocking teardown.
         try:
-            proc.wait(timeout=30)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pytest.fail("publisher ignored SIGTERM and stayed in the read loop")
 

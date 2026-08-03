@@ -117,11 +117,19 @@ class Publisher:
 
         The publishes need a live session: publish() takes paho mutexes an
         in-flight connect on the other thread may hold, and with no session
-        there is nothing to say anyway. The teardown itself is unconditional.
+        there is nothing to say anyway.
         """
         self.stop.set()
+        if not self.health.connected:
+            # No session to flush, and the network thread may be mid-connect()
+            # to an unreachable broker -- Linux's TCP connect timeout is 60-120s,
+            # and loop_stop() joins that thread. Skip the teardown; the caller
+            # is about to exit the process anyway, so the OS reaps the socket
+            # and the thread. Called from the SIGTERM handler where blocking
+            # here would silently push termination past run.sh's SIGKILL grace.
+            return
         try:
-            if farewell and self.health.connected:
+            if farewell:
                 self.publish_states()
                 self._publish(
                     self.opts.availability_topic, "offline", qos=1, retain=True
