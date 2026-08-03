@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.3...dashboard_web_proxy-v0.0.4) (2026-08-03)
+
+
+### Features
+
+* **dashboard_web_proxy:** add per-site head_prepend for HTML fragment injection ([#405](https://github.com/bakerkj/hass-apps/issues/405)) ([1a26c45](https://github.com/bakerkj/hass-apps/commit/1a26c458e1f576ab7240d69baa760b2291b507c8))
+
 ## [0.0.3](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.2...dashboard_web_proxy-v0.0.3) (2026-07-31)
 
 
