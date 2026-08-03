@@ -329,6 +329,19 @@ def test_unlisted_tank_fluid_type_not_duplicated_in_catch_all() -> None:
     assert slugify("tanks.greyWater.0.capacity") not in ents
 
 
+def test_unlisted_tank_with_only_level_still_surfaces() -> None:
+    # A greyWater tank reporting ONLY currentLevel (no capacity, common since
+    # capacity is a manual N2K config value) gets no "Remaining" derived entity
+    # -- so its level must still appear as a diagnostic, not vanish entirely.
+    tree = _tank_tree(**{"tanks.greyWater.0": {"currentLevel": 0.4}})
+    ents = _catch_all(tree)
+    assert "tanks_greywater_fluid_type" in ents  # fluid type still derived
+    assert "tanks_greywater_remaining" not in ents  # no capacity -> no remaining
+    lvl = ents[slugify("tanks.greyWater.0.currentLevel")]  # not dropped
+    assert lvl["entity_category"] == "diagnostic"
+    assert lvl["state"] == "0.4"
+
+
 def test_catch_all_never_duplicates_mapped_paths() -> None:
     # End-to-end invariant: no path emitted by any mapper (numeric, text,
     # derived) also appears as a diagnostic, while genuinely-unmapped scalars do.

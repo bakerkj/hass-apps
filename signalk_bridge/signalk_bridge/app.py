@@ -572,22 +572,35 @@ def _is_mapped(path: str) -> bool:
 
     if path == POSITION_PATH or path in TEXT_MAP:
         return True
-    # Derived tank entities (Remaining / Fluid type) consume any fluid type's
-    # currentLevel/capacity -- including types with no explicit PATH_MAP entry
-    # (greyWater, etc.) -- so treat those source leaves as mapped and keep the
-    # catch-all from re-emitting them as diagnostics.
-    parts = path.split(".")
-    if (
-        len(parts) == 4
-        and parts[0] == "tanks"
-        and parts[3] in ("currentLevel", "capacity")
-    ):
-        return True
     if match_path(path, SWITCH_PATTERN) is not None:
         return True
     return any(match_path(path, pat) is not None for pat in PATH_MAP) or any(
         match_path(path, pat) is not None for pat in TEXT_PATTERN_MAP
     )
+
+
+def _consumed_tank_leaves(flat: dict[str, Any]) -> set[str]:
+    """Tank ``currentLevel``/``capacity`` leaves that the derived "Remaining"
+    sensor actually consumes -- i.e. where BOTH are present and numeric for the
+    same ``(fluid_type, instance)``. Mirrors :func:`_tank_derived_entities`'
+    gather so the catch-all suppresses exactly what the derived sensor covers,
+    and nothing more (a tank with only one field keeps surfacing)."""
+    fields: dict[tuple[str, str], set[str]] = {}
+    for path, raw in flat.items():
+        parts = path.split(".")
+        if len(parts) != 4 or parts[0] != "tanks":
+            continue
+        if parts[3] not in ("currentLevel", "capacity"):
+            continue
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        fields.setdefault((parts[1], parts[2]), set()).add(parts[3])
+    return {
+        f"tanks.{ft}.{inst}.{leaf}"
+        for (ft, inst), present in fields.items()
+        if {"currentLevel", "capacity"} <= present
+        for leaf in ("currentLevel", "capacity")
+    }
 
 
 def _unmapped_entities(
@@ -600,9 +613,18 @@ def _unmapped_entities(
     a per-branch ``<Top> (other)`` diagnostic device so nothing is dropped on a
     judgement call, without cluttering the primary devices.
     """
+    # A tank's currentLevel/capacity feeds the derived "Remaining" sensor only
+    # when BOTH are present for that (fluid_type, instance); those source leaves
+    # are then already represented, so skip them. A tank reporting just one of
+    # the two gets no derived entity, so it must still surface as a diagnostic
+    # rather than vanish -- the whole point of publish_unmapped.
+    consumed_tank_leaves = _consumed_tank_leaves(flat)
+
     entities: dict[str, dict[str, Any]] = {}
     for path, raw in flat.items():
         if path in emitted_paths or path.startswith("notifications."):
+            continue
+        if path in consumed_tank_leaves:
             continue
         if _is_mapped(path):
             continue  # mapped (possibly deduped away) -- don't duplicate it
