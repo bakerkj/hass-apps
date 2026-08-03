@@ -59,6 +59,12 @@ def j_to_kwh(v: float) -> float:
     return v / 3_600_000.0
 
 
+# Coulombs to amp-hours -- Signal K battery capacity fields (consumedCharge) are
+# SI coulombs; a battery monitor's headline "Consumed Ah" is amp-hours.
+def coulombs_to_ah(v: float) -> float:
+    return v / 3600.0
+
+
 # Cubic metres to US gallons -- N2K PGN 127505 reports tank capacity in m3;
 # HA users on any US boat expect gallons.
 _M3_TO_GAL = 264.172052
@@ -84,7 +90,13 @@ def identity(v: float) -> float:
 
 SPEED = {"device_class": "speed", "state_class": "measurement"}
 TEMP = {"device_class": "temperature", "state_class": "measurement"}
-VOLT = {"device_class": "voltage", "state_class": "measurement"}
+# Voltage defaults to 2 decimals in HA (12.84 V, not 12.8 or 12.8442); the raw
+# state keeps full precision, this only sets the displayed rounding.
+VOLT = {
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "suggested_display_precision": 2,
+}
 CURRENT = {"device_class": "current", "state_class": "measurement"}
 PRESSURE = {"device_class": "pressure", "state_class": "measurement"}
 ANGLE = {"state_class": "measurement"}
@@ -542,6 +554,24 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         "state_class": "measurement",
         "group": "battery.*",
     },
+    "electrical.batteries.*.capacity.consumedCharge": {
+        # SI coulombs -> the battery monitor's headline "Consumed Ah".
+        "name": "Consumed charge",
+        "unit": "Ah",
+        "convert": coulombs_to_ah,
+        "icon": "mdi:battery-minus-variant",
+        "state_class": "measurement",
+        "group": "battery.*",
+    },
+    "electrical.batteries.*.capacity.dischargedEnergy": {
+        "name": "Discharged energy",
+        "unit": "kWh",
+        "convert": j_to_kwh,
+        "icon": "mdi:battery-arrow-down",
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "group": "battery.*",
+    },
     # ---- electrical: solar / chargers / inverters ----
     "electrical.solar.*.voltage": {
         "name": "Solar voltage",
@@ -612,6 +642,16 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         "convert": identity,
         "group": "inverter.*",
         **VOLT,
+    },
+    # ---- Victron GX system aggregate ----
+    "electrical.venus.dcPower": {
+        "name": "DC power",
+        "unit": "W",
+        "convert": identity,
+        "icon": "mdi:flash",
+        "device_class": "power",
+        "state_class": "measurement",
+        "group": "system",
     },
     # ---- tanks (N2K senders) ----
     # ``group`` intentionally has no ``*``: N2K's per-fluid-type instance
@@ -720,6 +760,7 @@ GROUP_LABELS: dict[str, str] = {
     "gps": "GPS",
     "steering": "Steering",
     "course": "Course",
+    "system": "System",
     "switches.bank": "Digital switches bank",
     "alarms": "Alarms",
     "n2k_bus": "NMEA 2000 Bus",
@@ -753,6 +794,11 @@ TEXT_MAP: dict[str, dict[str, Any]] = {
     "navigation.gnss.type": {
         "name": "GPS type",
         "icon": "mdi:satellite-variant",
+        "group": "gps",
+    },
+    "navigation.gnss.integrity": {
+        "name": "GPS integrity",
+        "icon": "mdi:shield-check",
         "group": "gps",
     },
     # Active waypoint / route names (companion to the numeric course entries).

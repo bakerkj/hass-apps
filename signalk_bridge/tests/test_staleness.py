@@ -248,3 +248,40 @@ def test_map_tree_noop_disabled_and_recovers() -> None:
     assert "environment_depth_belowkeel" not in dead  # withheld
     back = _map_tree(tracker, tree(_iso(300)), {}, (), False, at(300))
     assert "environment_depth_belowkeel" in back  # fresh data -> recovered
+
+
+def test_map_tree_catch_all_excludes_stale_paths() -> None:
+    # publish_unmapped must build the catch-all from the SAME staleness-filtered
+    # flat: a stale UNMAPPED leaf must not be republished (that would reset
+    # expire_after and defeat staleness).
+    tracker = StalenessTracker(floor_s=40.0, cap_s=600.0)
+    key = "electrical_venus_totalpanelpower"  # unmapped -> catch-all
+
+    def tree(ts: str) -> dict:
+        return {"electrical": {"venus": {"totalPanelPower": _leaf(111.0, ts)}}}
+
+    for s in (0, 2, 4):  # learn a ~2s cadence
+        _map_tree(tracker, tree(_iso(s)), {}, (), False, at(s), True)
+    stale_run = _map_tree(tracker, tree(_iso(4)), {}, (), False, at(204), True)
+    assert key not in stale_run  # stale -> withheld from the catch-all too
+    fresh_run = _map_tree(tracker, tree(_iso(300)), {}, (), False, at(300), True)
+    assert key in fresh_run  # fresh again -> back as a diagnostic sensor
+
+
+def test_map_tree_catch_all_skips_deduped_mapped_paths() -> None:
+    # A value the mapper deduped (SoC reported at two mapped paths) must NOT
+    # reappear as an (other) diagnostic via the catch-all.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "house": {
+                    "stateOfCharge": _leaf(0.87, _iso(0)),
+                    "capacity": {"stateOfCharge": _leaf(0.87, _iso(0))},
+                }
+            }
+        }
+    }
+    ents = _map_tree(None, tree, {}, (), False, at(0), True)
+    assert [
+        k for k, e in ents.items() if e.get("entity_category") == "diagnostic"
+    ] == []

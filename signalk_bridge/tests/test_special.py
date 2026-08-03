@@ -247,6 +247,164 @@ def test_solar_charge_mode_is_text_sensor(vessel_tree: dict[str, Any]) -> None:
     assert cm["group_label"] == "Solar mppt1"
 
 
+def test_satellites_in_view_from_composite() -> None:
+    tree = {
+        "navigation": {
+            "gnss": {"satellitesInView": {"value": {"count": 12, "satellites": []}}}
+        }
+    }
+    s = resolve_special(tree)[slugify("navigation.gnss.satellitesInView")]
+    assert s["state"] == "12"
+    assert s["group_label"] == "GPS"
+
+
+def test_unmapped_scalars_become_diagnostic_sensors_excluding_names() -> None:
+    from signalk_bridge.app import _humanize_path, _unmapped_entities
+
+    flat = {
+        "electrical.venus.totalPanelPower": 111.0,
+        "electrical.batteries.house.name": "House",  # .name -> skipped
+        "environment.current": {"setTrue": 1.0},  # composite -> skipped
+        "navigation.datetime": None,  # null -> skipped
+        "electrical.batteries.house.voltage": 12.8,  # already emitted -> skipped
+        "notifications.foo": {"state": "alarm"},  # notification -> skipped
+    }
+    ents = _unmapped_entities(flat, {"electrical.batteries.house.voltage"})
+    assert set(ents) == {slugify("electrical.venus.totalPanelPower")}
+    e = ents[slugify("electrical.venus.totalPanelPower")]
+    assert e["state"] == "111"  # render() trims the float, matching mapped sensors
+    assert e["component"] == "sensor"
+    assert e["entity_category"] == "diagnostic"
+    assert e["group_label"] == "Electrical (other)"
+    assert _humanize_path("electrical.venus.dcPower").startswith("Venus")
+
+
+def test_satellites_in_view_accepts_float_count() -> None:
+    # Servers commonly carry the count as 12.0; the old int-only gate dropped
+    # the sensor entirely (the catch-all skips the dict too), so nothing showed.
+    tree = {
+        "navigation": {
+            "gnss": {"satellitesInView": {"value": {"count": 12.0, "satellites": []}}}
+        }
+    }
+    s = resolve_special(tree)[slugify("navigation.gnss.satellitesInView")]
+    assert s["state"] == "12"  # rendered as an int, not "12.0"
+    assert s["group_label"] == "GPS"
+
+
+def test_gps_integrity_is_text_sensor() -> None:
+    tree = _tree_from({"navigation.gnss.integrity": "Safe"})
+    s = resolve_special(tree)[slugify("navigation.gnss.integrity")]
+    assert s["component"] == "sensor"
+    assert s["state"] == "Safe"
+    assert s["name"] == "GPS integrity"
+    assert s["group_label"] == "GPS"
+
+
+def _catch_all(tree: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    from datetime import UTC, datetime
+
+    from signalk_bridge.app import _map_tree
+
+    return _map_tree(
+        None,
+        tree,
+        {},
+        (),
+        False,
+        datetime(2026, 1, 1, tzinfo=UTC),
+        publish_unmapped=True,
+    )
+
+
+def test_unlisted_tank_fluid_type_not_duplicated_in_catch_all() -> None:
+    # greyWater has no PATH_MAP entry, but the derived mapper still emits
+    # Remaining/Fluid type for it. Its currentLevel/capacity source leaves must
+    # NOT also reappear as (other) diagnostics -- the derived-entity leak.
+    tree = _tank_tree(**{"tanks.greyWater.0": {"currentLevel": 0.4, "capacity": 0.1}})
+    ents = _catch_all(tree)
+    assert "tanks_greywater_remaining" in ents
+    assert "tanks_greywater_fluid_type" in ents
+    assert slugify("tanks.greyWater.0.currentLevel") not in ents
+    assert slugify("tanks.greyWater.0.capacity") not in ents
+
+
+def test_bool_tank_level_ignored_by_both_derived_and_catch_all() -> None:
+    # A boolean currentLevel is nonsense data; the derived gather and the
+    # catch-all's suppression logic must agree on rejecting it (bool is an int
+    # subtype, so a naive isinstance(int) check would let it through in one but
+    # not the other, splitting behavior).
+    tree = _tank_tree(**{"tanks.greyWater.0": {"currentLevel": True, "capacity": 0.1}})
+    ents = _catch_all(tree)
+    assert "tanks_greywater_remaining" not in ents  # bool level -> no Remaining
+    # capacity is a lone numeric field now -> surfaces as a diagnostic, not dropped.
+    assert slugify("tanks.greyWater.0.capacity") in ents
+
+
+def test_unlisted_tank_with_only_level_still_surfaces() -> None:
+    # A greyWater tank reporting ONLY currentLevel (no capacity, common since
+    # capacity is a manual N2K config value) gets no "Remaining" derived entity
+    # -- so its level must still appear as a diagnostic, not vanish entirely.
+    tree = _tank_tree(**{"tanks.greyWater.0": {"currentLevel": 0.4}})
+    ents = _catch_all(tree)
+    assert "tanks_greywater_fluid_type" in ents  # fluid type still derived
+    assert "tanks_greywater_remaining" not in ents  # no capacity -> no remaining
+    lvl = ents[slugify("tanks.greyWater.0.currentLevel")]  # not dropped
+    assert lvl["entity_category"] == "diagnostic"
+    assert lvl["state"] == "0.4"
+
+
+def test_catch_all_never_duplicates_mapped_paths() -> None:
+    # End-to-end invariant: no path emitted by any mapper (numeric, text,
+    # derived) also appears as a diagnostic, while genuinely-unmapped scalars do.
+    tree = _tree_from(
+        {
+            "electrical.batteries.house.voltage": 12.8,  # mapped (numeric)
+            "electrical.batteries.house.stateOfCharge": 0.9,  # mapped (numeric)
+            "electrical.venus.totalPanelPower": 111.0,  # unmapped scalar
+        }
+    )
+    tree.update(
+        _tank_tree(**{"tanks.greyWater.0": {"currentLevel": 0.4, "capacity": 0.1}})
+    )
+    ents = _catch_all(tree)
+    diag = {
+        e["path"] for e in ents.values() if e.get("entity_category") == "diagnostic"
+    }
+    nondiag = {
+        e["path"] for e in ents.values() if e.get("entity_category") != "diagnostic"
+    }
+    assert diag & nondiag == set()
+    assert "electrical.venus.totalPanelPower" in diag
+
+
+def test_unmapped_bool_becomes_binary_sensor() -> None:
+    from signalk_bridge.app import _unmapped_entities
+
+    ents = _unmapped_entities(
+        {"electrical.venus.relay": True, "steering.autopilot.engaged": False}, set()
+    )
+    on = ents[slugify("electrical.venus.relay")]
+    off = ents[slugify("steering.autopilot.engaged")]
+    assert on["component"] == "binary_sensor"
+    assert on["state"] == "ON"
+    assert on["entity_category"] == "diagnostic"
+    assert off["component"] == "binary_sensor"
+    assert off["state"] == "OFF"
+
+
+def test_unmapped_float_renders_and_long_string_is_clamped() -> None:
+    from signalk_bridge.app import _unmapped_entities
+
+    ents = _unmapped_entities(
+        {"electrical.venus.x": 0.1 + 0.2, "electrical.venus.blob": "z" * 400}, set()
+    )
+    # render() trims float noise instead of "0.30000000000000004".
+    assert ents[slugify("electrical.venus.x")]["state"] == "0.3"
+    # HA drops states over 255 chars; clamp so the entity stays usable.
+    assert len(ents[slugify("electrical.venus.blob")]["state"]) == 255
+
+
 def test_active_alarm_is_on_normal_is_off(vessel_tree: dict[str, Any]) -> None:
     spc = resolve_special(vessel_tree)
     alarm = spc[slugify("notifications.instrument.PilotOffCourse")]

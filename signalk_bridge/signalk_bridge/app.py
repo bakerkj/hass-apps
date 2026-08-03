@@ -6,6 +6,7 @@
 import argparse
 import json
 import logging
+import re
 import signal
 import sys
 import threading
@@ -179,6 +180,7 @@ def _entities_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 device_class=spec.get("device_class"),
                 state_class=spec.get("state_class"),
                 icon=spec.get("icon"),
+                suggested_display_precision=spec.get("suggested_display_precision"),
             )
             break
     # Collapse duplicates that resolve to the same device + entity name (e.g. a
@@ -293,6 +295,25 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
             continue
 
+        # GNSS satellites in view: composite {count, satellites[...]} -> count.
+        # Servers emit count as 12 or 12.0; accept both, reject bool.
+        sat_count = raw.get("count") if isinstance(raw, dict) else None
+        if (
+            path == "navigation.gnss.satellitesInView"
+            and isinstance(sat_count, (int, float))
+            and not isinstance(sat_count, bool)
+        ):
+            gid, label = resolve_group("gps", [])
+            entities[key] = _entity(
+                path,
+                "Satellites in view",
+                str(int(sat_count)),
+                gid,
+                label,
+                icon="mdi:satellite-variant",
+            )
+            continue
+
         # Notifications -> binary_sensor alarms.
         if path.startswith(NOTIFICATION_PREFIX) and isinstance(raw, dict):
             name = str(raw.get("message") or path.split(".")[-1])
@@ -339,7 +360,7 @@ def _tank_derived_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             continue
         if parts[3] not in ("currentLevel", "capacity"):
             continue
-        if not isinstance(raw, (int, float)):
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
             continue
         tanks.setdefault((parts[1], parts[2]), {})[parts[3]] = float(raw)
 
@@ -485,6 +506,7 @@ def _map_tree(
     base_suppress: tuple[str, ...],
     suppress_primary_on_fanout: bool,
     now: datetime,
+    publish_unmapped: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Flatten the vessel tree ONCE and map it to entity definitions.
 
@@ -494,6 +516,11 @@ def _map_tree(
     clears them; ``navigation.position`` is exempt (a device_tracker with no
     ``expire_after`` -- withholding it would freeze the last fix on the map
     rather than clear it).
+
+    When ``publish_unmapped`` is set, the diagnostic catch-all is built from the
+    SAME staleness-filtered ``flat`` -- so a withheld stale path stays withheld
+    from the ``(other)`` sensors too, instead of being republished every cycle
+    (which would reset its ``expire_after`` and defeat staleness).
     """
     meta = paths.flatten_with_meta(
         tree,
@@ -516,7 +543,122 @@ def _map_tree(
                 "Staleness: withholding %d path(s) past their cadence", len(stale)
             )
     flat = {p: v for p, (v, _ts) in meta.items() if p not in stale}
-    return {**_entities_from_flat(flat), **_special_from_flat(flat)}
+    entities = {**_entities_from_flat(flat), **_special_from_flat(flat)}
+    if publish_unmapped:
+        emitted = {e["path"] for e in entities.values()}
+        entities.update(_unmapped_entities(flat, emitted))
+    return entities
+
+
+def _humanize_path(path: str) -> str:
+    """A readable entity name from a dotted, camelCase Signal K path."""
+    rest = path.split(".")
+    rest = rest[1:] if len(rest) > 1 else rest
+    spaced = " ".join(
+        re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", seg).replace("_", " ") for seg in rest
+    ).strip()
+    return spaced[:1].upper() + spaced[1:] if spaced else path
+
+
+def _is_mapped(path: str) -> bool:
+    """True if any explicit mapper claims this path -- even one whose entity was
+    later dropped by the (group_id, name) dedup in :func:`_entities_from_flat`.
+
+    Checking the maps directly (not just the surviving entities) keeps the
+    catch-all from republishing a value the mapper deliberately collapsed, e.g. a
+    battery that reports state-of-charge at two paths.
+    """
+    from .paths import POSITION_PATH, SWITCH_PATTERN, TEXT_MAP, TEXT_PATTERN_MAP
+
+    if path == POSITION_PATH or path in TEXT_MAP:
+        return True
+    if match_path(path, SWITCH_PATTERN) is not None:
+        return True
+    return any(match_path(path, pat) is not None for pat in PATH_MAP) or any(
+        match_path(path, pat) is not None for pat in TEXT_PATTERN_MAP
+    )
+
+
+def _consumed_tank_leaves(flat: dict[str, Any]) -> set[str]:
+    """Tank ``currentLevel``/``capacity`` leaves that the derived "Remaining"
+    sensor actually consumes -- i.e. where BOTH are present and numeric for the
+    same ``(fluid_type, instance)``. Mirrors :func:`_tank_derived_entities`'
+    gather so the catch-all suppresses exactly what the derived sensor covers,
+    and nothing more (a tank with only one field keeps surfacing)."""
+    fields: dict[tuple[str, str], set[str]] = {}
+    for path, raw in flat.items():
+        parts = path.split(".")
+        if len(parts) != 4 or parts[0] != "tanks":
+            continue
+        if parts[3] not in ("currentLevel", "capacity"):
+            continue
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        fields.setdefault((parts[1], parts[2]), set()).add(parts[3])
+    return {
+        f"tanks.{ft}.{inst}.{leaf}"
+        for (ft, inst), present in fields.items()
+        if {"currentLevel", "capacity"} <= present
+        for leaf in ("currentLevel", "capacity")
+    }
+
+
+def _unmapped_entities(
+    flat: dict[str, Any], emitted_paths: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Every remaining SCALAR leaf as a diagnostic sensor (``publish_unmapped``).
+
+    Paths already covered by an explicit mapping are skipped, as are ``.name``
+    device labels, composite (dict/list), and null leaves. Each is grouped under
+    a per-branch ``<Top> (other)`` diagnostic device so nothing is dropped on a
+    judgement call, without cluttering the primary devices.
+    """
+    # A tank's currentLevel/capacity feeds the derived "Remaining" sensor only
+    # when BOTH are present for that (fluid_type, instance); those source leaves
+    # are then already represented, so skip them. A tank reporting just one of
+    # the two gets no derived entity, so it must still surface as a diagnostic
+    # rather than vanish -- the whole point of publish_unmapped.
+    consumed_tank_leaves = _consumed_tank_leaves(flat)
+
+    entities: dict[str, dict[str, Any]] = {}
+    for path, raw in flat.items():
+        if path in emitted_paths or path.startswith("notifications."):
+            continue
+        if path in consumed_tank_leaves:
+            continue
+        if _is_mapped(path):
+            continue  # mapped (possibly deduped away) -- don't duplicate it
+        if path.endswith(".name"):
+            continue  # device labels, not telemetry
+        top = path.split(".")[0]
+        gid, label = f"other.{top}", f"{top.title()} (other)"
+        # Bool leaves are on/off, not numbers: a binary_sensor keeps HA's
+        # is_state(...,'on') and template bool checks working.
+        if isinstance(raw, bool):
+            entities[slugify(path)] = _entity(
+                path,
+                _humanize_path(path),
+                "ON" if raw else "OFF",
+                gid,
+                label,
+                component="binary_sensor",
+                entity_category="diagnostic",
+            )
+            continue
+        if not isinstance(raw, (int, float, str)):
+            continue
+        # render() floats for parity with mapped sensors; clamp to HA's 255-char
+        # state limit (a longer state is dropped and the entity stays unknown).
+        state = render(raw) if isinstance(raw, float) else str(raw)
+        entities[slugify(path)] = _entity(
+            path,
+            _humanize_path(path),
+            state[:255],
+            gid,
+            label,
+            entity_category="diagnostic",
+        )
+    return entities
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -554,6 +696,7 @@ def main(argv: list[str] | None = None) -> int:
         s for s in raw_suppress if isinstance(s, str) and s
     )
     suppress_primary_on_fanout = bool(opts.get("suppress_primary_on_fanout"))
+    publish_unmapped = bool(opts.get("publish_unmapped"))
     stale_after_s = int(opts.get("stale_after_seconds") or 0)
     stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
 
@@ -714,6 +857,7 @@ def main(argv: list[str] | None = None) -> int:
                     suppress_paths,
                     suppress_primary_on_fanout,
                     datetime.now(UTC),
+                    publish_unmapped,
                 )
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")

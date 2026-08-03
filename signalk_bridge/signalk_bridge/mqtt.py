@@ -78,8 +78,10 @@ def publish_discovery(
         ("device_class", "device_class"),
         ("state_class", "state_class"),
         ("icon", "icon"),
+        ("entity_category", "entity_category"),
+        ("suggested_display_precision", "suggested_display_precision"),
     ):
-        if entity.get(src):
+        if entity.get(src) is not None:
             payload[dst] = entity[src]
 
     client.publish(
