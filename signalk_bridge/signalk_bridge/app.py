@@ -557,6 +557,25 @@ def _humanize_path(path: str) -> str:
     return spaced[:1].upper() + spaced[1:] if spaced else path
 
 
+def _is_mapped(path: str) -> bool:
+    """True if any explicit mapper claims this path -- even one whose entity was
+    later dropped by the (group_id, name) dedup in :func:`_entities_from_flat`.
+
+    Checking the maps directly (not just the surviving entities) keeps the
+    catch-all from republishing a value the mapper deliberately collapsed, e.g. a
+    battery that reports state-of-charge at two paths.
+    """
+    from .paths import POSITION_PATH, SWITCH_PATTERN, TEXT_MAP, TEXT_PATTERN_MAP
+
+    if path == POSITION_PATH or path in TEXT_MAP:
+        return True
+    if match_path(path, SWITCH_PATTERN) is not None:
+        return True
+    return any(match_path(path, pat) is not None for pat in PATH_MAP) or any(
+        match_path(path, pat) is not None for pat in TEXT_PATTERN_MAP
+    )
+
+
 def _unmapped_entities(
     flat: dict[str, Any], emitted_paths: set[str]
 ) -> dict[str, dict[str, Any]]:
@@ -571,6 +590,8 @@ def _unmapped_entities(
     for path, raw in flat.items():
         if path in emitted_paths or path.startswith("notifications."):
             continue
+        if _is_mapped(path):
+            continue  # mapped (possibly deduped away) -- don't duplicate it
         if path.endswith(".name"):
             continue  # device labels, not telemetry
         if not isinstance(raw, (int, float, str, bool)):

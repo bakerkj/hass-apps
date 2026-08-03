@@ -266,3 +266,22 @@ def test_map_tree_catch_all_excludes_stale_paths() -> None:
     assert key not in stale_run  # stale -> withheld from the catch-all too
     fresh_run = _map_tree(tracker, tree(_iso(300)), {}, (), False, at(300), True)
     assert key in fresh_run  # fresh again -> back as a diagnostic sensor
+
+
+def test_map_tree_catch_all_skips_deduped_mapped_paths() -> None:
+    # A value the mapper deduped (SoC reported at two mapped paths) must NOT
+    # reappear as an (other) diagnostic via the catch-all.
+    tree = {
+        "electrical": {
+            "batteries": {
+                "house": {
+                    "stateOfCharge": _leaf(0.87, _iso(0)),
+                    "capacity": {"stateOfCharge": _leaf(0.87, _iso(0))},
+                }
+            }
+        }
+    }
+    ents = _map_tree(None, tree, {}, (), False, at(0), True)
+    assert [
+        k for k, e in ents.items() if e.get("entity_category") == "diagnostic"
+    ] == []
