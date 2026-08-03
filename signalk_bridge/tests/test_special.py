@@ -329,6 +329,18 @@ def test_unlisted_tank_fluid_type_not_duplicated_in_catch_all() -> None:
     assert slugify("tanks.greyWater.0.capacity") not in ents
 
 
+def test_bool_tank_level_ignored_by_both_derived_and_catch_all() -> None:
+    # A boolean currentLevel is nonsense data; the derived gather and the
+    # catch-all's suppression logic must agree on rejecting it (bool is an int
+    # subtype, so a naive isinstance(int) check would let it through in one but
+    # not the other, splitting behavior).
+    tree = _tank_tree(**{"tanks.greyWater.0": {"currentLevel": True, "capacity": 0.1}})
+    ents = _catch_all(tree)
+    assert "tanks_greywater_remaining" not in ents  # bool level -> no Remaining
+    # capacity is a lone numeric field now -> surfaces as a diagnostic, not dropped.
+    assert slugify("tanks.greyWater.0.capacity") in ents
+
+
 def test_unlisted_tank_with_only_level_still_surfaces() -> None:
     # A greyWater tank reporting ONLY currentLevel (no capacity, common since
     # capacity is a manual N2K config value) gets no "Remaining" derived entity

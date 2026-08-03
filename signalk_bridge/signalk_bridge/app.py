@@ -360,7 +360,7 @@ def _tank_derived_entities(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             continue
         if parts[3] not in ("currentLevel", "capacity"):
             continue
-        if not isinstance(raw, (int, float)):
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
             continue
         tanks.setdefault((parts[1], parts[2]), {})[parts[3]] = float(raw)
 
