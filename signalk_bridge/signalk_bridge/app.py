@@ -503,6 +503,7 @@ def _map_tree(
     base_suppress: tuple[str, ...],
     suppress_primary_on_fanout: bool,
     now: datetime,
+    publish_unmapped: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Flatten the vessel tree ONCE and map it to entity definitions.
 
@@ -512,6 +513,11 @@ def _map_tree(
     clears them; ``navigation.position`` is exempt (a device_tracker with no
     ``expire_after`` -- withholding it would freeze the last fix on the map
     rather than clear it).
+
+    When ``publish_unmapped`` is set, the diagnostic catch-all is built from the
+    SAME staleness-filtered ``flat`` -- so a withheld stale path stays withheld
+    from the ``(other)`` sensors too, instead of being republished every cycle
+    (which would reset its ``expire_after`` and defeat staleness).
     """
     meta = paths.flatten_with_meta(
         tree,
@@ -534,7 +540,11 @@ def _map_tree(
                 "Staleness: withholding %d path(s) past their cadence", len(stale)
             )
     flat = {p: v for p, (v, _ts) in meta.items() if p not in stale}
-    return {**_entities_from_flat(flat), **_special_from_flat(flat)}
+    entities = {**_entities_from_flat(flat), **_special_from_flat(flat)}
+    if publish_unmapped:
+        emitted = {e["path"] for e in entities.values()}
+        entities.update(_unmapped_entities(flat, emitted))
+    return entities
 
 
 def _humanize_path(path: str) -> str:
@@ -773,17 +783,8 @@ def main(argv: list[str] | None = None) -> int:
                     suppress_paths,
                     suppress_primary_on_fanout,
                     datetime.now(UTC),
+                    publish_unmapped,
                 )
-                if publish_unmapped:
-                    flat_all = flatten(
-                        tree,
-                        source_tags=source_tags,
-                        suppress_paths=suppress_paths,
-                        suppress_primary_on_fanout=suppress_primary_on_fanout,
-                    )
-                    emitted = {e["path"] for e in data_entities.values()}
-                    for _k, _ent in _unmapped_entities(flat_all, emitted).items():
-                        data_entities.setdefault(_k, _ent)
             except Exception:
                 log.exception("Error mapping Signal K data, skipping cycle")
                 _stop.wait(max(1, interval))
