@@ -219,9 +219,12 @@ def test_shutdown_with_a_session_sends_the_retained_farewell(capsys) -> None:
     assert "error during shutdown publish" not in capsys.readouterr().out
 
 
-def test_shutdown_tears_down_the_client_even_with_no_session() -> None:
-    """The publishes need a session; stopping the network loop and closing the
-    socket do not, and skipping them leaks both."""
+def test_shutdown_skips_teardown_when_no_session() -> None:
+    """No session ⇒ nothing to flush and no clean DISCONNECT to send; more
+    importantly, the network thread may be blocked in ``socket.connect()`` to
+    an unreachable broker (TCP timeout is 60-120s on Linux) and ``loop_stop()``
+    would join on it. Both shutdown call sites (EOF finally, SIGTERM handler)
+    exit the process next, so the OS reaps the thread and the socket."""
     pub, sent = _publisher()
     torn: list[str] = []
     pub.client.loop_stop = lambda: torn.append("loop_stop")  # type: ignore[method-assign]
@@ -231,9 +234,7 @@ def test_shutdown_tears_down_the_client_even_with_no_session() -> None:
     pub.shutdown(farewell=True)
 
     assert sent == []  # nothing published without a session
-    # disconnect() before loop_stop(): the farewell needs the loop running to
-    # flush, and the clean DISCONNECT suppresses the last will.
-    assert torn == ["disconnect", "loop_stop"]
+    assert torn == []  # nothing torn down either -- see docstring
 
 
 # --- watchdog wiring (the predicate is tested above; this is the call) --------
