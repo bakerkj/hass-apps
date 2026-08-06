@@ -110,6 +110,25 @@ def test_max_targets_drops_oldest_non_sticky() -> None:
     assert "MIDDLE" in dropped
 
 
+def test_max_targets_ties_break_deterministically_by_insertion_order() -> None:
+    """A batched WS message applies multiple deltas at the same monotonic
+    time; when the sort key ties, the surviving vs dropped set must still
+    be well-defined so cap enforcement isn't order-random."""
+    reg = AISRegistry(expire_seconds=99999, max_targets=1)
+    # All three ingested at the same monotonic time -- Python's sort is
+    # stable, and dict insertion order preserves the ingest sequence, so
+    # the pre-sort iterator gives us FIRST, SECOND, THIRD in that order.
+    # sorted(..., reverse=True) with a tied key preserves that order, so
+    # the first slot goes to FIRST and the other two get dropped.
+    reg.ingest({"FIRST": _sk_target(lat=1, lon=1)}, now_monotonic=100.0)
+    reg.ingest({"SECOND": _sk_target(lat=2, lon=2)}, now_monotonic=100.0)
+    reg.ingest({"THIRD": _sk_target(lat=3, lon=3)}, now_monotonic=100.0)
+    dropped = reg.expire(now_monotonic=100.0)
+    kept = set(reg.mmsis())
+    assert kept == {"FIRST"}
+    assert set(dropped) == {"SECOND", "THIRD"}
+
+
 def test_inventory_entity_reports_count_and_summaries() -> None:
     reg = AISRegistry(expire_seconds=900)
     reg.ingest(
