@@ -190,9 +190,10 @@
       "enabled": false
     },
     {
-      "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0)",
+      "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0). minimumReleaseAge gives uv time to catch up: uv only installs interpreters embedded in its release, and [tool.uv] required-version is an exact pin, so a patch bump landing before uv ships support fails CI with no self-heal (cf. #409).",
       "matchDepNames": ["python"],
-      "allowedVersions": "<3.15"
+      "allowedVersions": "<3.15",
+      "minimumReleaseAge": "3 days"
     },
     {
       "description": "Override the helpers:pinGitHubActionDigestsToSemver preset's semver versioning for home-assistant/builder, which moved from semver tags (1.x-7.x) to calver tags (2026.06.0+). With semver versioning, the calver tags don't parse and Renovate proposes 'upgrades' to the old pre-calver semver tags (this surfaced as the bogus #246 and #248 PRs).",
