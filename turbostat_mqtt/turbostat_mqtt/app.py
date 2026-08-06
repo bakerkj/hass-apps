@@ -568,30 +568,35 @@ def main() -> int:
         return 14
     finally:
         stop["v"] = True
-        try:
-            mqtt_publish(
-                client,
-                availability_topic,
-                "offline",
-                qos=1,
-                retain=True,
-                log_level=log_level,
-                health=health,
-            )
-            time.sleep(0.2)
-        except Exception:  # noqa: BLE001, S110 shutdown best-effort
-            pass
+        # Only with a live session: publish() takes paho mutexes an in-flight
+        # connect on the network thread may hold, and with no session there is
+        # nothing to say anyway. The last will covers the ungraceful case.
+        if health.connected:
+            try:
+                mqtt_publish(
+                    client,
+                    availability_topic,
+                    "offline",
+                    qos=1,
+                    retain=True,
+                    log_level=log_level,
+                    health=health,
+                )
+                time.sleep(0.2)
+            except Exception:  # noqa: BLE001, S110 shutdown best-effort
+                pass
 
-        try:
-            # disconnect() first: loop_stop() joins the network thread, and
-            # loop_forever only ends on its own once _out_messages is empty --
-            # the retained "offline" above is qos=1, so an unresponsive broker
-            # leaves it in flight and the join never returns. disconnect() puts
-            # the client in DISCONNECTING, which ends the thread regardless.
-            client.disconnect()
-            client.loop_stop()
-        except Exception:  # noqa: BLE001, S110 shutdown best-effort
-            pass
+            try:
+                # A clean DISCONNECT, which also suppresses the will we just
+                # superseded. Never loop_stop(): that joins the network thread,
+                # which can be mid-connect() to an unreachable broker -- Linux's
+                # TCP connect timeout is 60-120s, well past the supervisor's
+                # SIGKILL grace -- or holding an unacked qos=1 message, since
+                # loop_forever only ends once _out_messages drains. The thread
+                # is a daemon, so the OS reaps it when we exit.
+                client.disconnect()
+            except Exception:  # noqa: BLE001, S110 shutdown best-effort
+                pass
 
         try:
             if proc is not None and proc.poll() is None:
