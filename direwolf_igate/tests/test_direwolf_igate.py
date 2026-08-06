@@ -891,3 +891,38 @@ def test_mqtt_enabled_reads_a_string_the_way_it_is_written() -> None:
         assert from_mapping({"mqtt_enabled": truthy}).mqtt_enabled is True
 
     assert enabled({}) is False
+
+
+def test_pass_through_fallback_restores_default_signal_handlers(monkeypatch) -> None:
+    """The fallback blocks the main thread in a plain read.
+
+    Our handlers only run between bytecodes, so one left installed there would
+    be lost exactly as it was in the main loop; the default disposition
+    terminates in the kernel instead.
+    """
+    import signal
+
+    from direwolf_igate import app as app_mod
+
+    def boom() -> int:
+        signal.signal(signal.SIGTERM, lambda *_: None)
+        signal.signal(signal.SIGINT, lambda *_: None)
+        raise RuntimeError("publisher blew up after installing handlers")
+
+    seen: dict[str, object] = {}
+
+    def fake_tee_only() -> None:
+        seen["SIGTERM"] = signal.getsignal(signal.SIGTERM)
+        seen["SIGINT"] = signal.getsignal(signal.SIGINT)
+
+    original = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+    monkeypatch.setattr(app_mod, "_run", boom)
+    monkeypatch.setattr(app_mod, "tee_only", fake_tee_only)
+    try:
+        assert app_mod.main() == 0
+    finally:
+        for signum, handler in original.items():
+            signal.signal(signum, handler)
+
+    assert seen["SIGTERM"] is signal.SIG_DFL
+    assert seen["SIGINT"] is signal.SIG_DFL
