@@ -41,6 +41,8 @@ from .mqtt import (
     state_topic,
 )
 from .paths import PATH_MAP, flatten, match_path, resolve_group, slugify
+from .ratelimit import PublishRateLimiter, build_overrides
+from .wsclient import WSSubscriber
 
 log = logging.getLogger(__name__)
 
@@ -729,12 +731,19 @@ async def _run(
     stop: asyncio.Event,
     opts_summary: dict[str, Any],
 ) -> None:
-    """One MQTT session's worth of the poll loop.
+    """One MQTT session's worth of the publish loop.
+
+    Data flow: :class:`WSSubscriber` maintains a live mirror of ``vessels/self``
+    from SK delta messages. Each publish tick snapshots that mirror, resolves
+    entities, and offers each state topic to a per-path
+    :class:`PublishRateLimiter`. Discovery fires immediately on first sight
+    (uncapped); state topics respect the limiter's per-path floor.
 
     Returns cleanly on ``stop`` and returns (letting the ``aiomqtt.MqttError``
     catch in :func:`main_async` reconnect) on any broker disruption. State that
-    should survive reconnects (``announced``, staleness, source_tags) is held
-    in :func:`main_async` and passed in via ``opts_summary``.
+    should survive reconnects -- ``announced``, staleness, source_tags,
+    last-published values, the WS subscriber -- lives in :func:`main_async`
+    and passes through ``opts_summary``.
     """
     base_url = opts_summary["base_url"]
     data_dir = opts_summary["data_dir"]
@@ -749,58 +758,81 @@ async def _run(
     announced: set[str] = opts_summary["announced"]
     bus: BusStats = opts_summary["bus"]
     use_access_flow: bool = opts_summary["use_access_flow"]
+    limiter: PublishRateLimiter = opts_summary["limiter"]
+    last_state: dict[str, str] = opts_summary["last_state"]
+    last_attrs: dict[str, str] = opts_summary["last_attrs"]
+    subscriber_holder: dict[str, WSSubscriber | None] = opts_summary["subscriber"]
 
     token: str | None = opts_summary.get("token")
     sources_cache: dict[str, Any] = {}
     source_tags: dict[str, str] = {}
-    cycle = 0
     warned_empty = False
 
-    save_every = max(1, 300 // max(1, interval))
-    sources_every = max(1, 60 // max(1, interval))
+    # Tick-unit cadences: sources refreshed every ~60s, staleness snapshot
+    # persisted every ~300s.
+    save_every = max(1, int(300 / max(0.1, interval)))
+    sources_every = max(1, int(60 / max(0.1, interval)))
+    cycle = 0
+
+    # Bootstrap: one REST snapshot seeds the WS mirror so the first tick has
+    # something to resolve without waiting for every leaf to arrive via delta.
+    if subscriber_holder["ws"] is None:
+        while not stop.is_set():
+            if use_access_flow and not token:
+                token = await _obtain_token(session, stop, base_url, data_dir)
+                opts_summary["token"] = token
+                if token is None:
+                    continue
+            try:
+                bootstrap_tree = await get_self(session, base_url, token)
+                break
+            except SignalKAuthError:
+                if use_access_flow:
+                    log.warning("Token rejected by Signal K; requesting access again.")
+                    auth.clear_token(data_dir)
+                    token = None
+                    opts_summary["token"] = None
+                    continue
+                log.warning("Signal K rejected the configured signalk_token (401/403).")
+                await _wait_or_stop(stop, 5)
+                continue
+            except SignalKError as exc:
+                log.warning("SK bootstrap: %s; retrying", exc)
+                await _wait_or_stop(stop, max(1.0, interval))
+                continue
+        if stop.is_set():
+            return
+        new_sub = WSSubscriber(base_url, token=token)
+        new_sub.bootstrap(bootstrap_tree)
+        await new_sub.start()
+        subscriber_holder["ws"] = new_sub
+
+    sub = subscriber_holder["ws"]
+    if sub is None:
+        return  # shutdown happened during bootstrap
 
     while not stop.is_set():
         started = asyncio.get_running_loop().time()
 
-        if use_access_flow and not token:
-            token = await _obtain_token(session, stop, base_url, data_dir)
-            opts_summary["token"] = token
-            if token is None:
-                continue  # stop or DENIED loop -- re-check stop and retry
-
-        try:
-            tree = await get_self(session, base_url, token)
-        except SignalKAuthError:
-            if use_access_flow:
-                log.warning("Token rejected by Signal K; requesting access again.")
-                auth.clear_token(data_dir)
-                token = None
-                opts_summary["token"] = None
-            else:
-                log.warning("Signal K rejected the configured signalk_token (401/403).")
-            await mq.publish(
-                availability_topic(base_topic), payload=b"offline", qos=1, retain=True
-            )
-            await _wait_or_stop(stop, 2)
-            continue
-        except SignalKError as exc:
-            log.warning("%s", exc)
-            await mq.publish(
-                availability_topic(base_topic), payload=b"offline", qos=1, retain=True
-            )
-            await _wait_or_stop(stop, max(1, interval))
-            continue
-
-        # Refresh /sources first so resolve_entities can disambiguate
-        # multi-source leaves (two BMVs on the same batteries.0 path, etc.)
-        # via friendly source tags.
+        # /sources still comes over REST -- it's a large payload that turns
+        # over slowly, so no point streaming it. Refresh ~once a minute.
         if cycle % sources_every == 0:
             try:
                 sources_cache = await get_sources(session, base_url, token)
                 source_tags = paths.build_source_tags(sources_cache)
+            except SignalKAuthError:
+                if use_access_flow:
+                    log.warning("Token rejected by Signal K; requesting access again.")
+                    auth.clear_token(data_dir)
+                    token = None
+                    opts_summary["token"] = None
+                    await _wait_or_stop(stop, 2)
+                    continue
+                log.debug("sources fetch: auth error")
             except SignalKError as exc:
                 log.debug("sources fetch failed: %s", exc)
 
+        tree = await sub.snapshot()
         try:
             data_entities = _map_tree(
                 tracker,
@@ -813,7 +845,7 @@ async def _run(
             )
         except Exception:
             log.exception("Error mapping Signal K data, skipping cycle")
-            await _wait_or_stop(stop, max(1, interval))
+            await _wait_or_stop(stop, max(0.1, interval))
             continue
 
         if not data_entities and not warned_empty:
@@ -840,9 +872,14 @@ async def _run(
             tracker.save(datetime.now(UTC))
 
         entities = {**data_entities, **bus_entities}
+        now_mono = asyncio.get_running_loop().time()
 
         for key, ent in entities.items():
             if key not in announced:
+                # Discovery is one-shot per entity: publish immediately,
+                # never through the rate limiter -- HA needs to see the
+                # entity before any state matters, and discovery updates
+                # are rare enough that a cap would only slow reconnect.
                 await publish_discovery(
                     mq, discovery_prefix, base_topic, key, ent, expire_after_s
                 )
@@ -855,19 +892,42 @@ async def _run(
                 )
             value = ent.get("state")
             if value is not None:
-                await mq.publish(state_topic(base_topic, key), payload=value, qos=0)
+                sv = str(value)
+                # Rate-limit by SK path so multi-source fanouts and derived
+                # entities share the config's per-pattern overrides correctly.
+                approved = limiter.offer(ent["path"], sv, now_mono)
+                if approved is not None and last_state.get(key) != approved:
+                    await mq.publish(
+                        state_topic(base_topic, key), payload=approved, qos=0
+                    )
+                    last_state[key] = approved
             attrs = ent.get("attributes")
             if attrs is not None:
-                await mq.publish(
-                    attributes_topic(base_topic, key),
-                    payload=json.dumps(attrs),
-                    qos=0,
-                )
+                attrs_json = json.dumps(attrs)
+                # Attributes get the same limiter treatment, using a synthetic
+                # ".attrs" path so the two topics per entity aren't coupled.
+                approved_a = limiter.offer(ent["path"] + ".attrs", attrs_json, now_mono)
+                if approved_a is not None and last_attrs.get(key) != approved_a:
+                    await mq.publish(
+                        attributes_topic(base_topic, key),
+                        payload=approved_a,
+                        qos=0,
+                    )
+                    last_attrs[key] = approved_a
+
+        # Flush anything the limiter is holding whose window has now opened
+        # for a path that isn't in ``entities`` this tick (e.g., an entity
+        # dropped out of the resolver due to staleness -- rare, but the
+        # pending slot would otherwise leak).
+        for path, val in limiter.due(now_mono).items():
+            log.debug("Rate limiter flush for %s (no fresh offer this tick)", path)
+            # No entity to publish to; the slot has been drained by due().
+            _ = val
 
         await mq.publish(
             availability_topic(base_topic), payload=b"online", qos=1, retain=True
         )
-        log.debug("Published %d entities", len(entities))
+        log.debug("Publish tick: %d entities considered", len(entities))
 
         elapsed = asyncio.get_running_loop().time() - started
         await _wait_or_stop(stop, max(0.0, interval - elapsed))
@@ -906,6 +966,14 @@ async def main_async(opts_path: str) -> int:
     publish_unmapped = bool(opts.get("publish_unmapped"))
     stale_after_s = int(opts.get("stale_after_seconds") or 0)
     stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
+    publish_min_interval = float(opts.get("publish_min_interval_seconds") or 1.0)
+    raw_overrides = opts.get("publish_path_overrides") or {}
+    if not isinstance(raw_overrides, dict):
+        raw_overrides = {}
+    limiter = PublishRateLimiter(
+        default_interval=publish_min_interval,
+        overrides=build_overrides(raw_overrides),
+    )
 
     try:
         mqtt_cfg = resolve_mqtt_config(opts)
@@ -943,6 +1011,9 @@ async def main_async(opts_path: str) -> int:
 
     announced: set[str] = set()
     bus = BusStats()
+    last_state: dict[str, str] = {}
+    last_attrs: dict[str, str] = {}
+    subscriber_holder: dict[str, WSSubscriber | None] = {"ws": None}
 
     opts_summary: dict[str, Any] = {
         "base_url": base_url,
@@ -959,6 +1030,10 @@ async def main_async(opts_path: str) -> int:
         "bus": bus,
         "use_access_flow": use_access_flow,
         "token": token,
+        "limiter": limiter,
+        "last_state": last_state,
+        "last_attrs": last_attrs,
+        "subscriber": subscriber_holder,
     }
 
     async with aiohttp.ClientSession() as session:
@@ -1014,6 +1089,9 @@ async def main_async(opts_path: str) -> int:
             log.info("Shutting down")
             if tracker is not None:
                 tracker.save(datetime.now(UTC))
+            sub = subscriber_holder.get("ws")
+            if sub is not None:
+                await sub.stop()
 
     return 0
 
