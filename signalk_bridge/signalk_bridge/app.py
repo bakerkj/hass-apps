@@ -725,6 +725,23 @@ async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
         return
 
 
+async def _start_new_subscriber(
+    base_url: str, token: str | None, seed_tree: dict[str, Any]
+) -> WSSubscriber:
+    """Build, seed, and start a fresh WSSubscriber.
+
+    Kept as a helper so bootstrap and post-token-refresh both go through one
+    construction path -- a change to WSSubscriber's construction (headers,
+    timeouts, ping cadence) only has one place to update. The seed tree is
+    the initial ``vessels/self`` mirror (a REST snapshot at bootstrap, the
+    previous subscriber's snapshot at token-refresh).
+    """
+    new_sub = WSSubscriber(base_url, token=token)
+    new_sub.bootstrap(seed_tree)
+    await new_sub.start()
+    return new_sub
+
+
 async def _run(
     session: aiohttp.ClientSession,
     mq: aiomqtt.Client,
@@ -802,10 +819,9 @@ async def _run(
                 continue
         if stop.is_set():
             return
-        new_sub = WSSubscriber(base_url, token=token)
-        new_sub.bootstrap(bootstrap_tree)
-        await new_sub.start()
-        subscriber_holder["ws"] = new_sub
+        subscriber_holder["ws"] = await _start_new_subscriber(
+            base_url, token, bootstrap_tree
+        )
 
     sub = subscriber_holder["ws"]
     if sub is None:
@@ -827,13 +843,13 @@ async def _run(
             if token is None:
                 continue
             if subscriber_holder["ws"] is not None:
+                seed = await sub.snapshot()
                 await subscriber_holder["ws"].stop()
                 subscriber_holder["ws"] = None
-            new_sub2 = WSSubscriber(base_url, token=token)
-            new_sub2.bootstrap(await sub.snapshot())
-            await new_sub2.start()
-            subscriber_holder["ws"] = new_sub2
-            sub = new_sub2
+            else:
+                seed = {}
+            sub = await _start_new_subscriber(base_url, token, seed)
+            subscriber_holder["ws"] = sub
 
         # /sources still comes over REST -- it's a large payload that turns
         # over slowly, so no point streaming it. Refresh ~once a minute.
@@ -942,13 +958,15 @@ async def _run(
                     last_attrs[key] = approved_a
 
         # NB: intentionally no ``limiter.due()`` sweep here. Any path that
-        # transiently dropped out of ``entities`` (rare -- staleness withhold,
-        # entity torn down) keeps its buffered value pending; the next tick
-        # offers a fresh value that supersedes it. Calling ``due()`` would
-        # discard the pending value while advancing ``last_publish_at``, which
-        # breaks the module's own latest-value-at-window-open guarantee. When
-        # an entity is actually torn down (AIS expire) we call
-        # ``limiter.forget()`` explicitly at that site.
+        # transiently dropped out of ``entities`` (rare -- staleness withhold)
+        # keeps its buffered value pending; the next tick offers a fresh value
+        # that supersedes it. Calling ``due()`` would discard the pending value
+        # while advancing ``last_publish_at``, which breaks the module's own
+        # latest-value-at-window-open guarantee. The SK vessel tree is a
+        # bounded set of paths in practice, so per-path ``_Slot`` accumulation
+        # is small; explicit ``limiter.forget()`` calls at genuine entity
+        # teardown are added by downstream PRs that introduce unbounded entity
+        # families (AIS targets).
 
         await mq.publish(
             availability_topic(base_topic), payload=b"online", qos=1, retain=True
