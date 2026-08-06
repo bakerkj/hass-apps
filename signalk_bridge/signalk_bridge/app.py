@@ -814,6 +814,27 @@ async def _run(
     while not stop.is_set():
         started = asyncio.get_running_loop().time()
 
+        # Auth recovery path: if a prior tick nulled the token after a
+        # SignalKAuthError, re-run the request-and-approve handshake before
+        # anything else. Also tear down the (now-stale-token) WS subscriber
+        # so it reconnects with the refreshed token -- the WSSubscriber
+        # captures token at construction, so a token change requires a new
+        # instance. Pre-async this refresh sat at the top of every poll
+        # cycle; keeping it here restores that behaviour.
+        if use_access_flow and not token:
+            token = await _obtain_token(session, stop, base_url, data_dir)
+            opts_summary["token"] = token
+            if token is None:
+                continue
+            if subscriber_holder["ws"] is not None:
+                await subscriber_holder["ws"].stop()
+                subscriber_holder["ws"] = None
+            new_sub2 = WSSubscriber(base_url, token=token)
+            new_sub2.bootstrap(await sub.snapshot())
+            await new_sub2.start()
+            subscriber_holder["ws"] = new_sub2
+            sub = new_sub2
+
         # /sources still comes over REST -- it's a large payload that turns
         # over slowly, so no point streaming it. Refresh ~once a minute.
         if cycle % sources_every == 0:
@@ -890,12 +911,17 @@ async def _run(
                     ent["name"],
                     ent["group_label"],
                 )
+            # BusStats entities carry no SK path (they're derived from /sources
+            # counters, not tree leaves), so fall back to the entity key as the
+            # rate-limiter's slot id -- otherwise this crashes on every tick
+            # once can0 is present.
+            limit_key = ent.get("path") or key
             value = ent.get("state")
             if value is not None:
                 sv = str(value)
                 # Rate-limit by SK path so multi-source fanouts and derived
                 # entities share the config's per-pattern overrides correctly.
-                approved = limiter.offer(ent["path"], sv, now_mono)
+                approved = limiter.offer(limit_key, sv, now_mono)
                 if approved is not None and last_state.get(key) != approved:
                     await mq.publish(
                         state_topic(base_topic, key), payload=approved, qos=0
@@ -906,7 +932,7 @@ async def _run(
                 attrs_json = json.dumps(attrs)
                 # Attributes get the same limiter treatment, using a synthetic
                 # ".attrs" path so the two topics per entity aren't coupled.
-                approved_a = limiter.offer(ent["path"] + ".attrs", attrs_json, now_mono)
+                approved_a = limiter.offer(limit_key + ".attrs", attrs_json, now_mono)
                 if approved_a is not None and last_attrs.get(key) != approved_a:
                     await mq.publish(
                         attributes_topic(base_topic, key),
@@ -915,14 +941,14 @@ async def _run(
                     )
                     last_attrs[key] = approved_a
 
-        # Flush anything the limiter is holding whose window has now opened
-        # for a path that isn't in ``entities`` this tick (e.g., an entity
-        # dropped out of the resolver due to staleness -- rare, but the
-        # pending slot would otherwise leak).
-        for path, val in limiter.due(now_mono).items():
-            log.debug("Rate limiter flush for %s (no fresh offer this tick)", path)
-            # No entity to publish to; the slot has been drained by due().
-            _ = val
+        # NB: intentionally no ``limiter.due()`` sweep here. Any path that
+        # transiently dropped out of ``entities`` (rare -- staleness withhold,
+        # entity torn down) keeps its buffered value pending; the next tick
+        # offers a fresh value that supersedes it. Calling ``due()`` would
+        # discard the pending value while advancing ``last_publish_at``, which
+        # breaks the module's own latest-value-at-window-open guarantee. When
+        # an entity is actually torn down (AIS expire) we call
+        # ``limiter.forget()`` explicitly at that site.
 
         await mq.publish(
             availability_topic(base_topic), payload=b"online", qos=1, retain=True
