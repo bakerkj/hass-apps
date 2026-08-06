@@ -17,7 +17,20 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.14.5-r0 \
-      py3-paho-mqtt=1.6.1-r4
+      py3-aiohttp=3.13.5-r0 \
+      py3-websockets=16.0-r1 \
+      uv=0.11.19-r0
+
+# aiomqtt is not packaged in any Alpine branch, so it comes in via uv.
+# aiomqtt 2.x wraps paho-mqtt 2.x -- pin both explicitly for reproducibility
+# rather than letting the transitive-dep solver drift on rebuild.
+# --break-system-packages overrides Alpine's PEP 668 marker on /usr; this
+# container owns its whole Python install, so there is no system package
+# manager to fight with.
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install \
+      --system --no-cache --break-system-packages \
+      aiomqtt==2.5.1 \
+      paho-mqtt==2.1.0
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh

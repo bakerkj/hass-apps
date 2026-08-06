@@ -1,22 +1,25 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Minimal Signal K REST client.
+"""Minimal async Signal K REST client.
 
 Polls the full ``vessels/self`` tree rather than subscribing to the delta
-websocket. Polling is a deliberate simplification: marine instrument data is
-published to Home Assistant at a human timescale (seconds), a REST snapshot is
-inherently consistent, and there is no reconnect/backfill state machine to get
-wrong. If sub-second latency is ever needed, the websocket stream is the upgrade
-path.
+websocket. Polling is a deliberate simplification: a REST snapshot is
+inherently consistent, and there is no reconnect/backfill state machine to
+get wrong. The websocket stream is the upgrade path when sub-second latency
+is needed.
+
+Async because the bridge runs on asyncio: sync urllib in the poll loop would
+block the loop and stall aiomqtt heartbeats, MQTT deliveries, and any
+future concurrent subscription (e.g., the vessels.* delta stream).
 """
 
-import json
-import urllib.error
-import urllib.request
 from typing import Any
 
+import aiohttp
+
 SELF_PATH = "/signalk/v1/api/vessels/self"
+SOURCES_PATH = "/signalk/v1/api/sources"
 
 
 class SignalKError(Exception):
@@ -27,44 +30,47 @@ class SignalKAuthError(SignalKError):
     """Signal K rejected the request for lack of (valid) credentials (401/403)."""
 
 
-def _request(
+async def _request(
+    session: aiohttp.ClientSession,
     url: str,
     token: str | None = None,
     method: str = "GET",
     body: dict[str, Any] | None = None,
     timeout: float = 15.0,
 ) -> Any:
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    to = aiohttp.ClientTimeout(total=timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else None
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise SignalKAuthError(
-                f"{url} returned HTTP {exc.code} (unauthorized)"
-            ) from exc
-        raise SignalKError(f"{url} returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, OSError) as exc:
+        async with session.request(
+            method, url, json=body, headers=headers, timeout=to
+        ) as resp:
+            if resp.status in (401, 403):
+                raise SignalKAuthError(
+                    f"{url} returned HTTP {resp.status} (unauthorized)"
+                )
+            if resp.status >= 400:
+                raise SignalKError(f"{url} returned HTTP {resp.status}")
+            raw = await resp.read()
+            if not raw:
+                return None
+            try:
+                return await resp.json(content_type=None)
+            except (aiohttp.ContentTypeError, ValueError) as exc:
+                raise SignalKError(f"{url} returned invalid JSON: {exc}") from exc
+    except aiohttp.ClientError as exc:
         raise SignalKError(f"{url} unreachable: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise SignalKError(f"{url} returned invalid JSON: {exc}") from exc
 
 
-def _get(url: str, token: str | None, timeout: float) -> Any:
-    return _request(url, token=token, timeout=timeout)
-
-
-def get_self(
-    base_url: str, token: str | None = None, timeout: float = 15.0
+async def get_self(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    token: str | None = None,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Fetch the vessel's own Signal K tree."""
-    payload = _get(base_url.rstrip("/") + SELF_PATH, token, timeout)
+    payload = await _request(
+        session, base_url.rstrip("/") + SELF_PATH, token=token, timeout=timeout
+    )
     if not isinstance(payload, dict):
         raise SignalKError(
             f"{SELF_PATH} returned {type(payload).__name__}, expected object"
@@ -72,18 +78,24 @@ def get_self(
     return payload
 
 
-SOURCES_PATH = "/signalk/v1/api/sources"
-
-
-def get_sources(
-    base_url: str, token: str | None = None, timeout: float = 15.0
+async def get_sources(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    token: str | None = None,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Fetch the source (device) inventory -- one entry per bus device."""
-    payload = _get(base_url.rstrip("/") + SOURCES_PATH, token, timeout)
+    payload = await _request(
+        session, base_url.rstrip("/") + SOURCES_PATH, token=token, timeout=timeout
+    )
     return payload if isinstance(payload, dict) else {}
 
 
-def get_server_info(base_url: str, timeout: float = 10.0) -> dict[str, Any]:
+async def get_server_info(
+    session: aiohttp.ClientSession, base_url: str, timeout: float = 10.0
+) -> dict[str, Any]:
     """Fetch ``/signalk`` -- unauthenticated, so it doubles as a reachability probe."""
-    payload = _get(base_url.rstrip("/") + "/signalk", None, timeout)
+    payload = await _request(
+        session, base_url.rstrip("/") + "/signalk", token=None, timeout=timeout
+    )
     return payload if isinstance(payload, dict) else {}

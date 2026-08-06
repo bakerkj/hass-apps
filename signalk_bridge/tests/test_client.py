@@ -6,11 +6,13 @@
 
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 
+import aiohttp
 import pytest
+import pytest_asyncio
 
 from signalk_bridge import client
 
@@ -59,74 +61,108 @@ def sk_server() -> Iterator[
         thread.join(timeout=5)
 
 
-def test_get_self_returns_tree(sk_server: Any) -> None:
+@pytest_asyncio.fixture
+async def session() -> AsyncIterator[aiohttp.ClientSession]:
+    async with aiohttp.ClientSession() as s:
+        yield s
+
+
+@pytest.mark.asyncio
+async def test_get_self_returns_tree(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/vessels/self"] = (
         200,
         {"navigation": {"x": {"value": 1.0}}},
     )
-    assert client.get_self(base, "tok")["navigation"]["x"]["value"] == 1.0
+    tree = await client.get_self(session, base, "tok")
+    assert tree["navigation"]["x"]["value"] == 1.0
 
 
-def test_get_self_401_raises_auth(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_self_401_raises_auth(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/vessels/self"] = (401, {"error": "no"})
     with pytest.raises(client.SignalKAuthError):
-        client.get_self(base, None)
+        await client.get_self(session, base, None)
 
 
-def test_get_self_403_raises_auth(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_self_403_raises_auth(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/vessels/self"] = (403, None)
     with pytest.raises(client.SignalKAuthError):
-        client.get_self(base, None)
+        await client.get_self(session, base, None)
 
 
-def test_get_self_500_is_generic_not_auth(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_self_500_is_generic_not_auth(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/vessels/self"] = (500, None)
     with pytest.raises(client.SignalKError) as ei:
-        client.get_self(base, None)
+        await client.get_self(session, base, None)
     assert not isinstance(ei.value, client.SignalKAuthError)
 
 
-def test_get_self_non_object_raises(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_self_non_object_raises(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/vessels/self"] = (200, [1, 2, 3])
     with pytest.raises(client.SignalKError):
-        client.get_self(base, None)
+        await client.get_self(session, base, None)
 
 
-def test_get_self_unreachable_raises() -> None:
+@pytest.mark.asyncio
+async def test_get_self_unreachable_raises(session: aiohttp.ClientSession) -> None:
     with pytest.raises(client.SignalKError):
-        client.get_self("http://127.0.0.1:1", None, timeout=0.5)
+        await client.get_self(session, "http://127.0.0.1:1", None, timeout=0.5)
 
 
-def test_get_sources_ok_then_nonobject(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_sources_ok_then_nonobject(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, _ = sk_server
     routes["/signalk/v1/api/sources"] = (200, {"n2k-can0": {}})
-    assert client.get_sources(base, "t") == {"n2k-can0": {}}
+    assert await client.get_sources(session, base, "t") == {"n2k-can0": {}}
     routes["/signalk/v1/api/sources"] = (200, [1])  # non-dict degrades to {}
-    assert client.get_sources(base, "t") == {}
+    assert await client.get_sources(session, base, "t") == {}
 
 
-def test_get_server_info(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_get_server_info(sk_server: Any, session: aiohttp.ClientSession) -> None:
     base, routes, _ = sk_server
     routes["/signalk"] = (200, {"server": {"version": "9.9"}})
-    assert client.get_server_info(base)["server"]["version"] == "9.9"
+    info = await client.get_server_info(session, base)
+    assert info["server"]["version"] == "9.9"
 
 
-def test_bearer_token_sent(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_bearer_token_sent(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, captured = sk_server
     routes["/signalk/v1/api/vessels/self"] = (200, {})
-    client.get_self(base, "secret-token")
+    await client.get_self(session, base, "secret-token")
     auths = [a for p, a in captured if p.startswith("/signalk/v1/api/vessels/self")]
     assert auths == ["Bearer secret-token"]
 
 
-def test_server_info_sends_no_auth(sk_server: Any) -> None:
+@pytest.mark.asyncio
+async def test_server_info_sends_no_auth(
+    sk_server: Any, session: aiohttp.ClientSession
+) -> None:
     base, routes, captured = sk_server
     routes["/signalk"] = (200, {})
-    client.get_server_info(base)
+    await client.get_server_info(session, base)
     auths = [a for p, a in captured if p == "/signalk"]
     assert auths == [None]

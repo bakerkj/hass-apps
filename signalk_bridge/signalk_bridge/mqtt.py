@@ -1,12 +1,31 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""MQTT discovery publishing for Signal K derived entities."""
+"""MQTT discovery publishing for Signal K derived entities.
+
+Publishes are async against an ``aiomqtt.Client``: the whole bridge runs on
+a single event loop, so any sync send would stall the loop and choke both
+the SK poller/subscriber and MQTT keepalives.
+"""
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
-import paho.mqtt.client as mqtt
+
+class _Publisher(Protocol):
+    """Anything with an awaitable ``publish(topic, payload=..., qos=..., retain=...)``.
+
+    Kept as a Protocol so tests can plug in a recording stub without pulling
+    aiomqtt into their imports.
+    """
+
+    async def publish(
+        self,
+        topic: str,
+        payload: bytes | str = "",
+        qos: int = 0,
+        retain: bool = False,
+    ) -> Any: ...
 
 
 def availability_topic(base_topic: str) -> str:
@@ -36,8 +55,8 @@ def _device_block(group_id: str, group_label: str) -> dict[str, Any]:
     }
 
 
-def publish_discovery(
-    client: mqtt.Client,
+async def publish_discovery(
+    client: _Publisher,
     discovery_prefix: str,
     base_topic: str,
     key: str,
@@ -84,9 +103,9 @@ def publish_discovery(
         if entity.get(src) is not None:
             payload[dst] = entity[src]
 
-    client.publish(
+    await client.publish(
         f"{discovery_prefix}/{component}/signalk/{key}/config",
-        json.dumps(payload),
+        payload=json.dumps(payload),
         qos=1,
         retain=True,
     )
