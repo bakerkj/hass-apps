@@ -5,9 +5,11 @@
 
 import argparse
 import json
+import queue
 import re
 import signal
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -23,6 +25,36 @@ from .mqtt import (
 )
 from .parser import TurbostatParser, start_turbostat
 from .util import log, sanitize_key
+
+# Upper bound on how long a pending signal handler waits for the main thread.
+_READ_POLL_SECONDS = 0.25
+
+# Pushed by the reader once its stream ends, so the loop sees EOF as an event
+# rather than by blocking on a read that will never return.
+_EOF = None
+
+
+def _start_reader(
+    proc: subprocess.Popen, out: queue.Queue[str | None]
+) -> threading.Thread:
+    """Drain turbostat's stdout on its own thread.
+
+    The main thread must not park in readline(): Python runs signal handlers
+    only there and only between bytecodes, so a signal arriving as the read
+    enters the kernel leaves no EINTR to wake it and is lost, not delayed.
+    """
+
+    def run() -> None:
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    out.put(line)
+        finally:
+            out.put(_EOF)
+
+    t = threading.Thread(target=run, daemon=True, name="turbostat-reader")
+    t.start()
+    return t
 
 
 def main() -> int:
@@ -158,6 +190,7 @@ def main() -> int:
     client.on_message = on_message
 
     proc: subprocess.Popen | None = None
+    lines: queue.Queue[str | None] = queue.Queue()
 
     try:
         parser = TurbostatParser()
@@ -167,7 +200,7 @@ def main() -> int:
         samples_since_turbostat_start = 0
 
         def restart_turbostat(reason: str) -> None:
-            nonlocal proc, last_sample_time, last_sample_monotonic
+            nonlocal proc, lines, last_sample_time, last_sample_monotonic
             nonlocal first_sample_time
             nonlocal last_turbostat_restart_attempt, turbostat_started_at
             nonlocal samples_since_turbostat_start
@@ -207,6 +240,10 @@ def main() -> int:
 
             try:
                 proc = start_turbostat(interval)
+                # Fresh queue per process: a reader still draining the old pipe
+                # cannot then inject a stale sample into the new one.
+                lines = queue.Queue()
+                _start_reader(proc, lines)
             except FileNotFoundError:
                 log(
                     "ERROR",
@@ -319,14 +356,21 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            line = proc.stdout.readline()
-            if not line:
+            try:
+                line = lines.get(timeout=_READ_POLL_SECONDS)
+            except queue.Empty:
+                # No sample this tick; go round so the heartbeat and watchdogs
+                # above still run and a pending signal handler gets its chance.
+                continue
+
+            if line is _EOF:
                 rc = proc.poll()
                 if rc is not None:
                     log("ERROR", f"turbostat exited rc={rc}", log_level)
-                    restart_turbostat("process_eof")
-                else:
-                    time.sleep(0.05)
+                # The stream is done either way -- with the reader gone no
+                # further line can arrive, so waiting on the pid would just
+                # stall until a watchdog fired.
+                restart_turbostat("process_eof")
                 continue
 
             parsed = parser.parse_line(line)
@@ -539,8 +583,13 @@ def main() -> int:
             pass
 
         try:
-            client.loop_stop()
+            # disconnect() first: loop_stop() joins the network thread, and
+            # loop_forever only ends on its own once _out_messages is empty --
+            # the retained "offline" above is qos=1, so an unresponsive broker
+            # leaves it in flight and the join never returns. disconnect() puts
+            # the client in DISCONNECTING, which ends the thread regardless.
             client.disconnect()
+            client.loop_stop()
         except Exception:  # noqa: BLE001, S110 shutdown best-effort
             pass
 
