@@ -37,11 +37,24 @@ def main() -> int:
             f"continuing as a plain pass-through",
             flush=True,
         )
+        # tee_only blocks the main thread in a plain read, so leaving our
+        # handlers installed would lose a signal exactly as _run did. The
+        # default disposition terminates in the kernel, with no dependence on
+        # the interpreter ever running again.
+        _restore_default_signal_handlers()
         try:
             tee_only()
         except Exception:  # noqa: BLE001,S110 stdout is gone; nothing left to try
             pass
         return 0
+
+
+def _restore_default_signal_handlers() -> None:
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+        except OSError, ValueError:
+            pass
 
 
 def _reconfigure_stdio() -> None:
