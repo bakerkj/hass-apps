@@ -13,6 +13,7 @@ import argparse
 import os
 import signal
 import sys
+import threading
 from types import FrameType
 
 from . import __version__
@@ -20,6 +21,9 @@ from . import config as config_mod
 from .parser import DirewolfParser
 from .publisher import Publisher
 from .util import log
+
+# Upper bound on how long a pending signal handler waits for the main thread.
+_SIGNAL_POLL_SECONDS = 0.25
 
 
 def main() -> int:
@@ -105,12 +109,34 @@ def _run() -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    # The tee runs off the main thread so the main thread never parks in a
+    # blocking read. Python runs handlers only between bytecodes on the main
+    # thread, and a signal landing just before read() enters the kernel leaves
+    # no EINTR to wake it -- the handler never runs and SIGTERM is lost, not
+    # delayed. Waiting with a timeout keeps returning to the interpreter.
+    finished = threading.Event()
+    failure: list[BaseException] = []
+
+    def drain() -> None:
+        try:
+            for line in sys.stdin:
+                # Tee first: the log must not depend on anything below succeeding.
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                pub.feed_observed(line)
+        except BaseException as e:  # noqa: BLE001 re-raised on the main thread
+            failure.append(e)
+        finally:
+            finished.set()
+
+    threading.Thread(target=drain, daemon=True, name="tee").start()
+
     try:
-        for line in sys.stdin:
-            # Tee first: the log must not depend on anything below succeeding.
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            pub.feed_observed(line)
+        while not finished.wait(_SIGNAL_POLL_SECONDS):
+            pass
+        if failure:
+            # Surfaced here so main()'s pass-through fallback still covers it.
+            raise failure[0]
     finally:
         # EOF path; the signal handler publishes its own farewell.
         pub.shutdown(farewell=True)
