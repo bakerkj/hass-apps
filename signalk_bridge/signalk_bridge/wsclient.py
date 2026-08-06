@@ -15,6 +15,7 @@ in one place: :func:`app.main_async` only starts / stops it and reads
 """
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -78,13 +79,27 @@ class WSSubscriber:
             self._task = asyncio.create_task(self._run(), name="signalk-ws")
 
     async def stop(self) -> None:
-        """Signal the reader to exit and await it."""
+        """Signal the reader to exit and await it.
+
+        The reader coroutine has a stop-race inside its recv loop so this
+        returns promptly (typically well under 1s) rather than eating the
+        full timeout on a quiet server. Any exception raised by the task
+        during teardown is swallowed -- the process is exiting and there
+        is nothing useful to do with it.
+        """
         self._stop.set()
-        if self._task is not None:
-            try:
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except TimeoutError, asyncio.CancelledError:
-                self._task.cancel()
+        if self._task is None:
+            return
+        try:
+            await asyncio.wait_for(self._task, timeout=5.0)
+        except TimeoutError:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reader errors on shutdown are moot
+            log.debug("WS reader exited with %r", exc)
 
     async def snapshot(self) -> dict[str, Any]:
         """Return a deep-copied snapshot of the current tree.
@@ -118,39 +133,66 @@ class WSSubscriber:
     async def _run(self) -> None:
         backoff = 1.0
         headers = [("Authorization", f"Bearer {self._token}")] if self._token else None
-        while not self._stop.is_set():
-            try:
-                async with websockets.connect(
-                    self._url,
-                    additional_headers=headers,
-                    ping_interval=30,
-                    ping_timeout=10,
-                    max_size=2**20,
-                ) as ws:
-                    log.info("Signal K WS connected: %s", self._url)
-                    backoff = 1.0
-                    async for raw in ws:
-                        if self._stop.is_set():
-                            break
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError as exc:
-                            log.debug("SK WS: bad JSON: %s", exc)
-                            continue
-                        await self._apply(msg)
-            except (websockets.exceptions.WebSocketException, OSError) as exc:
-                log.warning("Signal K WS: %s; reconnecting in %.1fs", exc, backoff)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Signal K WS: unexpected error; reconnecting")
-            # Backoff between reconnects, but wake early on stop so shutdown
-            # is prompt regardless of where in the schedule we are.
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-            except TimeoutError:
-                pass
-            backoff = min(backoff * 2, 30.0)
+        stop_task = asyncio.create_task(self._stop.wait(), name="signalk-ws-stop")
+        try:
+            while not self._stop.is_set():
+                try:
+                    async with websockets.connect(
+                        self._url,
+                        additional_headers=headers,
+                        ping_interval=30,
+                        ping_timeout=10,
+                        max_size=2**20,
+                    ) as ws:
+                        log.info("Signal K WS connected: %s", self._url)
+                        backoff = 1.0
+                        # Race each recv against ``stop`` so a quiet server
+                        # (test fixtures, real SK during a lull between
+                        # pings) can't hold shutdown for the ping window.
+                        # ``async for raw in ws:`` alone only checked stop
+                        # after each incoming frame.
+                        while not self._stop.is_set():
+                            recv_task = asyncio.create_task(
+                                ws.recv(), name="signalk-ws-recv"
+                            )
+                            done, _ = await asyncio.wait(
+                                {recv_task, stop_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if stop_task in done:
+                                recv_task.cancel()
+                                with contextlib.suppress(
+                                    asyncio.CancelledError, Exception
+                                ):
+                                    await recv_task
+                                break
+                            try:
+                                raw = recv_task.result()
+                            except websockets.exceptions.ConnectionClosed:
+                                break
+                            try:
+                                msg = json.loads(raw)
+                            except json.JSONDecodeError as exc:
+                                log.debug("SK WS: bad JSON: %s", exc)
+                                continue
+                            await self._apply(msg)
+                except (
+                    websockets.exceptions.WebSocketException,
+                    OSError,
+                ) as exc:
+                    log.warning("Signal K WS: %s; reconnecting in %.1fs", exc, backoff)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Signal K WS: unexpected error; reconnecting")
+                # Backoff between reconnects, but wake early on stop.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                backoff = min(backoff * 2, 30.0)
+        finally:
+            stop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
 
     async def _apply(self, msg: dict[str, Any]) -> None:
         """Fold one SK delta message into the tree.

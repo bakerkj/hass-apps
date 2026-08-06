@@ -946,9 +946,14 @@ async def _run(
             attrs = ent.get("attributes")
             if attrs is not None:
                 attrs_json = json.dumps(attrs)
-                # Attributes get the same limiter treatment, using a synthetic
-                # ".attrs" path so the two topics per entity aren't coupled.
-                approved_a = limiter.offer(limit_key + ".attrs", attrs_json, now_mono)
+                # Attributes get their own limiter slot -- ``\x00`` separator
+                # rather than ``.attrs`` so a hypothetical real SK leaf named
+                # ``foo.attrs`` (possible under ``publish_unmapped``) can't
+                # share a rate-limit bucket with foo's attributes. NUL is not
+                # legal in a SK path.
+                approved_a = limiter.offer(
+                    f"{limit_key}\x00attrs", attrs_json, now_mono
+                )
                 if approved_a is not None and last_attrs.get(key) != approved_a:
                     await mq.publish(
                         attributes_topic(base_topic, key),
