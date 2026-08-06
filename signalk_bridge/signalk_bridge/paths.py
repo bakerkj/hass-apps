@@ -761,6 +761,8 @@ GROUP_LABELS: dict[str, str] = {
     "steering": "Steering",
     "course": "Course",
     "system": "System",
+    "communication": "Communication",
+    "n2k": "N2K Fleet",
     "switches.bank": "Digital switches bank",
     "alarms": "Alarms",
     "n2k_bus": "NMEA 2000 Bus",
@@ -812,6 +814,13 @@ TEXT_MAP: dict[str, dict[str, Any]] = {
         "icon": "mdi:map-marker-path",
         "group": "course",
     },
+    # Own vessel's VHF callsign (static, but useful on the dashboard for
+    # quick reference and to confirm the DSC MMSI mapping is populated).
+    "communication.callsignVhf": {
+        "name": "VHF callsign",
+        "icon": "mdi:radio-handheld",
+        "group": "communication",
+    },
 }
 
 # Enum / free-text state on a wildcard (per-instance) path -> plain sensor,
@@ -851,10 +860,41 @@ POSITION_PATH = "navigation.position"
 NOTIFICATION_PREFIX = "notifications."
 _ALARM_CLEAR_STATES = {"normal", "nominal"}
 
+# Safety-critical notification paths -- DSC calls, MOB events, distress
+# relays -- get HA's ``safety`` device class so the mobile app / dashboards
+# escalate them prominently instead of the generic ``problem`` class every
+# other notification uses. Matched by path *prefix* (any leaf under one of
+# these branches counts) so canboatjs's exact per-call sub-path shape
+# (notifications.communications.dsc.<callid> vs notifications.dsc.<callid>)
+# is handled either way.
+SAFETY_NOTIFICATION_PREFIXES = (
+    "notifications.mob",
+    "notifications.dsc.",
+    "notifications.communications.dsc.",
+    "notifications.communication.dsc.",
+    "notifications.communications.mob",
+    "notifications.communication.mob",
+    "notifications.communications.distress",
+    "notifications.communication.distress",
+)
+
 
 def notification_is_active(value: Any) -> bool:
     state = value.get("state") if isinstance(value, dict) else None
     return bool(state) and str(state).lower() not in _ALARM_CLEAR_STATES
+
+
+def notification_device_class(path: str) -> str:
+    """HA device_class for a notification path -- ``safety`` for DSC/MOB/
+    distress, ``problem`` for everything else.
+
+    Prefix match handles both ``notifications.mob`` exactly and any leaf
+    beneath a listed prefix (e.g. ``notifications.dsc.<callId>``); the
+    tuple form is what ruff/PIE810 wants over chained startswith calls.
+    """
+    if path.startswith(SAFETY_NOTIFICATION_PREFIXES):
+        return "safety"
+    return "problem"
 
 
 def slugify(path: str) -> str:

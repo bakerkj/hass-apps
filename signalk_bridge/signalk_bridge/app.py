@@ -35,6 +35,7 @@ from .client import (
     get_server_info,
     get_sources,
 )
+from .health import health_entities as _fleet_health_entities
 from .mqtt import (
     attributes_topic,
     availability_topic,
@@ -228,6 +229,7 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
         SWITCH_PATTERN,
         TEXT_MAP,
         TEXT_PATTERN_MAP,
+        notification_device_class,
         notification_is_active,
     )
 
@@ -318,9 +320,13 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
             continue
 
-        # Notifications -> binary_sensor alarms.
+        # Notifications -> binary_sensor alarms. DSC/MOB/distress branches
+        # get device_class="safety" so HA (and the mobile app) escalate
+        # them prominently; everything else keeps the generic "problem".
         if path.startswith(NOTIFICATION_PREFIX) and isinstance(raw, dict):
             name = str(raw.get("message") or path.split(".")[-1])
+            dc = notification_device_class(path)
+            icon = "mdi:alert-octagon" if dc == "safety" else "mdi:alarm-light"
             entities[key] = _entity(
                 path,
                 name,
@@ -328,8 +334,8 @@ def _special_from_flat(flat: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "alarms",
                 "Alarms",
                 component="binary_sensor",
-                device_class="problem",
-                icon="mdi:alarm-light",
+                device_class=dc,
+                icon=icon,
             )
             continue
 
@@ -717,6 +723,66 @@ async def _obtain_token(
     return None
 
 
+_AIS_CONFIG_TOPIC_PATTERN = "device_tracker/signalk/ais_"
+
+
+async def _reap_ais_orphans(
+    mq: aiomqtt.Client,
+    discovery_prefix: str,
+    window_seconds: float,
+    stop: asyncio.Event,
+) -> set[str]:
+    """Consume retained AIS discovery-config messages for ``window_seconds``
+    and return the MMSIs HA still remembers.
+
+    Subscribes to the AIS-only wildcard so we don't intercept unrelated
+    discovery messages the broker may be replaying. Returns early if
+    ``stop`` fires. Non-retained messages arriving mid-window (e.g. our
+    own fresh publishes racing the reap) are ignored -- only retained
+    messages represent HA's persistent memory.
+    """
+    topic = f"{discovery_prefix}/{_AIS_CONFIG_TOPIC_PATTERN}+/config"
+    observed: set[str] = set()
+    await mq.subscribe(topic, qos=1)
+    log.info("AIS reap: watching %s for %.1fs", topic, window_seconds)
+    deadline = asyncio.get_running_loop().time() + window_seconds
+    try:
+        while not stop.is_set():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                msg = await asyncio.wait_for(mq.messages.__anext__(), timeout=remaining)
+            except TimeoutError, StopAsyncIteration:
+                break
+            # Only retained payloads carry HA's persistent state. Fresh
+            # publishes (retain=False in our own path) don't count.
+            if not getattr(msg, "retain", False):
+                continue
+            t = str(msg.topic)
+            # Extract MMSI from .../device_tracker/signalk/ais_<mmsi>/config
+            marker = f"/{_AIS_CONFIG_TOPIC_PATTERN}"
+            i = t.find(marker)
+            if i < 0:
+                continue
+            rest = t[i + len(marker) :]
+            if not rest.endswith("/config"):
+                continue
+            mmsi_slug = rest[: -len("/config")]
+            # Filter out our synthetic inventory sensor which also matches
+            # the ais_+ pattern width. Only true MMSI slugs (digits + _)
+            # count; inventory ends in "inventory".
+            if mmsi_slug and mmsi_slug != "inventory":
+                observed.add(mmsi_slug)
+    finally:
+        try:
+            await mq.unsubscribe(topic)
+        except Exception as exc:  # noqa: BLE001 - unsubscribe failure isn't fatal
+            log.debug("AIS reap: unsubscribe failed (non-fatal): %s", exc)
+    log.info("AIS reap: observed %d retained tracker(s) in HA", len(observed))
+    return observed
+
+
 async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
     """Sleep for ``seconds`` unless ``stop`` is set. Returns as soon as either
     happens. Used everywhere the poll loop would sleep so shutdown is prompt."""
@@ -834,6 +900,42 @@ async def _run(
     if sub is None:
         return  # shutdown happened during bootstrap
 
+    # Cold-start reap: HA holds retained MQTT discovery messages for AIS
+    # trackers we registered in a prior process lifetime. If any of those
+    # MMSIs aren't in the current registry after a reap window (crash mid-
+    # run, config rename, target permanently gone), publish empty-retained
+    # to their config + attrs topics so HA unregisters them cleanly.
+    # Runs once per process (guarded by opts_summary["reap_done"]).
+    if ais_enabled and not opts_summary.get("reap_done"):
+        reap_seconds = float(opts_summary.get("reap_window_seconds") or 15.0)
+        try:
+            observed = await _reap_ais_orphans(mq, discovery_prefix, reap_seconds, stop)
+        except Exception:
+            log.exception("Cold-start AIS orphan reap failed; continuing")
+            observed = set()
+        # Anything HA still remembers but our registry hasn't populated
+        # is an orphan. We *want* to give the WS a moment to bring live
+        # targets back in first, so this only clears what's still absent
+        # after the reap window (which is >>> a WS reconnect).
+        live = set(ais_registry.mmsis()) if ais_registry is not None else set()
+        orphans = observed - live
+        for mmsi in sorted(orphans):
+            key = f"ais_{slugify(mmsi)}"
+            await mq.publish(
+                f"{discovery_prefix}/device_tracker/signalk/{key}/config",
+                payload=b"",
+                qos=1,
+                retain=True,
+            )
+            await mq.publish(
+                attributes_topic(base_topic, key),
+                payload=b"",
+                qos=1,
+                retain=True,
+            )
+            log.info("Reaped orphan AIS tracker %s (not seen this session)", mmsi)
+        opts_summary["reap_done"] = True
+
     while not stop.is_set():
         started = asyncio.get_running_loop().time()
 
@@ -913,6 +1015,17 @@ async def _run(
                 bus_entities = bus.sample(sources_cache)
             except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon
                 log.debug("bus stats sample failed: %s", exc)
+
+        health_ents: dict[str, dict[str, Any]] = {}
+        if opts_summary["fleet_health_enabled"]:
+            try:
+                health_ents = _fleet_health_entities(
+                    sources_cache,
+                    datetime.now(UTC),
+                    opts_summary["fleet_health_stale_seconds"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("fleet health resolver failed: %s", exc)
         cycle += 1
         if tracker is not None and cycle % save_every == 0:
             tracker.save(datetime.now(UTC))
@@ -939,7 +1052,7 @@ async def _run(
             ais_entities = ais_registry.entities()
             ais_entities["ais_inventory"] = ais_registry.inventory_entity()
 
-        entities = {**data_entities, **bus_entities, **ais_entities}
+        entities = {**data_entities, **bus_entities, **health_ents, **ais_entities}
         now_mono = asyncio.get_running_loop().time()
 
         # Cleanup for expired AIS targets: empty-retained on discovery +
@@ -1161,6 +1274,10 @@ async def main_async(opts_path: str) -> int:
         "subscriber": subscriber_holder,
         "ais_enabled": ais_enabled,
         "ais_registry": ais_registry,
+        "reap_done": False,
+        "reap_window_seconds": float(opts.get("ais_reap_window_seconds") or 15.0),
+        "fleet_health_enabled": bool(opts.get("fleet_health_enabled", True)),
+        "fleet_health_stale_seconds": int(opts.get("fleet_health_stale_seconds") or 90),
     }
 
     async with aiohttp.ClientSession() as session:

@@ -41,7 +41,10 @@
     "ais_enabled": false,
     "ais_expire_seconds": 900,
     "ais_max_targets": 200,
-    "ais_always_retain": []
+    "ais_always_retain": [],
+    "ais_reap_window_seconds": 15.0,
+    "fleet_health_enabled": true,
+    "fleet_health_stale_seconds": 90
   },
   "schema": {
     "signalk_url": "str",
@@ -72,7 +75,10 @@
     "ais_max_targets": "int(10,2000)",
     "ais_always_retain": [
       "str"
-    ]
+    ],
+    "ais_reap_window_seconds": "float(1,120)",
+    "fleet_health_enabled": "bool",
+    "fleet_health_stale_seconds": "int(10,3600)"
   },
   "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
 }
