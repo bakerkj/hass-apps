@@ -79,7 +79,11 @@ class AISRegistry:
     # ---- ingest ----------------------------------------------------------
 
     def ingest(
-        self, ais_snapshot: dict[str, dict[str, Any]], now_monotonic: float
+        self,
+        ais_snapshot: dict[str, dict[str, Any]],
+        now_monotonic: float,
+        *,
+        dirty: set[str] | None = None,
     ) -> None:
         """Fold a snapshot of ``{mmsi: sk_tree}`` into the registry.
 
@@ -88,10 +92,20 @@ class AISRegistry:
         AIS actually publishes are read; anything unknown is ignored so a
         SK schema change or a plugin adding a novel path is silent, not an
         exception.
+
+        ``dirty`` is the set of MMSIs that got a delta since the last tick
+        (from :meth:`WSSubscriber.take_dirty_ais`). Only MMSIs in this set
+        have their ``last_delta_monotonic`` clock refreshed -- otherwise
+        every silent target's clock would be re-zeroed every tick just by
+        being present in the snapshot, and :meth:`expire` would never fire.
+        If ``dirty`` is None, every MMSI in the snapshot is treated as
+        fresh (compat with unit-test callers that pass just the target
+        under test).
         """
         for mmsi, tree in ais_snapshot.items():
             t = self._targets.get(mmsi) or _Target(mmsi=mmsi)
-            t.last_delta_monotonic = now_monotonic
+            if dirty is None or mmsi in dirty:
+                t.last_delta_monotonic = now_monotonic
             self._read_position(tree, t)
             self._read_static(tree, t)
             self._targets[mmsi] = t

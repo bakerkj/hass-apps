@@ -925,7 +925,14 @@ async def _run(
         expired_mmsis: list[str] = []
         if ais_enabled and ais_registry is not None:
             ais_snap = await sub.ais_snapshot()
-            ais_registry.ingest(ais_snap, asyncio.get_running_loop().time())
+            # Only bump last_delta_monotonic for MMSIs that got a fresh
+            # delta this tick; otherwise expire() would never fire because
+            # every silent target's clock would be re-zeroed just by being
+            # in the snapshot.
+            ais_dirty = await sub.take_dirty_ais()
+            ais_registry.ingest(
+                ais_snap, asyncio.get_running_loop().time(), dirty=ais_dirty
+            )
             expired_mmsis = ais_registry.expire(asyncio.get_running_loop().time())
             for mmsi in expired_mmsis:
                 sub.forget_ais(mmsi)

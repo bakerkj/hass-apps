@@ -31,15 +31,13 @@ _STREAM_PATH_SELF = "/signalk/v1/stream?subscribe=self"
 _STREAM_PATH_ALL = "/signalk/v1/stream?subscribe=all"
 
 _MMSI_PREFIX = "vessels.urn:mrn:imo:mmsi:"
-_ATOM_PREFIX = "atoms."
 
 
 def _ws_url(base_url: str, *, include_ais: bool = False) -> str:
     """HTTP(S) SK base URL → matching WS(S) stream URL.
 
     ``include_ais`` widens the subscription from ``vessels.self`` to every
-    context SK is publishing, so AIS targets and atoms (AtoNs / MetHydro /
-    base stations) flow to the same reader.
+    context SK is publishing, so AIS targets flow to the same reader.
     """
     path = _STREAM_PATH_ALL if include_ais else _STREAM_PATH_SELF
     if base_url.startswith("https://"):
@@ -73,8 +71,6 @@ class WSSubscriber:
         # same shape as ``_tree`` so the existing flatten/resolve pipeline
         # can be reused per target.
         self._ais: dict[str, dict[str, Any]] = {}
-        # Atoms (AtoNs, MetHydro, base stations) keyed by SK id fragment.
-        self._atoms: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -287,10 +283,12 @@ class WSSubscriber:
     ) -> tuple[dict[str, Any] | None, set[str] | None, str | None]:
         """Pick the destination tree + dirty tracker for a delta context.
 
-        Returns ``(tree, dirty_set, dirty_key)`` where ``dirty_key`` is a
-        per-target key (MMSI, atom id) for the multi-target stores, or
-        ``None`` for the self tree (which uses per-path dirty). Returns
-        ``(None, None, None)`` for contexts we don't accept.
+        Returns ``(tree, dirty_set, dirty_key)`` where ``dirty_key`` is the
+        MMSI for AIS contexts, or ``None`` for the self tree (which uses
+        per-path dirty). Returns ``(None, None, None)`` for contexts we
+        don't accept -- atoms.* (AtoNs / MetHydro / base stations) fall
+        through here because nothing consumes them yet; adding them back
+        needs a dedicated store with expiry, like ``_ais``.
         """
         if context in (None, "vessels.self"):
             return self._tree, self._dirty, None
@@ -302,14 +300,6 @@ class WSSubscriber:
                 return None, None, None
             tree = self._ais.setdefault(mmsi, {})
             return tree, self._dirty_ais, mmsi
-        if context.startswith(_ATOM_PREFIX):
-            atom_id = context[len(_ATOM_PREFIX) :]
-            if not atom_id:
-                return None, None, None
-            tree = self._atoms.setdefault(atom_id, {})
-            # Atoms share the AIS dirty set for now -- consumers filter by
-            # whether the key exists in _ais vs _atoms.
-            return tree, self._dirty_ais, atom_id
         return None, None, None
 
     def forget_ais(self, mmsi: str) -> None:

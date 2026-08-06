@@ -166,6 +166,34 @@ def test_reingesting_a_target_refreshes_last_seen() -> None:
     assert e["attributes"]["latitude"] == 42.1
 
 
+def test_silent_target_expires_when_dirty_set_omits_it() -> None:
+    """The production callsite in app.py always passes the full accumulated
+    ais_snapshot every tick (that's the only thing WSSubscriber exposes),
+    but only MMSIs in ``dirty`` actually saw a delta. Without threading the
+    dirty set through, a silent target's clock would be re-zeroed every
+    tick just by being in the snapshot -- and expire() would never fire.
+    """
+    reg = AISRegistry(expire_seconds=60)
+    # Tick 1: fresh delta arrives; MMSI is in dirty set.
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0)},
+        now_monotonic=100.0,
+        dirty={"367674550"},
+    )
+    # Tick 2: target went silent; snapshot still contains it (WSSubscriber
+    # never prunes on its own) but the dirty set is empty. Clock must NOT
+    # advance for this MMSI.
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0)},
+        now_monotonic=130.0,
+        dirty=set(),
+    )
+    # Past the 60s window -- should expire even though ingest kept seeing
+    # the target every tick.
+    dropped = reg.expire(now_monotonic=200.0)
+    assert dropped == ["367674550"]
+
+
 def test_sticky_flag_reflected_in_attributes() -> None:
     reg = AISRegistry(expire_seconds=900, always_retain=frozenset({"367674550"}))
     reg.ingest(
