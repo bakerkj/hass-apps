@@ -13,6 +13,7 @@ sync -- it's microseconds and adding coroutines around it would only add noise.
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -988,32 +989,31 @@ async def main_async(opts_path: str) -> int:
                         keepalive=60,
                     ) as mq:
                         await _run(session, mq, stop, opts_summary)
+                        # Clean shutdown: publish ``offline`` on the LIVE
+                        # session before ``async with`` sends the DISCONNECT.
+                        # A clean DISCONNECT suppresses the LWT, so without
+                        # this HA would keep seeing the last "online" retained
+                        # from the poll loop. Bounded so a slow broker on the
+                        # way out doesn't hang shutdown -- LWT covers a hard
+                        # drop if this fails.
+                        if stop.is_set():
+                            with contextlib.suppress(aiomqtt.MqttError, TimeoutError):
+                                await asyncio.wait_for(
+                                    mq.publish(
+                                        availability_topic(base_topic),
+                                        payload=b"offline",
+                                        qos=1,
+                                        retain=True,
+                                    ),
+                                    timeout=1.5,
+                                )
                 except aiomqtt.MqttError as exc:
                     log.warning("MQTT: %s; reconnecting in 3s", exc)
                     await _wait_or_stop(stop, 3)
         finally:
-            log.info("Publishing offline availability and disconnecting")
+            log.info("Shutting down")
             if tracker is not None:
                 tracker.save(datetime.now(UTC))
-            # Best-effort farewell on a fresh, short-lived connection: the
-            # session above may already be torn down by the exception path.
-            try:
-                async with aiomqtt.Client(
-                    hostname=mqtt_cfg["host"],
-                    port=mqtt_cfg["port"],
-                    username=mqtt_cfg["username"],
-                    password=mqtt_cfg["password"],
-                    identifier=f"{client_id}-shutdown",
-                    timeout=1.5,
-                ) as mq:
-                    await mq.publish(
-                        availability_topic(base_topic),
-                        payload=b"offline",
-                        qos=1,
-                        retain=True,
-                    )
-            except Exception as exc:  # noqa: BLE001 - best effort on the way out
-                log.debug("Error during MQTT shutdown publish: %s", exc)
 
     return 0
 
