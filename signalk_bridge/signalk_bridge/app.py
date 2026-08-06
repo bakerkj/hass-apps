@@ -26,6 +26,7 @@ import aiohttp
 import aiomqtt
 
 from . import __version__, auth, paths, staleness
+from .ais import AISRegistry
 from .busstats import BusStats
 from .client import (
     SignalKAuthError,
@@ -726,17 +727,21 @@ async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
 
 
 async def _start_new_subscriber(
-    base_url: str, token: str | None, seed_tree: dict[str, Any]
+    base_url: str,
+    token: str | None,
+    seed_tree: dict[str, Any],
+    *,
+    include_ais: bool = False,
 ) -> WSSubscriber:
     """Build, seed, and start a fresh WSSubscriber.
 
     Kept as a helper so bootstrap and post-token-refresh both go through one
     construction path -- a change to WSSubscriber's construction (headers,
-    timeouts, ping cadence) only has one place to update. The seed tree is
-    the initial ``vessels/self`` mirror (a REST snapshot at bootstrap, the
-    previous subscriber's snapshot at token-refresh).
+    timeouts, ping cadence, subscription width) only has one place to update.
+    The seed tree is the initial ``vessels/self`` mirror (a REST snapshot at
+    bootstrap, the previous subscriber's snapshot at token-refresh).
     """
-    new_sub = WSSubscriber(base_url, token=token)
+    new_sub = WSSubscriber(base_url, token=token, include_ais=include_ais)
     new_sub.bootstrap(seed_tree)
     await new_sub.start()
     return new_sub
@@ -779,6 +784,8 @@ async def _run(
     last_state: dict[str, str] = opts_summary["last_state"]
     last_attrs: dict[str, str] = opts_summary["last_attrs"]
     subscriber_holder: dict[str, WSSubscriber | None] = opts_summary["subscriber"]
+    ais_enabled: bool = opts_summary["ais_enabled"]
+    ais_registry: AISRegistry | None = opts_summary["ais_registry"]
 
     token: str | None = opts_summary.get("token")
     sources_cache: dict[str, Any] = {}
@@ -820,7 +827,7 @@ async def _run(
         if stop.is_set():
             return
         subscriber_holder["ws"] = await _start_new_subscriber(
-            base_url, token, bootstrap_tree
+            base_url, token, bootstrap_tree, include_ais=ais_enabled
         )
 
     sub = subscriber_holder["ws"]
@@ -848,7 +855,9 @@ async def _run(
                 subscriber_holder["ws"] = None
             else:
                 seed = {}
-            sub = await _start_new_subscriber(base_url, token, seed)
+            sub = await _start_new_subscriber(
+                base_url, token, seed, include_ais=ais_enabled
+            )
             subscriber_holder["ws"] = sub
 
         # /sources still comes over REST -- it's a large payload that turns
@@ -908,8 +917,49 @@ async def _run(
         if tracker is not None and cycle % save_every == 0:
             tracker.save(datetime.now(UTC))
 
-        entities = {**data_entities, **bus_entities}
+        # AIS: ingest the per-MMSI trees, expire stale targets (cleanup
+        # publishes happen below), and merge live targets + inventory sensor
+        # into the shared entity dict so they flow through the same publish +
+        # rate-limit pipeline as everything else.
+        ais_entities: dict[str, dict[str, Any]] = {}
+        expired_mmsis: list[str] = []
+        if ais_enabled and ais_registry is not None:
+            ais_snap = await sub.ais_snapshot()
+            ais_registry.ingest(ais_snap, asyncio.get_running_loop().time())
+            expired_mmsis = ais_registry.expire(asyncio.get_running_loop().time())
+            for mmsi in expired_mmsis:
+                sub.forget_ais(mmsi)
+            ais_entities = ais_registry.entities()
+            ais_entities["ais_inventory"] = ais_registry.inventory_entity()
+
+        entities = {**data_entities, **bus_entities, **ais_entities}
         now_mono = asyncio.get_running_loop().time()
+
+        # Cleanup for expired AIS targets: empty-retained on discovery +
+        # attributes topics so HA unregisters the entity cleanly. Ghost dots
+        # on the map are the failure mode this prevents.
+        for mmsi in expired_mmsis:
+            expired_key = f"ais_{slugify(mmsi)}"
+            if expired_key not in announced:
+                continue
+            await mq.publish(
+                f"{discovery_prefix}/device_tracker/signalk/{expired_key}/config",
+                payload=b"",
+                qos=1,
+                retain=True,
+            )
+            await mq.publish(
+                attributes_topic(base_topic, expired_key),
+                payload=b"",
+                qos=1,
+                retain=True,
+            )
+            announced.discard(expired_key)
+            last_state.pop(expired_key, None)
+            last_attrs.pop(expired_key, None)
+            limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position")
+            limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position.attrs")
+            log.info("Unregistered expired AIS target %s", mmsi)
 
         for key, ent in entities.items():
             if key not in announced:
@@ -1023,6 +1073,25 @@ async def main_async(opts_path: str) -> int:
         default_interval=publish_min_interval,
         overrides=build_overrides(raw_overrides),
     )
+    ais_enabled = bool(opts.get("ais_enabled"))
+    ais_expire_seconds = float(opts.get("ais_expire_seconds") or 900)
+    ais_max_targets = int(opts.get("ais_max_targets") or 200)
+    raw_retain = opts.get("ais_always_retain") or []
+    if not isinstance(raw_retain, list):
+        raw_retain = []
+    ais_registry: AISRegistry | None = None
+    if ais_enabled:
+        ais_registry = AISRegistry(
+            expire_seconds=ais_expire_seconds,
+            max_targets=ais_max_targets,
+            always_retain=frozenset(str(m) for m in raw_retain if isinstance(m, str)),
+        )
+        log.info(
+            "AIS on: expire=%ss, max=%d, sticky=%d",
+            int(ais_expire_seconds),
+            ais_max_targets,
+            len(ais_registry.always_retain),
+        )
 
     try:
         mqtt_cfg = resolve_mqtt_config(opts)
@@ -1083,6 +1152,8 @@ async def main_async(opts_path: str) -> int:
         "last_state": last_state,
         "last_attrs": last_attrs,
         "subscriber": subscriber_holder,
+        "ais_enabled": ais_enabled,
+        "ais_registry": ais_registry,
     }
 
     async with aiohttp.ClientSession() as session:

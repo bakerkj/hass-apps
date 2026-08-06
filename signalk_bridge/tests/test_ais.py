@@ -1,0 +1,180 @@
+# Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
+# All rights reserved.
+
+"""Tests for the AIS target registry."""
+
+from typing import Any
+
+from signalk_bridge.ais import AISRegistry
+
+
+def _sk_target(
+    lat: float | None = None,
+    lon: float | None = None,
+    name: str | None = None,
+    sog: float | None = None,
+    ship_type: Any = None,
+) -> dict[str, Any]:
+    """Build a Signal K-shaped per-context tree for one AIS target."""
+    tree: dict[str, Any] = {}
+    if lat is not None and lon is not None:
+        tree["navigation"] = {
+            "position": {
+                "value": {"latitude": lat, "longitude": lon},
+                "timestamp": "2026-08-05T04:00:00.000Z",
+            }
+        }
+    if sog is not None:
+        tree.setdefault("navigation", {})["speedOverGround"] = {"value": sog}
+    if name is not None:
+        tree["name"] = {"value": name}
+    if ship_type is not None:
+        tree["design"] = {"aisShipType": {"value": {"id": 60, "name": ship_type}}}
+    return tree
+
+
+def test_ingest_produces_device_tracker_entity() -> None:
+    reg = AISRegistry(expire_seconds=900)
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0, name="TESTVSL")},
+        now_monotonic=100.0,
+    )
+    ents = reg.entities()
+    assert "ais_367674550" in ents
+    e = ents["ais_367674550"]
+    assert e["component"] == "device_tracker"
+    assert e["name"] == "TESTVSL"
+    assert e["attributes"]["latitude"] == 42.0
+    assert e["attributes"]["longitude"] == -71.0
+    assert e["attributes"]["mmsi"] == "367674550"
+
+
+def test_target_without_position_is_not_rendered() -> None:
+    reg = AISRegistry(expire_seconds=900)
+    # Static-only delta (rare in the wild, but SK static PGN arrives before
+    # the first position PGN sometimes).
+    reg.ingest(
+        {"367674550": _sk_target(name="STATICONLY")},
+        now_monotonic=100.0,
+    )
+    assert reg.entities() == {}
+    # But the registry knows about it.
+    assert "367674550" in reg.mmsis()
+
+
+def test_expire_drops_targets_past_window() -> None:
+    reg = AISRegistry(expire_seconds=60)
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0)},
+        now_monotonic=100.0,
+    )
+    # 30s later, still alive
+    assert reg.expire(now_monotonic=130.0) == []
+    assert "367674550" in reg.mmsis()
+    # 90s later, expired
+    dropped = reg.expire(now_monotonic=200.0)
+    assert dropped == ["367674550"]
+    assert "367674550" not in reg.mmsis()
+
+
+def test_always_retain_survives_expiry() -> None:
+    reg = AISRegistry(expire_seconds=60, always_retain=frozenset({"367674550"}))
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0)},
+        now_monotonic=100.0,
+    )
+    # Well past window; sticky targets never expire.
+    dropped = reg.expire(now_monotonic=999999.0)
+    assert dropped == []
+    assert "367674550" in reg.mmsis()
+    # The entity still renders with the last-known position.
+    assert "ais_367674550" in reg.entities()
+
+
+def test_max_targets_drops_oldest_non_sticky() -> None:
+    reg = AISRegistry(
+        expire_seconds=99999,
+        max_targets=2,
+        always_retain=frozenset({"AAA"}),
+    )
+    reg.ingest({"AAA": _sk_target(lat=1, lon=1)}, now_monotonic=100.0)
+    reg.ingest({"OLDEST": _sk_target(lat=2, lon=2)}, now_monotonic=100.0)
+    reg.ingest({"MIDDLE": _sk_target(lat=3, lon=3)}, now_monotonic=200.0)
+    reg.ingest({"NEWEST": _sk_target(lat=4, lon=4)}, now_monotonic=300.0)
+    dropped = reg.expire(now_monotonic=300.0)
+    # AAA is sticky (kept), plus one slot left for freshest non-sticky (NEWEST).
+    kept = set(reg.mmsis())
+    assert "AAA" in kept
+    assert "NEWEST" in kept
+    assert "OLDEST" in dropped
+    assert "MIDDLE" in dropped
+
+
+def test_inventory_entity_reports_count_and_summaries() -> None:
+    reg = AISRegistry(expire_seconds=900)
+    reg.ingest(
+        {
+            "367674550": _sk_target(lat=42.0, lon=-71.0, name="ALPHA", sog=3.0),
+            "338216333": _sk_target(lat=42.1, lon=-71.1, name="BRAVO", sog=5.0),
+        },
+        now_monotonic=100.0,
+    )
+    inv = reg.inventory_entity()
+    assert inv["component"] == "sensor"
+    assert inv["state"] == "2"
+    mmsis_in_attrs = {row["mmsi"] for row in inv["attributes"]["targets"]}
+    assert mmsis_in_attrs == {"367674550", "338216333"}
+    assert inv["attributes"]["truncated"] is False
+    assert inv["attributes"]["total_tracked"] == 2
+
+
+def test_inventory_truncates_when_over_budget() -> None:
+    reg = AISRegistry(expire_seconds=900)
+    # Enough targets with long names to exceed a small byte budget.
+    reg.ingest(
+        {
+            str(600000000 + i): _sk_target(
+                lat=42.0, lon=-71.0, name="VESSEL_WITH_LONG_NAME_" * 3
+            )
+            for i in range(200)
+        },
+        now_monotonic=100.0,
+    )
+    inv = reg.inventory_entity(max_attr_bytes=2000)
+    assert inv["state"] == "200"  # count is exact
+    assert inv["attributes"]["truncated"] is True
+    # Row count is bounded by the byte budget.
+    assert len(inv["attributes"]["targets"]) < 200
+    assert inv["attributes"]["total_tracked"] == 200
+
+
+def test_reingesting_a_target_refreshes_last_seen() -> None:
+    reg = AISRegistry(expire_seconds=60)
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.0, lon=-71.0)},
+        now_monotonic=100.0,
+    )
+    # Would be expired at 200s...
+    reg.ingest(
+        {"367674550": _sk_target(lat=42.1, lon=-71.1)},
+        now_monotonic=180.0,
+    )
+    # ...but the second ingest reset the clock.
+    assert reg.expire(now_monotonic=200.0) == []
+    # And the position updated to the latest.
+    e = reg.entities()["ais_367674550"]
+    assert e["attributes"]["latitude"] == 42.1
+
+
+def test_sticky_flag_reflected_in_attributes() -> None:
+    reg = AISRegistry(expire_seconds=900, always_retain=frozenset({"367674550"}))
+    reg.ingest(
+        {
+            "367674550": _sk_target(lat=42.0, lon=-71.0),
+            "338216333": _sk_target(lat=42.1, lon=-71.1),
+        },
+        now_monotonic=100.0,
+    )
+    ents = reg.entities()
+    assert ents["ais_367674550"]["attributes"]["sticky"] is True
+    assert ents["ais_338216333"]["attributes"]["sticky"] is False
