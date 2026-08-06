@@ -256,9 +256,10 @@
       "matchDepTypes": ["dependency-groups", "tool.uv.dev-dependencies"]
     },
     {
-      "description": "The uv required-version pin in [tool.uv], which comes from the custom regex manager rather than the native pep621 manager and so is not covered by the rule above. Scoped by depName so it does not sweep in the other custom.regex managers.",
+      "description": "The uv required-version pin in [tool.uv], which comes from the custom regex manager rather than the native pep621 manager and so is not covered by the rule above. Scoped by depName AND datasource: the apk manager also emits depName 'uv' for the uv= pins in the container_hooks and system_resource_tuner Dockerfiles, so depName alone would match those too and, being later than the shipped-artifact automerge denial, silently flip them back to automerge.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["uv"],
+      "matchDatasources": ["pypi"],
       "matchUpdateTypes": ["minor", "patch"],
       "minimumReleaseAge": "3 days",
       "automerge": true
