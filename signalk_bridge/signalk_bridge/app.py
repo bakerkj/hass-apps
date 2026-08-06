@@ -735,25 +735,50 @@ async def _reap_ais_orphans(
     """Consume retained AIS discovery-config messages for ``window_seconds``
     and return the MMSIs HA still remembers.
 
-    Subscribes to the AIS-only wildcard so we don't intercept unrelated
-    discovery messages the broker may be replaying. Returns early if
-    ``stop`` fires. Non-retained messages arriving mid-window (e.g. our
-    own fresh publishes racing the reap) are ignored -- only retained
-    messages represent HA's persistent memory.
+    Subscribes to the device_tracker discovery-config wildcard (per
+    MQTT-4.7.1-3, ``+`` must occupy an entire topic level -- ``ais_+`` would
+    be treated as a literal by compliant brokers and match nothing). The
+    ``_AIS_CONFIG_TOPIC_PATTERN`` marker check below filters incoming
+    topics down to genuine ``ais_<mmsi>`` slugs before recording them, so
+    the broader subscription doesn't leak non-AIS entries. Returns early
+    when ``stop`` fires (raced against the message iterator so SIGTERM
+    doesn't have to wait out the full window). Non-retained messages
+    arriving mid-window (our own fresh publishes racing the reap) are
+    ignored -- only retained messages represent HA's persistent memory.
     """
-    topic = f"{discovery_prefix}/{_AIS_CONFIG_TOPIC_PATTERN}+/config"
+    topic = f"{discovery_prefix}/device_tracker/signalk/+/config"
     observed: set[str] = set()
     await mq.subscribe(topic, qos=1)
     log.info("AIS reap: watching %s for %.1fs", topic, window_seconds)
     deadline = asyncio.get_running_loop().time() + window_seconds
+    stop_task = asyncio.create_task(stop.wait(), name="ais-reap-stop")
     try:
         while not stop.is_set():
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
+            # Race the next message against ``stop`` so shutdown isn't
+            # delayed by the full window when AIS discovery configs are
+            # sparse (the common case). ``asyncio.wait`` on a single-item
+            # generator step needs its own task wrapper.
+            next_task = asyncio.create_task(
+                mq.messages.__anext__(), name="ais-reap-next"
+            )
+            done, _ = await asyncio.wait(
+                {next_task, stop_task},
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task in done:
+                next_task.cancel()
+                break
+            if next_task not in done:
+                # Timed out waiting for the next message; window elapsed.
+                next_task.cancel()
+                break
             try:
-                msg = await asyncio.wait_for(mq.messages.__anext__(), timeout=remaining)
-            except TimeoutError, StopAsyncIteration:
+                msg = next_task.result()
+            except StopAsyncIteration:
                 break
             # Only retained payloads carry HA's persistent state. Fresh
             # publishes (retain=False in our own path) don't count.
@@ -775,6 +800,7 @@ async def _reap_ais_orphans(
             if mmsi_slug and mmsi_slug != "inventory":
                 observed.add(mmsi_slug)
     finally:
+        stop_task.cancel()
         try:
             await mq.unsubscribe(topic)
         except Exception as exc:  # noqa: BLE001 - unsubscribe failure isn't fatal

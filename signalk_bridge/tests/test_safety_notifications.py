@@ -62,6 +62,20 @@ def test_routine_alarm_stays_problem_class() -> None:
     )
 
 
+def test_mob_prefix_does_not_capture_unrelated_paths() -> None:
+    """A future/plugin path like ``notifications.mobileNetwork.lost`` must
+    NOT be classified as a safety alarm just because it shares the ``mob``
+    string prefix with the MOB branch. Segment boundary is enforced."""
+    assert notification_device_class("notifications.mobileNetwork.lost") == "problem"
+    assert notification_device_class("notifications.mobius.foo") == "problem"
+
+
+def test_mob_exact_and_child_paths_still_safety() -> None:
+    assert notification_device_class("notifications.mob") == "safety"
+    assert notification_device_class("notifications.mob.detected") == "safety"
+    assert notification_device_class("notifications.mob.man_lost") == "safety"
+
+
 def test_dsc_notification_reaches_publish_pipeline_as_safety() -> None:
     ents = resolve_special(_tree("notifications.communications.dsc.MDA000123"))
     key = "notifications_communications_dsc_mda000123"
