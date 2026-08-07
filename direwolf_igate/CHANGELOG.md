@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.4](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.3...direwolf_igate-v0.0.4) (2026-08-07)
+
+
+### Bug Fixes
+
+* **direwolf_igate:** don't join paho on SIGTERM when disconnected ([#407](https://github.com/bakerkj/hass-apps/issues/407)) ([36450b0](https://github.com/bakerkj/hass-apps/commit/36450b04ec18203efc6de6fa699cbc93aae98bfb))
+* **direwolf_igate:** don't lose SIGTERM to a blocked read on the main thread ([#417](https://github.com/bakerkj/hass-apps/issues/417)) ([fca88e4](https://github.com/bakerkj/hass-apps/commit/fca88e468fac9cef268a8e90515aaa83969f6083))
+
 ## [0.0.3](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.2...direwolf_igate-v0.0.3) (2026-07-31)
 
 
