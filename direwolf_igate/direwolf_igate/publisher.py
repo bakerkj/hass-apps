@@ -132,7 +132,11 @@ class Publisher:
             if farewell:
                 self.publish_states()
                 self._publish(
-                    self.opts.availability_topic, "offline", qos=1, retain=True
+                    self.opts.availability_topic,
+                    "offline",
+                    qos=1,
+                    retain=True,
+                    flush_timeout=0.3,
                 )
             # The network loop is still running, so this flushes the farewell,
             # and the clean DISCONNECT suppresses the last will. No loop_stop():

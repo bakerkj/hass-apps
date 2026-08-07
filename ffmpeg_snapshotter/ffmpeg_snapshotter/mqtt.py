@@ -107,12 +107,15 @@ class MqttPublisher:
         if client is None:
             return
         try:
-            client.publish(
+            info = client.publish(
                 f"{self.mqtt_cfg.base_topic}/availability",
                 "offline",
                 qos=1,
                 retain=True,
             )
+            # Nothing joins the network thread now, so give it a bounded moment
+            # to reach the wire; the last will covers whatever does not.
+            info.wait_for_publish(timeout=0.3)
         except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
         try:

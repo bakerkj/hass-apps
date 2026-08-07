@@ -150,10 +150,19 @@ def mqtt_publish(
     log_level: str,
     health: MqttHealth,
     mark_state: bool = False,
+    flush_timeout: float | None = None,
 ) -> bool:
     try:
         info = client.publish(topic, payload=payload, qos=qos, retain=retain)
         if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            if flush_timeout is not None:
+                # Shutdown no longer joins the network thread, so a farewell
+                # needs a bounded moment to reach the wire. Never fatal: the
+                # last will covers what does not make it out.
+                try:
+                    info.wait_for_publish(timeout=flush_timeout)
+                except Exception:  # noqa: BLE001, S110 loop may already be gone
+                    pass
             if mark_state:
                 health.last_state_publish_ok = time.time()
             return True

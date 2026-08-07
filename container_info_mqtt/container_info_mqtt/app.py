@@ -612,7 +612,12 @@ def main() -> int:
 
     log.info("Shutting down")
     try:
-        client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
+        info = client.publish(
+            f"{base_topic}/availability", "offline", qos=1, retain=True
+        )
+        # Nothing joins the network thread now, so give it a bounded moment to
+        # reach the wire; the last will covers whatever does not.
+        info.wait_for_publish(timeout=0.3)
     except Exception:  # noqa: BLE001, S110  # best-effort shutdown publish
         pass
     # No loop_stop(): it joins the network thread, which may be mid-connect()
