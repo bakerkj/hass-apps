@@ -134,11 +134,11 @@ class Publisher:
                 self._publish(
                     self.opts.availability_topic, "offline", qos=1, retain=True
                 )
-            # disconnect() first: it needs the network loop still running to
-            # flush the farewell, and sends the clean DISCONNECT that suppresses
-            # the last will. loop_stop() then joins the thread.
+            # The network loop is still running, so this flushes the farewell,
+            # and the clean DISCONNECT suppresses the last will. No loop_stop():
+            # joining the network thread can block on an unacked qos=1 message
+            # even from here. It is a daemon, so the OS reaps it on exit.
             self.client.disconnect()
-            self.client.loop_stop()
         except Exception as e:  # noqa: BLE001 shutdown must not hang or raise
             log("WARNING", f"error during shutdown publish: {e!r}", self.opts.log_level)
 

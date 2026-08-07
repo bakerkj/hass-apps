@@ -615,5 +615,7 @@ def main() -> int:
         client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
     except Exception:  # noqa: BLE001, S110  # best-effort shutdown publish
         pass
-    client.loop_stop()
+    # No loop_stop(): it joins the network thread, which may be mid-connect()
+    # to an unreachable broker or holding an unacked qos=1 message. The thread
+    # is a daemon, so the OS reaps it when we exit.
     return 0

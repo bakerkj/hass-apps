@@ -923,7 +923,9 @@ def main(argv: list[str] | None = None) -> int:
                 availability_topic(base_topic), "offline", qos=1, retain=True
             )
             pub.wait_for_publish(timeout=0.3)  # best-effort flush; LWT covers the rest
-            client.loop_stop()
+            # No loop_stop(): it joins the network thread, which may be
+            # mid-connect() to an unreachable broker or holding an unacked
+            # qos=1 message. The thread is a daemon; the OS reaps it on exit.
             client.disconnect()
         except Exception as exc:  # noqa: BLE001 - best effort on the way out
             log.debug("Error during MQTT shutdown: %s", exc)

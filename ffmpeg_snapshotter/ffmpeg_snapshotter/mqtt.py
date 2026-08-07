@@ -116,10 +116,9 @@ class MqttPublisher:
         except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
         try:
-            client.loop_stop()
-        except Exception:  # noqa: BLE001, S110  # best-effort shutdown
-            pass
-        try:
+            # No loop_stop(): it joins the network thread, which may be
+            # mid-connect() to an unreachable broker or holding an unacked
+            # qos=1 message. The thread is a daemon; the OS reaps it on exit.
             client.disconnect()
         except Exception:  # noqa: BLE001, S110  # best-effort shutdown
             pass
