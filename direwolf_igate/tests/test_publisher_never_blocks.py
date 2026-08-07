@@ -74,8 +74,7 @@ def _expect_tee(proc: subprocess.Popen, timeout: float = 10.0) -> str:
 
 
 def test_tee_survives_an_unreachable_broker(tmp_path: Path) -> None:
-    """connect_mqtt_with_retry never gives up, so it must not run on the thread
-    that drains stdin."""
+    """The reconnect loop never gives up, so the tee must not be behind it."""
     proc = _spawn(
         tmp_path,
         {
@@ -190,20 +189,18 @@ def test_sigterm_exits_promptly_instead_of_hanging_in_the_read_loop(
         assert "W1XM-15" in _expect_tee(proc)
 
         proc.send_signal(signal.SIGTERM)
-        # No live session, so ``shutdown()`` returns immediately and re-raises
-        # SIGTERM; the only work between signal delivery and exit is Python
-        # unwinding. 5s covers even a heavily-contended GHA runner and still
-        # catches any regression that reintroduces a blocking teardown.
+        # No live session to tear down, so the only work between delivery and
+        # exit is unwinding the loop. 5s covers even a heavily-contended GHA
+        # runner and still catches any regression that reintroduces a blocking
+        # teardown.
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pytest.fail("publisher ignored SIGTERM and stayed in the read loop")
 
-        # Conventional signal status, not an invented exit code: the handler
-        # restores the default disposition and re-raises.
-        assert proc.returncode in (-signal.SIGTERM, 128 + signal.SIGTERM), (
-            f"unexpected exit status {proc.returncode}"
-        )
+        # A requested shutdown is not a failure: run.sh ignores this status, and
+        # anything non-zero would be indistinguishable from a real fault.
+        assert proc.returncode == 0, f"unexpected exit status {proc.returncode}"
     finally:
         if proc.poll() is None:
             proc.kill()
