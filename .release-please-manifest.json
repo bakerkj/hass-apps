@@ -4,7 +4,7 @@
   "container_info_mqtt": "0.1.25",
   "dashboard_entity_proxy": "0.1.4",
   "dashboard_web_proxy": "0.0.4",
-  "direwolf_igate": "0.0.3",
+  "direwolf_igate": "0.0.4",
   "ffmpeg_snapshotter": "0.8.15",
   "frigate_compressor": "0.0.56",
   "halpi2_power": "0.0.2",
@@ -13,5 +13,5 @@
   "signalk": "0.0.2",
   "signalk_bridge": "0.0.6",
   "system_resource_tuner": "0.0.33",
-  "turbostat_mqtt": "0.0.39"
+  "turbostat_mqtt": "0.0.40"
 }

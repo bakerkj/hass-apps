@@ -210,6 +210,48 @@ def test_sigterm_exits_promptly_instead_of_hanging_in_the_read_loop(
             proc.wait(timeout=5)
 
 
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs procfs")
+def test_main_thread_never_parks_in_the_blocking_read(tmp_path: Path) -> None:
+    """The drain must stay off the main thread.
+
+    Python runs signal handlers only on the main thread and only between
+    bytecodes. Parked in read(), it acts on a signal only if the syscall is
+    interrupted -- one arriving in the window just before read() enters the
+    kernel leaves no EINTR, so the handler never runs and SIGTERM is lost
+    outright rather than delayed. The test above only catches that about one run
+    in three hundred, which is why it was twice mistaken for slow teardown; this
+    asserts the invariant directly instead.
+    """
+    proc = _spawn(
+        tmp_path,
+        {
+            "mqtt_enabled": True,
+            "mqtt_host": "127.0.0.1",
+            "mqtt_port": _dead_port(),
+            "interval_seconds": 5,
+            "log_level": "INFO",
+        },
+    )
+    try:
+        assert "W1XM-15" in _expect_tee(proc)
+
+        # tid == pid is the main thread; wchan names the kernel function it is
+        # blocked in, so a pipe read there is the bug.
+        wchan = Path(f"/proc/{proc.pid}/task/{proc.pid}/wchan")
+        seen = set()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            seen.add(wchan.read_text().strip())
+            time.sleep(0.02)
+
+        assert not [w for w in seen if "pipe" in w], (
+            f"main thread blocked in the pipe read: {sorted(seen)}"
+        )
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 def test_sigterm_is_prompt_with_mqtt_disabled_too(tmp_path: Path) -> None:
     """The pass-through path has no handler of its own, so it must still die on
     the default disposition rather than linger."""

@@ -5,9 +5,11 @@
 
 import argparse
 import json
+import queue
 import re
 import signal
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -23,6 +25,36 @@ from .mqtt import (
 )
 from .parser import TurbostatParser, start_turbostat
 from .util import log, sanitize_key
+
+# Upper bound on how long a pending signal handler waits for the main thread.
+_READ_POLL_SECONDS = 0.25
+
+# Pushed by the reader once its stream ends, so the loop sees EOF as an event
+# rather than by blocking on a read that will never return.
+_EOF = None
+
+
+def _start_reader(
+    proc: subprocess.Popen, out: queue.Queue[str | None]
+) -> threading.Thread:
+    """Drain turbostat's stdout on its own thread.
+
+    The main thread must not park in readline(): Python runs signal handlers
+    only there and only between bytecodes, so a signal arriving as the read
+    enters the kernel leaves no EINTR to wake it and is lost, not delayed.
+    """
+
+    def run() -> None:
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    out.put(line)
+        finally:
+            out.put(_EOF)
+
+    t = threading.Thread(target=run, daemon=True, name="turbostat-reader")
+    t.start()
+    return t
 
 
 def main() -> int:
@@ -158,6 +190,7 @@ def main() -> int:
     client.on_message = on_message
 
     proc: subprocess.Popen | None = None
+    lines: queue.Queue[str | None] = queue.Queue()
 
     try:
         parser = TurbostatParser()
@@ -167,7 +200,7 @@ def main() -> int:
         samples_since_turbostat_start = 0
 
         def restart_turbostat(reason: str) -> None:
-            nonlocal proc, last_sample_time, last_sample_monotonic
+            nonlocal proc, lines, last_sample_time, last_sample_monotonic
             nonlocal first_sample_time
             nonlocal last_turbostat_restart_attempt, turbostat_started_at
             nonlocal samples_since_turbostat_start
@@ -207,6 +240,10 @@ def main() -> int:
 
             try:
                 proc = start_turbostat(interval)
+                # Fresh queue per process: a reader still draining the old pipe
+                # cannot then inject a stale sample into the new one.
+                lines = queue.Queue()
+                _start_reader(proc, lines)
             except FileNotFoundError:
                 log(
                     "ERROR",
@@ -319,14 +356,21 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            line = proc.stdout.readline()
-            if not line:
+            try:
+                line = lines.get(timeout=_READ_POLL_SECONDS)
+            except queue.Empty:
+                # No sample this tick; go round so the heartbeat and watchdogs
+                # above still run and a pending signal handler gets its chance.
+                continue
+
+            if line is _EOF:
                 rc = proc.poll()
                 if rc is not None:
                     log("ERROR", f"turbostat exited rc={rc}", log_level)
-                    restart_turbostat("process_eof")
-                else:
-                    time.sleep(0.05)
+                # The stream is done either way -- with the reader gone no
+                # further line can arrive, so waiting on the pid would just
+                # stall until a watchdog fired.
+                restart_turbostat("process_eof")
                 continue
 
             parsed = parser.parse_line(line)
@@ -524,25 +568,35 @@ def main() -> int:
         return 14
     finally:
         stop["v"] = True
-        try:
-            mqtt_publish(
-                client,
-                availability_topic,
-                "offline",
-                qos=1,
-                retain=True,
-                log_level=log_level,
-                health=health,
-            )
-            time.sleep(0.2)
-        except Exception:  # noqa: BLE001, S110 shutdown best-effort
-            pass
+        # Only with a live session: publish() takes paho mutexes an in-flight
+        # connect on the network thread may hold, and with no session there is
+        # nothing to say anyway. The last will covers the ungraceful case.
+        if health.connected:
+            try:
+                mqtt_publish(
+                    client,
+                    availability_topic,
+                    "offline",
+                    qos=1,
+                    retain=True,
+                    log_level=log_level,
+                    health=health,
+                )
+                time.sleep(0.2)
+            except Exception:  # noqa: BLE001, S110 shutdown best-effort
+                pass
 
-        try:
-            client.loop_stop()
-            client.disconnect()
-        except Exception:  # noqa: BLE001, S110 shutdown best-effort
-            pass
+            try:
+                # A clean DISCONNECT, which also suppresses the will we just
+                # superseded. Never loop_stop(): that joins the network thread,
+                # which can be mid-connect() to an unreachable broker -- Linux's
+                # TCP connect timeout is 60-120s, well past the supervisor's
+                # SIGKILL grace -- or holding an unacked qos=1 message, since
+                # loop_forever only ends once _out_messages drains. The thread
+                # is a daemon, so the OS reaps it when we exit.
+                client.disconnect()
+            except Exception:  # noqa: BLE001, S110 shutdown best-effort
+                pass
 
         try:
             if proc is not None and proc.poll() is None:
