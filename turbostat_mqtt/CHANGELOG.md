@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.40](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.39...turbostat_mqtt-v0.0.40) (2026-08-07)
+
+
+### Bug Fixes
+
+* **turbostat_mqtt:** exit on SIGTERM instead of hanging until SIGKILL ([#418](https://github.com/bakerkj/hass-apps/issues/418)) ([68ebe5f](https://github.com/bakerkj/hass-apps/commit/68ebe5fb23d5cf4bd89eefc996d64f96a59537c6))
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages to v7.1.5-r0 ([#363](https://github.com/bakerkj/hass-apps/issues/363)) ([6913413](https://github.com/bakerkj/hass-apps/commit/6913413611b554d3fb2949898be55b8ca691295c))
+
 ## [0.0.39](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.38...turbostat_mqtt-v0.0.39) (2026-07-24)
 
 
