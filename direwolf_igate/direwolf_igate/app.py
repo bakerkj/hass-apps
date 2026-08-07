@@ -117,7 +117,18 @@ async def _publish_loop(
 ) -> None:
     """Publish until shutdown or a broker fault, which the caller reconnects."""
     while not stop.is_set():
-        await pub.tick(mq)
+        try:
+            await pub.tick(mq)
+        except aiomqtt.MqttError:
+            raise  # the session is gone; _run reconnects
+        except Exception as e:  # noqa: BLE001 one bad cycle must not end them all
+            # Anything else is our own bug -- a payload that will not serialise,
+            # a parser state we mishandle. Skip the cycle and take the next one:
+            # letting it out reaches main()'s catch-all, which degrades to a
+            # plain pass-through for the rest of the process lifetime, so one
+            # bad cycle would cost every sensor and both watchdogs until the
+            # container restarts.
+            log("ERROR", f"publish cycle failed: {e!r}", pub.opts.log_level)
         await _wait_or_stop(stop, pub.opts.interval)
 
 
@@ -137,7 +148,18 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
     ) as mq:
         log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
         pub.on_connected()
-        await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+        try:
+            await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+        except ValueError as e:
+            # A malformed prefix is a config typo, not a broker fault. Costs us
+            # the HA birth message; discovery is still republished on every
+            # reconnect. Must not cost us MQTT.
+            log(
+                "ERROR",
+                f"cannot subscribe to {o.discovery_prefix}/status: {e};"
+                " HA restart will not trigger rediscovery",
+                o.log_level,
+            )
         birth = asyncio.create_task(_watch_birth(mq, pub), name="birth")
         try:
             await _publish_loop(mq, pub, stop)
@@ -145,9 +167,14 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
             birth.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await birth
-            # Supersede the will while the session is still up.
-            with contextlib.suppress(aiomqtt.MqttError):
+            # Flush current values, then supersede the will, while the session
+            # is still up -- otherwise the retained states HA keeps while we are
+            # away are a whole interval stale.
+            try:
+                await pub.publish_states(mq)
                 await pub.publish_availability(mq, "offline")
+            except Exception as e:  # noqa: BLE001 shutdown must not raise
+                log("WARNING", f"error during shutdown publish: {e!r}", o.log_level)
 
 
 async def _run() -> int:

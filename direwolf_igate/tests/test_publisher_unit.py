@@ -11,6 +11,7 @@ import time
 
 import aiomqtt
 import pytest
+from direwolf_igate.app import _publish_loop
 
 from direwolf_igate import DirewolfParser, Options, Publisher, from_mapping, overdue
 
@@ -314,6 +315,45 @@ async def test_a_broker_fault_propagates_out_of_tick() -> None:
 
     with pytest.raises(aiomqtt.MqttError):
         await pub.tick(mq)
+
+
+# --- the publish loop, which moved out of Publisher into app.py --------------
+
+
+async def test_a_raising_tick_does_not_end_the_publish_loop(capsys) -> None:
+    """One bad cycle must not end them all. Unguarded, the raise travels out of
+    _session, past _run's MqttError-only catch, and into main()'s catch-all,
+    which degrades to a plain pass-through for the rest of the process lifetime
+    -- every sensor and both watchdogs gone until the container restarts."""
+    pub, _, mq = _publisher(interval_seconds=5)
+    stop = asyncio.Event()
+    calls: list[int] = []
+
+    async def boom(_mq: object) -> None:
+        calls.append(1)
+        stop.set()  # end the loop after this cycle
+        raise RuntimeError("tick exploded")
+
+    pub.tick = boom  # type: ignore[method-assign]
+    await _publish_loop(mq, pub, stop)  # must return, not propagate
+
+    assert calls == [1]
+    assert "publish cycle failed" in capsys.readouterr().out
+
+
+async def test_a_broker_fault_still_leaves_the_loop_to_reconnect() -> None:
+    """The guard above must not swallow MqttError too: that is the signal _run
+    uses to drop the session and reconnect. Caught here, the loop would spin
+    against a dead broker forever with every sensor frozen."""
+    pub, _, mq = _publisher(interval_seconds=5)
+    stop = asyncio.Event()
+
+    async def boom(_mq: object) -> None:
+        raise aiomqtt.MqttError("broker went away")
+
+    pub.tick = boom  # type: ignore[method-assign]
+    with pytest.raises(aiomqtt.MqttError):
+        await _publish_loop(mq, pub, stop)
 
 
 # --- broker resolution: option, then Supervisor service, then default --------
