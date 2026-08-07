@@ -726,6 +726,34 @@ async def _obtain_token(
 _AIS_CONFIG_TOPIC_PATTERN = "device_tracker/signalk/ais_"
 
 
+def _parse_publish_overrides(raw: Any) -> dict[str, float]:
+    """Parse the ``publish_path_overrides`` option into ``{path: seconds}``.
+
+    Shipped as a list of ``{"path": str, "interval_seconds": float}`` objects
+    because HA supervisor's schema DSL has no wildcard-key dict form (a bare
+    ``"*"`` key is treated as a required literal, not a placeholder). Any
+    entry with a missing/non-string path or non-numeric interval is skipped
+    with a warning rather than crashing startup on a typo.
+    """
+    out: dict[str, float] = {}
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        interval = item.get("interval_seconds")
+        if not isinstance(path, str) or not path or interval is None:
+            continue
+        try:
+            out[path] = float(interval)
+        except TypeError, ValueError:
+            log.warning(
+                "Bad publish_path_overrides interval for %s: %r", path, interval
+            )
+    return out
+
+
 async def _reap_ais_orphans(
     mq: aiomqtt.Client,
     discovery_prefix: str,
@@ -1212,12 +1240,10 @@ async def main_async(opts_path: str) -> int:
     stale_after_s = int(opts.get("stale_after_seconds") or 0)
     stale_learning_max_age = int(opts.get("stale_learning_max_age") or 0)
     publish_min_interval = float(opts.get("publish_min_interval_seconds") or 1.0)
-    raw_overrides = opts.get("publish_path_overrides") or {}
-    if not isinstance(raw_overrides, dict):
-        raw_overrides = {}
+    overrides_dict = _parse_publish_overrides(opts.get("publish_path_overrides"))
     limiter = PublishRateLimiter(
         default_interval=publish_min_interval,
-        overrides=build_overrides(raw_overrides),
+        overrides=build_overrides(overrides_dict),
     )
     ais_enabled = bool(opts.get("ais_enabled"))
     ais_expire_seconds = float(opts.get("ais_expire_seconds") or 900)
