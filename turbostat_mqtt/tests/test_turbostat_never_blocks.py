@@ -27,6 +27,18 @@ ADDON_DIR = Path(__file__).resolve().parents[1]  # .../turbostat_mqtt
 
 _CONNACK = b"\x20\x02\x00\x00"  # accepted, no session present
 
+# Prelude for the fake child: die with the add-on rather than outliving it.
+# PR_SET_PDEATHSIG (1) fires even when the parent is SIGKILLed, which is exactly
+# the case these tests provoke.
+_SELF_REAP = (
+    "import ctypes, signal, sys, time\n"
+    "try:\n"
+    "    ctypes.CDLL('libc.so.6', use_errno=True).prctl(1, signal.SIGKILL)\n"
+    "except Exception:\n"
+    "    pass\n"
+    "_deadline = time.monotonic() + 120\n"
+)
+
 
 def _stub_broker() -> tuple[int, socket.socket]:
     """Enough of a broker to reach a normally-connected paho client.
@@ -65,19 +77,26 @@ def _stub_broker() -> tuple[int, socket.socket]:
 
 
 def _fake_turbostat(tmp_path: Path, *, lines: int = 2) -> Path:
-    """A turbostat that emits a couple of lines and then goes silent forever."""
+    """A turbostat that emits a couple of lines and then goes silent forever.
+
+    Self-reaping, because these tests exist to prove the add-on gets SIGKILLed
+    when it is broken -- and a SIGKILLed parent never reaches the ``terminate()``
+    that would clean this up. PR_SET_PDEATHSIG kills it the moment the add-on
+    dies however it dies; the deadline is a backstop for anything that leaves it
+    reparented instead.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     script = bindir / "turbostat"
     script.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys, time\n"
+        f"{_SELF_REAP}"
         f"for i in range({lines}):\n"
         "    sys.stdout.write('Busy%  Bzy_MHz  PkgWatt\\n' if i == 0 else "
         "'12.5  3200  45.2\\n')\n"
         "    sys.stdout.flush()\n"
-        "while True:\n"
-        "    time.sleep(3600)\n"
+        "while time.monotonic() < _deadline:\n"
+        "    time.sleep(1)\n"
     )
     script.chmod(0o755)
     return bindir
