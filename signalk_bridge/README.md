@@ -135,6 +135,45 @@ thus the maximum rate any published entity can reach given a matching
 actually control fine-grained cadence — leaving it at the historical default of
 `10` effectively floors every publish at 10s regardless of the limiter.
 
+## AIS targets
+
+Opt-in via `ais_enabled: true`. When set, the bridge widens its Signal K
+subscription to include all `vessels.*` contexts and publishes one HA
+`device_tracker` per AIS-detected vessel on top of the boat's own instruments.
+Each tracker's attributes carry position, SoG, CoG, heading, plus static data
+(name, ship type, callsign, IMO, dimensions) as SK receives them.
+
+```yaml
+ais_enabled: false # off by default
+ais_expire_seconds: 900 # target dropped after this long with no delta
+ais_max_targets: 200 # entity-registry cap (sticky targets don't count)
+ais_always_retain: # MMSIs whose tracker never expires
+  - "367674550"
+```
+
+**Cleanup semantics.** Targets that fall silent past `ais_expire_seconds` have
+their discovery + attributes topics cleared with empty-retained payloads so HA
+unregisters the entity, not left as ghost dots on the map. Sticky MMSIs in
+`ais_always_retain` never expire once first observed — the tracker keeps its
+last-known position with a stale `last_seen` attribute.
+
+There is also a `sensor.signalk_ais_inventory` whose state is the current
+tracked-target count. Its `targets` attribute carries a sorted (most-recent
+first) list of `{mmsi, name, lat, lon, sog, cog, last_seen}` summaries,
+truncated with a `truncated: true` flag if the batch would exceed HA's
+per-attribute size budget.
+
+Filter noisy AIS entities out of your recorder so long-running captures don't
+bloat the database:
+
+```yaml
+# configuration.yaml
+recorder:
+  exclude:
+    entity_globs:
+      - device_tracker.signalk_ais_*
+```
+
 ## Staleness detection
 
 Signal K keeps a value after its source stops broadcasting — it only freezes the

@@ -27,16 +27,24 @@ import websockets.exceptions
 
 log = logging.getLogger(__name__)
 
-_STREAM_PATH = "/signalk/v1/stream?subscribe=self"
+_STREAM_PATH_SELF = "/signalk/v1/stream?subscribe=self"
+_STREAM_PATH_ALL = "/signalk/v1/stream?subscribe=all"
+
+_MMSI_PREFIX = "vessels.urn:mrn:imo:mmsi:"
 
 
-def _ws_url(base_url: str) -> str:
-    """HTTP(S) SK base URL → matching WS(S) stream URL."""
+def _ws_url(base_url: str, *, include_ais: bool = False) -> str:
+    """HTTP(S) SK base URL → matching WS(S) stream URL.
+
+    ``include_ais`` widens the subscription from ``vessels.self`` to every
+    context SK is publishing, so AIS targets flow to the same reader.
+    """
+    path = _STREAM_PATH_ALL if include_ais else _STREAM_PATH_SELF
     if base_url.startswith("https://"):
-        return "wss://" + base_url[len("https://") :].rstrip("/") + _STREAM_PATH
+        return "wss://" + base_url[len("https://") :].rstrip("/") + path
     if base_url.startswith("http://"):
-        return "ws://" + base_url[len("http://") :].rstrip("/") + _STREAM_PATH
-    return base_url.rstrip("/") + _STREAM_PATH
+        return "ws://" + base_url[len("http://") :].rstrip("/") + path
+    return base_url.rstrip("/") + path
 
 
 class WSSubscriber:
@@ -48,14 +56,26 @@ class WSSubscriber:
     deep copy so callers can iterate without worrying about mid-walk mutation.
     """
 
-    def __init__(self, base_url: str, token: str | None = None) -> None:
-        self._url = _ws_url(base_url)
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        *,
+        include_ais: bool = False,
+    ) -> None:
+        self._url = _ws_url(base_url, include_ais=include_ais)
         self._token = token
+        self._include_ais = include_ais
         self._tree: dict[str, Any] = {}
+        # AIS targets keyed by MMSI string, each value a nested tree in the
+        # same shape as ``_tree`` so the existing flatten/resolve pipeline
+        # can be reused per target.
+        self._ais: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._dirty: set[str] = set()
+        self._dirty_ais: set[str] = set()
         self._last_delta_monotonic: float = 0.0
         # Signals that the tree has been seeded so the publish loop knows
         # it can start; independent from the WS connection status so a
@@ -110,6 +130,20 @@ class WSSubscriber:
         """
         async with self._lock:
             return copy.deepcopy(self._tree)
+
+    async def ais_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return a deep-copied snapshot of all AIS targets.
+
+        Empty if ``include_ais`` was not set at construction.
+        """
+        async with self._lock:
+            return copy.deepcopy(self._ais)
+
+    async def take_dirty_ais(self) -> set[str]:
+        """Return the set of MMSIs updated since the last call, then clear it."""
+        async with self._lock:
+            d, self._dirty_ais = self._dirty_ais, set()
+            return d
 
     async def take_dirty(self) -> set[str]:
         """Return the set of paths updated since the last call, then clear it.
@@ -195,7 +229,7 @@ class WSSubscriber:
                 await stop_task
 
     async def _apply(self, msg: dict[str, Any]) -> None:
-        """Fold one SK delta message into the tree.
+        """Fold one SK delta message into the appropriate store.
 
         SK delta format::
 
@@ -205,11 +239,15 @@ class WSSubscriber:
               ]}
             ]}
 
-        Only ``vessels.self`` context is honoured here; the AIS/atoms streams
-        are their own subscription.
+        Routes by ``context``: ``vessels.self`` patches the self tree,
+        ``vessels.urn:mrn:imo:mmsi:*`` patches the per-MMSI AIS store,
+        ``atoms.*`` patches the atoms store. Any other context is dropped
+        rather than silently absorbed into self, which would corrupt the
+        entity resolver's view of the boat.
         """
         context = msg.get("context")
-        if context not in (None, "vessels.self"):
+        target_tree, dirty_set, dirty_key = self._route(context)
+        if target_tree is None:
             return
         updates = msg.get("updates") or []
         if not isinstance(updates, list):
@@ -223,11 +261,8 @@ class WSSubscriber:
                 if not isinstance(src, str):
                     src_meta = u.get("source")
                     if isinstance(src_meta, dict):
-                        src = (
-                            src_meta.get("label")
-                            if isinstance(src_meta.get("label"), str)
-                            else None
-                        )
+                        label = src_meta.get("label")
+                        src = label if isinstance(label, str) else None
                     else:
                         src = None
                 for v in u.get("values") or []:
@@ -236,12 +271,47 @@ class WSSubscriber:
                     path = v.get("path")
                     if not isinstance(path, str) or not path:
                         continue
-                    self._set_leaf(path, v.get("value"), ts, src)
-                    self._dirty.add(path)
+                    self._set_leaf_in(target_tree, path, v.get("value"), ts, src)
+                    if dirty_set is self._dirty:
+                        dirty_set.add(path)
+                    elif dirty_key is not None and dirty_set is not None:
+                        dirty_set.add(dirty_key)
             self._last_delta_monotonic = time.monotonic()
 
-    def _set_leaf(
+    def _route(
+        self, context: Any
+    ) -> tuple[dict[str, Any] | None, set[str] | None, str | None]:
+        """Pick the destination tree + dirty tracker for a delta context.
+
+        Returns ``(tree, dirty_set, dirty_key)`` where ``dirty_key`` is the
+        MMSI for AIS contexts, or ``None`` for the self tree (which uses
+        per-path dirty). Returns ``(None, None, None)`` for contexts we
+        don't accept -- atoms.* (AtoNs / MetHydro / base stations) fall
+        through here because nothing consumes them yet; adding them back
+        needs a dedicated store with expiry, like ``_ais``.
+        """
+        if context in (None, "vessels.self"):
+            return self._tree, self._dirty, None
+        if not isinstance(context, str):
+            return None, None, None
+        if context.startswith(_MMSI_PREFIX):
+            mmsi = context[len(_MMSI_PREFIX) :]
+            if not mmsi:
+                return None, None, None
+            tree = self._ais.setdefault(mmsi, {})
+            return tree, self._dirty_ais, mmsi
+        return None, None, None
+
+    def forget_ais(self, mmsi: str) -> None:
+        """Remove an AIS target after it expires. Safe to call from the
+        publish tick between deltas; the WS reader may race but the worst
+        case is one duplicate target-registered event next delta, which
+        the publish path idempotents against ``announced``."""
+        self._ais.pop(mmsi, None)
+
+    def _set_leaf_in(
         self,
+        tree: dict[str, Any],
         path: str,
         value: Any,
         ts: str | None,
@@ -256,7 +326,7 @@ class WSSubscriber:
         ``value``/``timestamp``/``$source``/``values[src]`` slots are updated.
         """
         parts = path.split(".")
-        node = self._tree
+        node = tree
         for p in parts[:-1]:
             child = node.get(p)
             if not isinstance(child, dict):

@@ -227,6 +227,71 @@ async def test_reconnect_on_drop(sk_ws: tuple[str, _Server]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ais_delta_populates_ais_snapshot_not_self(
+    sk_ws: tuple[str, _Server],
+) -> None:
+    base, server = sk_ws
+    # include_ais=True widens the subscription and enables the AIS store.
+    sub = WSSubscriber(base, include_ais=True)
+    await sub.start()
+    try:
+        await server.wait_connected()
+        # AIS position for MMSI 367674550
+        await server.send(
+            {
+                "context": "vessels.urn:mrn:imo:mmsi:367674550",
+                "updates": [
+                    {
+                        "$source": "ais",
+                        "timestamp": "2026-08-05T04:00:00.000Z",
+                        "values": [
+                            {
+                                "path": "navigation.position",
+                                "value": {"latitude": 42.0, "longitude": -71.0},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        # And a self delta so we can confirm they don't cross.
+        await server.send(
+            {
+                "context": "vessels.self",
+                "updates": [
+                    {
+                        "$source": "n2k-can0.c0",
+                        "timestamp": "2026-08-05T04:00:00.000Z",
+                        "values": [
+                            {"path": "navigation.speedOverGround", "value": 3.0}
+                        ],
+                    }
+                ],
+            }
+        )
+        for _ in range(50):
+            ais = await sub.ais_snapshot()
+            snap = await sub.snapshot()
+            if ais and snap.get("navigation", {}).get("speedOverGround") is not None:
+                break
+            await asyncio.sleep(0.02)
+        assert "367674550" in ais
+        target = ais["367674550"]
+        assert target["navigation"]["position"]["value"] == {
+            "latitude": 42.0,
+            "longitude": -71.0,
+        }
+        # Self tree unaffected by the AIS delta.
+        assert snap["navigation"]["speedOverGround"]["value"] == 3.0
+        assert snap.get("navigation", {}).get("position") is None
+        # forget_ais drops the entry.
+        sub.forget_ais("367674550")
+        assert "367674550" not in await sub.ais_snapshot()
+    finally:
+        await sub.stop()
+
+
+@pytest.mark.asyncio
 async def test_non_self_context_is_ignored(sk_ws: tuple[str, _Server]) -> None:
     base, server = sk_ws
     sub = WSSubscriber(base)

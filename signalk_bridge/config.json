@@ -37,7 +37,11 @@
       "propulsion.*.revolutions": 1.0,
       "electrical.batteries.*.voltage": 5.0,
       "electrical.batteries.*.stateOfCharge": 30.0
-    }
+    },
+    "ais_enabled": false,
+    "ais_expire_seconds": 900,
+    "ais_max_targets": 200,
+    "ais_always_retain": []
   },
   "schema": {
     "signalk_url": "str",
@@ -62,7 +66,13 @@
     "publish_min_interval_seconds": "float(0.05,300)",
     "publish_path_overrides": {
       "*": "float(0.05,600)"
-    }
+    },
+    "ais_enabled": "bool",
+    "ais_expire_seconds": "int(60,86400)",
+    "ais_max_targets": "int(10,2000)",
+    "ais_always_retain": [
+      "str"
+    ]
   },
   "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
 }
