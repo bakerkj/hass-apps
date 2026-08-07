@@ -342,3 +342,61 @@ async def test_non_self_context_is_ignored(sk_ws: tuple[str, _Server]) -> None:
     finally:
         with contextlib.suppress(Exception):
             await sub.stop()
+
+
+@pytest.mark.asyncio
+async def test_self_context_via_urn_from_hello(sk_ws: tuple[str, _Server]) -> None:
+    """SK delivers ``?subscribe=self`` deltas with ``context`` set to the
+    vessel's canonical URN (``vessels.urn:mrn:signalk:uuid:<uuid>``), not the
+    ``vessels.self`` alias. The router must learn the URN from the WS hello
+    frame and treat it as an equivalent self context -- otherwise every delta
+    is dropped and the mirror stays frozen at the bootstrap snapshot.
+    """
+    base, server = sk_ws
+    self_urn = "vessels.urn:mrn:signalk:uuid:e7686c68-c2f1-42b1-8cdc-516a3972e162"
+    sub = WSSubscriber(base)
+    await sub.start()
+    try:
+        await server.wait_connected()
+        # SK's first frame is the server hello, which declares the self URN.
+        await server.send(
+            {
+                "name": "signalk-server",
+                "version": "2.30.0",
+                "self": self_urn,
+            }
+        )
+        # A subsequent delta uses the URN as context, not "vessels.self".
+        await server.send(
+            {
+                "context": self_urn,
+                "updates": [
+                    {
+                        "$source": "n2k-can0.c0",
+                        "timestamp": "2026-08-05T04:00:00.000Z",
+                        "values": [
+                            {
+                                "path": "electrical.batteries.house.voltage",
+                                "value": 12.75,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        snap: dict[str, Any] = {}
+        for _ in range(50):
+            snap = await sub.snapshot()
+            leaf = (
+                snap.get("electrical", {})
+                .get("batteries", {})
+                .get("house", {})
+                .get("voltage")
+            )
+            if leaf is not None:
+                break
+            await asyncio.sleep(0.02)
+        assert snap["electrical"]["batteries"]["house"]["voltage"]["value"] == 12.75
+    finally:
+        with contextlib.suppress(Exception):
+            await sub.stop()
