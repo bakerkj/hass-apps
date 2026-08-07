@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.4...direwolf_igate-v0.0.5) (2026-08-07)
+
+
+### Bug Fixes
+
+* **direwolf_igate:** replace the paho threads with an aiomqtt asyncio chassis ([#429](https://github.com/bakerkj/hass-apps/issues/429)) ([d854a55](https://github.com/bakerkj/hass-apps/commit/d854a55d156ce3f03ca3b30d5d1e708976480851))
+
 ## [0.0.4](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.3...direwolf_igate-v0.0.4) (2026-08-07)
 
 
