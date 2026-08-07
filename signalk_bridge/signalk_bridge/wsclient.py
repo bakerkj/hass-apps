@@ -66,6 +66,12 @@ class WSSubscriber:
         self._url = _ws_url(base_url, include_ais=include_ais)
         self._token = token
         self._include_ais = include_ais
+        # Server's self-vessel URN, captured from the WS hello message. SK
+        # delivers ``?subscribe=self`` deltas with ``context`` set to this
+        # canonical URN (``vessels.urn:mrn:signalk:uuid:<uuid>``) rather than
+        # the literal ``"vessels.self"`` -- routing only on the literal
+        # dropped every delta after bootstrap.
+        self._self_context: str | None = None
         self._tree: dict[str, Any] = {}
         # AIS targets keyed by MMSI string, each value a nested tree in the
         # same shape as ``_tree`` so the existing flatten/resolve pipeline
@@ -209,6 +215,16 @@ class WSSubscriber:
                             except json.JSONDecodeError as exc:
                                 log.debug("SK WS: bad JSON: %s", exc)
                                 continue
+                            # First frame is the server hello, which declares
+                            # the self-vessel URN. Capture it so context
+                            # routing recognises the canonical form (SK sends
+                            # deltas with ``vessels.urn:mrn:signalk:uuid:...``
+                            # rather than the ``vessels.self`` alias).
+                            if isinstance(msg, dict) and "self" in msg:
+                                self_urn = msg.get("self")
+                                if isinstance(self_urn, str) and self_urn:
+                                    self._self_context = self_urn
+                                    log.info("Signal K self context: %s", self_urn)
                             await self._apply(msg)
                 except (
                     websockets.exceptions.WebSocketException,
@@ -294,6 +310,11 @@ class WSSubscriber:
             return self._tree, self._dirty, None
         if not isinstance(context, str):
             return None, None, None
+        # SK delivers self-vessel deltas under the canonical URN (learned from
+        # the WS hello) rather than the "vessels.self" alias. If we captured
+        # the server's self URN, treat it as an equivalent context.
+        if self._self_context is not None and context == self._self_context:
+            return self._tree, self._dirty, None
         if context.startswith(_MMSI_PREFIX):
             mmsi = context[len(_MMSI_PREFIX) :]
             if not mmsi:
