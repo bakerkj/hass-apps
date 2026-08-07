@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.7](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.6...signalk_bridge-v0.0.7) (2026-08-07)
+
+
+### Features
+
+* **signalk_bridge:** AIS target support ([#414](https://github.com/bakerkj/hass-apps/issues/414)) ([d905e16](https://github.com/bakerkj/hass-apps/commit/d905e169e09fa210a2747289b34104402d367d13))
+* **signalk_bridge:** N2K fleet health + DSC/MOB safety alarms + AIS orphan reap ([#416](https://github.com/bakerkj/hass-apps/issues/416)) ([f9e250d](https://github.com/bakerkj/hass-apps/commit/f9e250d0d3ab35e314f8e699b6d76259fe99c755))
+* **signalk_bridge:** WS delta subscription + per-path publish rate limiter ([#413](https://github.com/bakerkj/hass-apps/issues/413)) ([a3003c5](https://github.com/bakerkj/hass-apps/commit/a3003c5216729ccdcb6c05c311dea2095782dd2c))
+
+
+### Code Refactoring
+
+* **signalk_bridge:** asyncio chassis (aiohttp + aiomqtt) ([#410](https://github.com/bakerkj/hass-apps/issues/410)) ([27c2357](https://github.com/bakerkj/hass-apps/commit/27c235772765ceb992ed1e259a056826eab644b8))
+
 ## [0.0.6](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.5...signalk_bridge-v0.0.6) (2026-08-03)
 
 

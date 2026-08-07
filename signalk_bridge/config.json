@@ -3,7 +3,7 @@
   "slug": "signalk_bridge",
   "description": "Publishes Signal K marine data (navigation, wind, depth, engine, batteries, tanks, switches, alarms, position) and NMEA 2000 bus health as Home Assistant MQTT Discovery entities.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "arch": [
     "aarch64",
     "amd64"
@@ -30,19 +30,19 @@
     "stale_after_seconds": 0,
     "stale_learning_max_age": 1800,
     "publish_unmapped": false,
-    "publish_min_interval_seconds": 1.0,
+    "publish_min_interval_seconds": 1,
     "publish_path_overrides": {
       "navigation.position": 0.5,
-      "environment.wind.*": 1.0,
-      "propulsion.*.revolutions": 1.0,
-      "electrical.batteries.*.voltage": 5.0,
-      "electrical.batteries.*.stateOfCharge": 30.0
+      "environment.wind.*": 1,
+      "propulsion.*.revolutions": 1,
+      "electrical.batteries.*.voltage": 5,
+      "electrical.batteries.*.stateOfCharge": 30
     },
     "ais_enabled": false,
     "ais_expire_seconds": 900,
     "ais_max_targets": 200,
     "ais_always_retain": [],
-    "ais_reap_window_seconds": 15.0,
+    "ais_reap_window_seconds": 15,
     "fleet_health_enabled": true,
     "fleet_health_stale_seconds": 90
   },
