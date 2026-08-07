@@ -84,11 +84,16 @@ Defaults:
 ```yaml
 publish_min_interval_seconds: 1.0
 publish_path_overrides:
-  navigation.position: 0.5
-  environment.wind.*: 1.0
-  propulsion.*.revolutions: 1.0
-  electrical.batteries.*.voltage: 5.0
-  electrical.batteries.*.stateOfCharge: 30.0
+  - path: navigation.position
+    interval_seconds: 0.5
+  - path: environment.wind.*
+    interval_seconds: 1.0
+  - path: propulsion.*.revolutions
+    interval_seconds: 1.0
+  - path: electrical.batteries.*.voltage
+    interval_seconds: 5.0
+  - path: electrical.batteries.*.stateOfCharge
+    interval_seconds: 30.0
 ```
 
 Overrides use fnmatch-style patterns against Signal K paths; the most specific
