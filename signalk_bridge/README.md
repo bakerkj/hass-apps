@@ -198,12 +198,13 @@ unregisters the entity, not left as ghost dots on the map. Sticky MMSIs in
 last-known position with a stale `last_seen` attribute.
 
 **Cold-start orphan reap.** On startup, the bridge subscribes to
-`homeassistant/device_tracker/signalk/ais_+/config` for
-`ais_reap_window_seconds` (default 15) to catalogue whatever AIS trackers HA
-still remembers from a prior run. Any MMSI observed in that window but not seen
-by the live registry gets empty-retained on both its config and attributes
-topics -- so orphans from a bridge crash / config rename / target permanently
-gone don't linger forever.
+`homeassistant/device_tracker/signalk/+/config` (MQTT's `+` wildcard must occupy
+a whole topic level) for `ais_reap_window_seconds` (default 15) and filters
+incoming topics client-side to the `ais_<mmsi>` prefix. It catalogues whatever
+AIS trackers HA still remembers from a prior run; any MMSI observed in that
+window but not seen by the live WS subscriber gets empty-retained on both its
+config and attributes topics -- so orphans from a bridge crash / config rename /
+target permanently gone don't linger forever.
 
 There is also a `sensor.signalk_ais_inventory` whose state is the current
 tracked-target count. Its `targets` attribute carries a sorted (most-recent
