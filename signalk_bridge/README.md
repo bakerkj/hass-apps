@@ -6,12 +6,18 @@ Publishes Signal K marine data as Home Assistant MQTT Discovery sensors, so NMEA
 ## How it works
 
 Signal K normalises everything on the NMEA 2000 bus into a single data model.
-This add-on polls that model and maps known paths onto HA entities, converting
-from Signal K's SI units into something readable.
+This add-on subscribes to that model's delta stream over Signal K's websocket,
+maintains a live mirror of `vessels/self`, and maps known paths onto HA entities
+— converting from Signal K's SI units into something readable.
 
 **Only paths actually present are published.** The mapping table covers more
 equipment than any one boat carries, so absent gear simply produces no entities
 rather than phantom sensors.
+
+**Per-path publish rate limiting** keeps busy sources (position, wind, RPM) from
+flooding MQTT. Each SK path has a minimum interval between MQTT publishes; a
+value that arrives inside the cap window is remembered and emitted as soon as
+the window opens (the latest value always wins).
 
 ## Unit conversions
 
@@ -65,12 +71,69 @@ logs an explicit 401/403 message — create a device token under **Security →
 Devices** and set `signalk_token`, or allow read-only access for unauthenticated
 clients in Signal K's settings.
 
-## Why polling rather than the delta websocket
+## Publish rate limiting
 
-Marine data reaches Home Assistant at a human timescale, a REST snapshot is
-internally consistent, and there is no reconnect/backfill state machine to get
-wrong. The websocket stream is the upgrade path if sub-second latency is ever
-wanted.
+Signal K deltas arrive at the source's own cadence (sub-second for GPS, wind,
+RPM). Publishing every one of them to MQTT would flood the broker and
+pointlessly churn Home Assistant's state machine. The bridge caps how often each
+SK path may republish; deltas that land inside the cap window are held (latest
+wins) and emitted as soon as the window opens.
+
+Defaults:
+
+```yaml
+publish_min_interval_seconds: 1.0
+publish_path_overrides:
+  navigation.position: 0.5
+  environment.wind.*: 1.0
+  propulsion.*.revolutions: 1.0
+  electrical.batteries.*.voltage: 5.0
+  electrical.batteries.*.stateOfCharge: 30.0
+```
+
+Overrides use fnmatch-style patterns against Signal K paths; the most specific
+(longest) matching pattern wins. Discovery topics are **not** rate-limited —
+they publish immediately on first sight of an entity so HA can create it.
+
+### Pairing with `recorder_downsampler` for graph history
+
+At source-rate publish, the recorder database grows fast. The companion
+[`ha-recorder-downsampler`](https://github.com/bakerkj/ha-recorder-downsampler)
+integration mirrors fast sources into 1/min aggregated siblings so the recorder
+sees one row per minute per source, while HA's live state still updates on every
+delta.
+
+```yaml
+# configuration.yaml
+recorder_downsampler:
+  interval: "00:01:00"
+  method: auto
+  rules: !include recorder_downsampler.yaml
+
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.signalk_*_voltage
+      - sensor.signalk_*_current
+      - sensor.signalk_*_power
+      - sensor.signalk_*_rpm
+      - sensor.signalk_*_wind_*
+      - sensor.signalk_navigation_*
+```
+
+```yaml
+# recorder_downsampler.yaml
+- name: Fast signalk sources
+  entity_regex_include: ["^sensor\\.signalk_"]
+  interval: "00:01:00"
+  method: auto
+```
+
+The `interval_seconds` option still governs how often the resolver ticks (and
+thus the maximum rate any published entity can reach given a matching
+`publish_path_overrides` entry). Set it to `1` if you want the rate limiter to
+actually control fine-grained cadence — leaving it at the historical default of
+`10` effectively floors every publish at 10s regardless of the limiter.
 
 ## Staleness detection
 

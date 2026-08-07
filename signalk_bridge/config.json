@@ -29,7 +29,15 @@
     "suppress_primary_on_fanout": false,
     "stale_after_seconds": 0,
     "stale_learning_max_age": 1800,
-    "publish_unmapped": false
+    "publish_unmapped": false,
+    "publish_min_interval_seconds": 1.0,
+    "publish_path_overrides": {
+      "navigation.position": 0.5,
+      "environment.wind.*": 1.0,
+      "propulsion.*.revolutions": 1.0,
+      "electrical.batteries.*.voltage": 5.0,
+      "electrical.batteries.*.stateOfCharge": 30.0
+    }
   },
   "schema": {
     "signalk_url": "str",
@@ -50,7 +58,11 @@
     "suppress_primary_on_fanout": "bool",
     "stale_after_seconds": "int(0,86400)",
     "stale_learning_max_age": "int(0,86400)",
-    "publish_unmapped": "bool"
+    "publish_unmapped": "bool",
+    "publish_min_interval_seconds": "float(0.05,300)",
+    "publish_path_overrides": {
+      "*": "float(0.05,600)"
+    }
   },
   "image": "ghcr.io/bakerkj/{arch}-signalk_bridge"
 }
