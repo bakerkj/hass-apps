@@ -761,6 +761,8 @@ GROUP_LABELS: dict[str, str] = {
     "steering": "Steering",
     "course": "Course",
     "system": "System",
+    "communication": "Communication",
+    "n2k": "N2K Fleet",
     "switches.bank": "Digital switches bank",
     "alarms": "Alarms",
     "n2k_bus": "NMEA 2000 Bus",
@@ -812,6 +814,13 @@ TEXT_MAP: dict[str, dict[str, Any]] = {
         "icon": "mdi:map-marker-path",
         "group": "course",
     },
+    # Own vessel's VHF callsign (static, but useful on the dashboard for
+    # quick reference and to confirm the DSC MMSI mapping is populated).
+    "communication.callsignVhf": {
+        "name": "VHF callsign",
+        "icon": "mdi:radio-handheld",
+        "group": "communication",
+    },
 }
 
 # Enum / free-text state on a wildcard (per-instance) path -> plain sensor,
@@ -851,10 +860,49 @@ POSITION_PATH = "navigation.position"
 NOTIFICATION_PREFIX = "notifications."
 _ALARM_CLEAR_STATES = {"normal", "nominal"}
 
+# Safety-critical notification branch roots -- DSC calls, MOB events,
+# distress relays -- get HA's ``safety`` device class so the mobile app
+# and dashboards escalate them prominently instead of the generic
+# ``problem`` class every other notification uses. Matched as full path
+# segments (exact match OR ``<prefix>.<something>``) so a future path
+# like ``notifications.mobileNetwork.lost`` does NOT collide with
+# ``notifications.mob``.
+SAFETY_NOTIFICATION_BRANCHES = (
+    "notifications.mob",
+    "notifications.dsc",
+    "notifications.communications.dsc",
+    "notifications.communication.dsc",
+    "notifications.communications.mob",
+    "notifications.communication.mob",
+    "notifications.communications.distress",
+    "notifications.communication.distress",
+)
+
 
 def notification_is_active(value: Any) -> bool:
     state = value.get("state") if isinstance(value, dict) else None
     return bool(state) and str(state).lower() not in _ALARM_CLEAR_STATES
+
+
+def notification_device_class(path: str) -> str:
+    """HA device_class for a notification path -- ``safety`` for DSC/MOB/
+    distress branches, ``problem`` for everything else.
+
+    Segment-boundary matching: ``notifications.mob`` matches exactly or
+    as ``notifications.mob.<anything>``, but NOT
+    ``notifications.mobileNetwork.lost``. Same pattern the file uses in
+    :func:`_is_suppressed`, so behaviour is consistent.
+    """
+    # `path in branches` handles exact match; the second clause handles
+    # any leaf under one of the branches. Together they give the exact
+    # segment-boundary semantics without a per-prefix loop.
+    if path in SAFETY_NOTIFICATION_BRANCHES:
+        return "safety"
+    return (
+        "safety"
+        if path.startswith(tuple(f"{p}." for p in SAFETY_NOTIFICATION_BRANCHES))
+        else "problem"
+    )
 
 
 def slugify(path: str) -> str:

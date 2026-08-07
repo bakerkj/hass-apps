@@ -135,6 +135,46 @@ thus the maximum rate any published entity can reach given a matching
 actually control fine-grained cadence — leaving it at the historical default of
 `10` effectively floors every publish at 10s regardless of the limiter.
 
+## N2K fleet health
+
+Every N2K device on the bus (Cerbo GX, YDNG-03 gateway, Actisense EMU-1, the AIS
+receiver, MFDs, Victron shunts/chargers, ...) gets one `binary_sensor` per
+device grouped under a single **N2K Fleet** device card. The state is `ON` when
+the device has emitted any PGN within `fleet_health_stale_seconds`, `OFF`
+otherwise -- a fast way to spot that the YDNG dropped off the bus (taking the
+ICOM's DSC path with it) or that an MFD is powered down.
+
+```yaml
+fleet_health_enabled: true # default on -- one binary_sensor per bus device
+fleet_health_stale_seconds: 90 # freshness window
+```
+
+Entities are keyed by canName (the address-claim identity, stable across bus
+resets) rather than address, so a device that renumbers doesn't collide with its
+old slot. The mutable address, model, manufacturer, deviceClass, last-seen PGN,
+and freshness age all land in the attributes for at-a-glance diagnosis.
+
+## Safety-critical notifications (DSC / MOB / distress)
+
+Notification paths under DSC, MOB, and distress-relay branches are surfaced as
+`binary_sensor` alarms with `device_class: safety` (not the generic `problem`
+class every other notification uses). HA's mobile app and dashboards treat
+`safety` alerts distinctly -- notifications lock the screen on Android and
+render with a red banner -- so a DSC distress call or MOB event won't get lost
+in the same lane as an engine over-temperature warning.
+
+Covered path prefixes (matched by prefix so canboatjs's exact per-call sub-path
+shape works either way):
+
+- `notifications.mob*`
+- `notifications.dsc.*`, `notifications.communications.dsc.*`,
+  `notifications.communication.dsc.*`
+- `notifications.communications.distress.*`,
+  `notifications.communication.distress.*`
+
+Own-vessel VHF callsign (`communication.callsignVhf`) surfaces as a plain-text
+sensor when present.
+
 ## AIS targets
 
 Opt-in via `ais_enabled: true`. When set, the bridge widens its Signal K
@@ -156,6 +196,15 @@ their discovery + attributes topics cleared with empty-retained payloads so HA
 unregisters the entity, not left as ghost dots on the map. Sticky MMSIs in
 `ais_always_retain` never expire once first observed — the tracker keeps its
 last-known position with a stale `last_seen` attribute.
+
+**Cold-start orphan reap.** On startup, the bridge subscribes to
+`homeassistant/device_tracker/signalk/+/config` (MQTT's `+` wildcard must occupy
+a whole topic level) for `ais_reap_window_seconds` (default 15) and filters
+incoming topics client-side to the `ais_<mmsi>` prefix. It catalogues whatever
+AIS trackers HA still remembers from a prior run; any MMSI observed in that
+window but not seen by the live WS subscriber gets empty-retained on both its
+config and attributes topics -- so orphans from a bridge crash / config rename /
+target permanently gone don't linger forever.
 
 There is also a `sensor.signalk_ais_inventory` whose state is the current
 tracked-target count. Its `targets` attribute carries a sorted (most-recent
