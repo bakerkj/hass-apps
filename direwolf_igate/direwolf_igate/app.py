@@ -32,8 +32,13 @@ from .util import log
 
 EXIT_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
-# Broker reconnect backoff. The tee runs regardless, so this only delays stats.
-_RECONNECT_SECONDS = 3
+# Broker reconnect backoff, doubling to a cap. The tee runs regardless, so this
+# only delays stats. Capped rather than flat: a broker down for hours would
+# otherwise draw a fresh TCP connect -- and a fresh DNS lookup, when mqtt_host is
+# a name -- every few seconds for the whole outage. Matches what paho did for us
+# before (reconnect_delay_set(1, 30) plus a 5s->60s ramp on the initial connect).
+_RECONNECT_MIN_SECONDS = 3
+_RECONNECT_MAX_SECONDS = 60
 
 
 def main() -> int:
@@ -150,10 +155,16 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
         pub.on_connected()
         try:
             await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
-        except ValueError as e:
-            # A malformed prefix is a config typo, not a broker fault. Costs us
-            # the HA birth message; discovery is still republished on every
-            # reconnect. Must not cost us MQTT.
+        except (ValueError, aiomqtt.MqttError) as e:
+            # ValueError is a malformed prefix (a config typo); MqttError is the
+            # broker refusing -- an ACL that grants publish on our base topic but
+            # not subscribe elsewhere is a normal lockdown for a stats-only
+            # client. Neither may end the session: letting them out means _run
+            # reconnects and dies here again every time, so the publisher never
+            # reaches its first publish and no stats ever appear. Costs us the HA
+            # birth message; discovery is still republished on every reconnect.
+            # A genuinely dead session raises again on the first publish below,
+            # which is the path that reconnects.
             log(
                 "ERROR",
                 f"cannot subscribe to {o.discovery_prefix}/status: {e};"
@@ -175,6 +186,26 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
                 await pub.publish_availability(mq, "offline")
             except Exception as e:  # noqa: BLE001 shutdown must not raise
                 log("WARNING", f"error during shutdown publish: {e!r}", o.log_level)
+
+
+async def _reconnect_loop(pub: Publisher, stop: asyncio.Event) -> None:
+    """Hold a session up, reconnecting with a capped backoff when it drops."""
+    delay = _RECONNECT_MIN_SECONDS
+    while not stop.is_set():
+        connected_at = pub.health.last_connect_ok
+        try:
+            await _session(pub, stop)
+        except aiomqtt.MqttError as e:
+            pub.on_disconnected()
+            # A session that got as far as connecting starts the ramp over:
+            # backoff is for a broker that is down, not one that dropped a
+            # client it was happy to serve a moment ago.
+            if pub.health.last_connect_ok != connected_at:
+                delay = _RECONNECT_MIN_SECONDS
+            log("WARNING", f"MQTT: {e}; reconnecting in {delay}s", pub.opts.log_level)
+            pub.check_watchdogs(asyncio.get_running_loop().time())
+            await _wait_or_stop(stop, delay)
+            delay = min(delay * 2, _RECONNECT_MAX_SECONDS)
 
 
 async def _run() -> int:
@@ -218,18 +249,7 @@ async def _run() -> int:
 
     tee = asyncio.create_task(_tee(pub, stop), name="tee")
     try:
-        while not stop.is_set():
-            try:
-                await _session(pub, stop)
-            except aiomqtt.MqttError as e:
-                pub.on_disconnected()
-                log(
-                    "WARNING",
-                    f"MQTT: {e}; reconnecting in {_RECONNECT_SECONDS}s",
-                    opts.log_level,
-                )
-                pub.check_watchdogs(asyncio.get_running_loop().time())
-                await _wait_or_stop(stop, _RECONNECT_SECONDS)
+        await _reconnect_loop(pub, stop)
     finally:
         tee.cancel()
         with contextlib.suppress(asyncio.CancelledError):

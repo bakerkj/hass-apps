@@ -14,6 +14,7 @@ import pytest
 from direwolf_igate.app import _publish_loop
 
 from direwolf_igate import DirewolfParser, Options, Publisher, from_mapping, overdue
+from direwolf_igate import app as app_mod
 
 MYCALL = "N0CALL-10"
 
@@ -354,6 +355,64 @@ async def test_a_broker_fault_still_leaves_the_loop_to_reconnect() -> None:
     pub.tick = boom  # type: ignore[method-assign]
     with pytest.raises(aiomqtt.MqttError):
         await _publish_loop(mq, pub, stop)
+
+
+# --- reconnect backoff -------------------------------------------------------
+
+
+async def test_a_broker_that_stays_down_backs_off_to_the_cap(monkeypatch) -> None:
+    """A flat retry means a multi-hour outage draws a fresh TCP connect -- and a
+    fresh DNS lookup, when mqtt_host is a name -- every few seconds throughout.
+
+    The waits are recorded rather than served, so the ramp is asserted without
+    the test taking the wall-clock time the ramp describes.
+    """
+    pub, _, _ = _publisher()
+    stop = asyncio.Event()
+    delays: list[float] = []
+
+    async def dead_session(_pub: object, _stop: object) -> None:
+        raise aiomqtt.MqttError("connection refused")
+
+    async def record(_stop: object, seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) >= 8:
+            stop.set()
+
+    monkeypatch.setattr(app_mod, "_session", dead_session)
+    monkeypatch.setattr(app_mod, "_wait_or_stop", record)
+    await app_mod._reconnect_loop(pub, stop)
+
+    assert delays == [3, 6, 12, 24, 48, 60, 60, 60]  # doubling, then capped
+
+
+async def test_a_session_that_connected_restarts_the_ramp(monkeypatch) -> None:
+    """Backoff is for a broker that is down. A broker that served us and then
+    dropped the connection must not inherit the previous outage's delay --
+    otherwise one long outage leaves every later blip waiting the full cap."""
+    pub, _, _ = _publisher()
+    stop = asyncio.Event()
+    delays: list[float] = []
+    rounds = [0]
+
+    async def session(p: Publisher, _stop: object) -> None:
+        rounds[0] += 1
+        # Rounds 3+ get as far as connecting before the broker drops them.
+        if rounds[0] >= 3:
+            p.on_connected()
+        raise aiomqtt.MqttError("dropped")
+
+    async def record(_stop: object, seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) >= 5:
+            stop.set()
+
+    monkeypatch.setattr(app_mod, "_session", session)
+    monkeypatch.setattr(app_mod, "_wait_or_stop", record)
+    await app_mod._reconnect_loop(pub, stop)
+
+    # Two failures ramp 3 -> 6; the first connected session resets to 3.
+    assert delays == [3, 6, 3, 3, 3]
 
 
 # --- broker resolution: option, then Supervisor service, then default --------
