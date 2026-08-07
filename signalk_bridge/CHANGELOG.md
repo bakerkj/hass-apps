@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.9](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.8...signalk_bridge-v0.0.9) (2026-08-07)
+
+
+### Bug Fixes
+
+* **signalk_bridge:** route WS deltas by self URN and stop deduping state on unchanged values ([#431](https://github.com/bakerkj/hass-apps/issues/431)) ([40bbe96](https://github.com/bakerkj/hass-apps/commit/40bbe9679ba809eccbc97ac041fe494754d787b7))
+
 ## [0.0.8](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.7...signalk_bridge-v0.0.8) (2026-08-07)
 
 

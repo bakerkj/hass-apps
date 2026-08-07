@@ -901,8 +901,6 @@ async def _run(
     bus: BusStats = opts_summary["bus"]
     use_access_flow: bool = opts_summary["use_access_flow"]
     limiter: PublishRateLimiter = opts_summary["limiter"]
-    last_state: dict[str, str] = opts_summary["last_state"]
-    last_attrs: dict[str, str] = opts_summary["last_attrs"]
     subscriber_holder: dict[str, WSSubscriber | None] = opts_summary["subscriber"]
     ais_enabled: bool = opts_summary["ais_enabled"]
     ais_registry: AISRegistry | None = opts_summary["ais_registry"]
@@ -1129,8 +1127,6 @@ async def _run(
                 retain=True,
             )
             announced.discard(expired_key)
-            last_state.pop(expired_key, None)
-            last_attrs.pop(expired_key, None)
             limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position")
             limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position.attrs")
             log.info("Unregistered expired AIS target %s", mmsi)
@@ -1161,12 +1157,18 @@ async def _run(
                 sv = str(value)
                 # Rate-limit by SK path so multi-source fanouts and derived
                 # entities share the config's per-pattern overrides correctly.
+                # Publish every time the limiter opens the window even if the
+                # value is unchanged: HA's ``expire_after`` marks the entity
+                # Unavailable if it hasn't seen a state update in that window,
+                # so a constant reading (fleet-health "ON", a switch, a
+                # fluid_type) must still tick. Staleness (not dedup) is what
+                # decides a source is dead -- the resolver drops that path
+                # from the entity dict and HA's ``expire_after`` fires.
                 approved = limiter.offer(limit_key, sv, now_mono)
-                if approved is not None and last_state.get(key) != approved:
+                if approved is not None:
                     await mq.publish(
                         state_topic(base_topic, key), payload=approved, qos=0
                     )
-                    last_state[key] = approved
             attrs = ent.get("attributes")
             if attrs is not None:
                 attrs_json = json.dumps(attrs)
@@ -1178,13 +1180,12 @@ async def _run(
                 approved_a = limiter.offer(
                     f"{limit_key}\x00attrs", attrs_json, now_mono
                 )
-                if approved_a is not None and last_attrs.get(key) != approved_a:
+                if approved_a is not None:
                     await mq.publish(
                         attributes_topic(base_topic, key),
                         payload=approved_a,
                         qos=0,
                     )
-                    last_attrs[key] = approved_a
 
         # NB: intentionally no ``limiter.due()`` sweep here. Any path that
         # transiently dropped out of ``entities`` (rare -- staleness withhold)
@@ -1301,8 +1302,6 @@ async def main_async(opts_path: str) -> int:
 
     announced: set[str] = set()
     bus = BusStats()
-    last_state: dict[str, str] = {}
-    last_attrs: dict[str, str] = {}
     subscriber_holder: dict[str, WSSubscriber | None] = {"ws": None}
 
     opts_summary: dict[str, Any] = {
@@ -1321,8 +1320,6 @@ async def main_async(opts_path: str) -> int:
         "use_access_flow": use_access_flow,
         "token": token,
         "limiter": limiter,
-        "last_state": last_state,
-        "last_attrs": last_attrs,
         "subscriber": subscriber_holder,
         "ais_enabled": ais_enabled,
         "ais_registry": ais_registry,
