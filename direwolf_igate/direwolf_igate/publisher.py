@@ -1,17 +1,21 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""MQTT side of the add-on: client lifecycle, discovery, states, watchdogs.
+"""MQTT side of the add-on: discovery, states, heartbeat, watchdogs.
 
-Separate from app.py, which owns the process, so the callbacks and watchdogs
-are reachable without a running pipe.
+Publishes are async against an ``aiomqtt.Client``: the whole add-on runs on a
+single event loop, so a sync send would stall the loop and stop the tee that
+direwolf depends on.
+
+Connection lifetime belongs to app.py -- this publishes into whatever session it
+is handed, and a broker disruption surfaces as ``aiomqtt.MqttError`` out of the
+publish so the caller can reconnect. Separate from app.py, which owns the
+process, so the payload building stays reachable without a running pipe.
 """
 
 import json
-import threading
 import time
-
-import paho.mqtt.client as mqtt
+from typing import Any, Protocol
 
 from .config import DEVICE_NAME, Options
 from .mqtt import (
@@ -19,12 +23,25 @@ from .mqtt import (
     SENSORS,
     MqttHealth,
     build_discovery_payloads,
-    connect_mqtt_with_retry,
     heartbeat_payload,
-    mqtt_publish,
 )
 from .parser import DirewolfParser
 from .util import log
+
+
+class Client(Protocol):
+    """Anything with an awaitable ``publish``.
+
+    A Protocol so tests can record publishes without importing aiomqtt.
+    """
+
+    async def publish(
+        self,
+        topic: str,
+        payload: bytes | str = "",
+        qos: int = 0,
+        retain: bool = False,
+    ) -> Any: ...
 
 
 def state_values(parser: DirewolfParser) -> dict[str, str]:
@@ -66,14 +83,16 @@ def overdue(now_mono: float, since: float, last_warned: float, timeout: int) -> 
 
 
 class Publisher:
-    """Owns the MQTT client. ``feed_observed`` is called from the reader thread;
-    everything else runs on the publisher thread or a paho callback."""
+    """Builds and publishes the add-on's MQTT surface.
+
+    ``feed_observed`` runs on the tee task and everything else on the publish
+    task, both on the one event loop, so neither needs locking.
+    """
 
     def __init__(self, opts: Options, parser: DirewolfParser) -> None:
         self.opts = opts
         self.parser = parser
         self.health = MqttHealth()
-        self.stop = threading.Event()
         self._discovered = False
         self._last_output_wall = 0.0
         self._last_output_monotonic = 0.0
@@ -81,68 +100,10 @@ class Publisher:
         self._last_stall_warned = 0.0
         # Treated as disconnected from construction, so a broker that is never
         # reachable trips the watchdog like one that drops. Left at 0.0 it never
-        # would, and only connect_mqtt_with_retry's own warnings appeared.
+        # would, and only the reconnect loop's own warnings appeared.
         self.health.last_disconnect_monotonic = time.monotonic()
 
-        self.client = mqtt.Client(client_id=opts.client_id, clean_session=True)
-        if opts.mqtt_username:
-            self.client.username_pw_set(opts.mqtt_username, opts.mqtt_password)
-        self.client.will_set(opts.availability_topic, "offline", qos=1, retain=True)
-        self.client.reconnect_delay_set(min_delay=1, max_delay=30)
-        self.client.on_connect = self._guarded_on_connect
-        self.client.on_disconnect = self._guarded_on_disconnect
-        self.client.on_message = self._guarded_on_message
-
-    # -- lifecycle ---------------------------------------------------------
-
-    def start(self) -> None:
-        """Connect and begin publishing, both on their own threads.
-
-        connect_mqtt_with_retry never gives up, so it must not run on the
-        thread that drains direwolf's output or the pipe fills and direwolf
-        blocks on write.
-        """
-        threading.Thread(target=self._connect, daemon=True, name="mqtt-connect").start()
-        threading.Thread(target=self._loop, daemon=True, name="mqtt-publish").start()
-
-    def _connect(self) -> None:
-        connect_mqtt_with_retry(
-            self.client, self.opts.mqtt_host, self.opts.mqtt_port, self.opts.log_level
-        )
-        self.client.loop_start()
-
-    def shutdown(self, *, farewell: bool) -> None:
-        """Stop publishing, tear down the client, and with ``farewell`` send the
-        retained "offline" first.
-
-        The publishes need a live session: publish() takes paho mutexes an
-        in-flight connect on the other thread may hold, and with no session
-        there is nothing to say anyway.
-        """
-        self.stop.set()
-        if not self.health.connected:
-            # No session to flush, and the network thread may be mid-connect()
-            # to an unreachable broker -- Linux's TCP connect timeout is 60-120s,
-            # and loop_stop() joins that thread. Skip the teardown; the caller
-            # is about to exit the process anyway, so the OS reaps the socket
-            # and the thread. Called from the SIGTERM handler where blocking
-            # here would silently push termination past run.sh's SIGKILL grace.
-            return
-        try:
-            if farewell:
-                self.publish_states()
-                self._publish(
-                    self.opts.availability_topic, "offline", qos=1, retain=True
-                )
-            # disconnect() first: it needs the network loop still running to
-            # flush the farewell, and sends the clean DISCONNECT that suppresses
-            # the last will. loop_stop() then joins the thread.
-            self.client.disconnect()
-            self.client.loop_stop()
-        except Exception as e:  # noqa: BLE001 shutdown must not hang or raise
-            log("WARNING", f"error during shutdown publish: {e!r}", self.opts.log_level)
-
-    # -- reader-thread entry point ----------------------------------------
+    # -- tee-task entry point ----------------------------------------------
 
     def feed_observed(self, line: str) -> None:
         """Record that direwolf produced output, then parse it."""
@@ -153,19 +114,30 @@ class Publisher:
         except Exception as e:  # noqa: BLE001 a parse bug must not kill the pipe
             log("WARNING", f"parse error: {e}", self.opts.log_level)
 
+    # -- session lifecycle -------------------------------------------------
+
+    def on_connected(self) -> None:
+        self.health.connected = True
+        self.health.last_connect_ok = time.time()
+        # Republish on every session: a broker restart drops retained config.
+        self._discovered = False
+
+    def on_disconnected(self) -> None:
+        self.health.connected = False
+        self.health.last_disconnect = time.time()
+        self.health.last_disconnect_monotonic = time.monotonic()
+
+    def on_ha_birth(self) -> None:
+        log(
+            "INFO",
+            "HA birth message received — will republish discovery",
+            self.opts.log_level,
+        )
+        self._discovered = False
+
     # -- publishing --------------------------------------------------------
 
-    def _publish(self, topic: str, payload: str, **kw: object) -> bool:
-        return mqtt_publish(
-            self.client,
-            topic,
-            payload,
-            log_level=self.opts.log_level,
-            health=self.health,
-            **kw,  # type: ignore[arg-type]
-        )
-
-    def publish_discovery(self) -> None:
+    async def publish_discovery(self, mq: Client) -> None:
         payloads = build_discovery_payloads(
             self.opts.discovery_prefix,
             self.opts.device_id,
@@ -175,14 +147,14 @@ class Publisher:
             self.opts.expire_after_s,
         )
         for topic, payload in payloads.items():
-            self._publish(
+            await mq.publish(
                 topic,
                 json.dumps(payload, separators=(",", ":")),
                 qos=1,
                 retain=True,
             )
 
-    def publish_states(self) -> None:
+    async def publish_states(self, mq: Client) -> None:
         values = state_values(self.parser)
         for key, meta in SENSORS.items():
             value = values.get(key)
@@ -194,15 +166,12 @@ class Publisher:
                 if meta.unit is None and meta.state_class is None:
                     continue
                 value = "None"
-            self._publish(
-                f"{self.opts.base_topic}/{key}/state",
-                value,
-                qos=0,
-                retain=True,
-                mark_state=True,
+            await mq.publish(
+                f"{self.opts.base_topic}/{key}/state", value, qos=0, retain=True
             )
+            self.health.last_state_publish_ok = time.time()
         for key in BINARY_SENSORS:
-            self._publish(
+            await mq.publish(
                 f"{self.opts.base_topic}/{key}/state",
                 "ON" if self.parser.stats.igate_connected else "OFF",
                 qos=0,
@@ -211,8 +180,8 @@ class Publisher:
                 retain=False,
             )
 
-    def publish_heartbeat(self, now: float) -> None:
-        self._publish(
+    async def publish_heartbeat(self, mq: Client, now: float) -> None:
+        await mq.publish(
             self.opts.heartbeat_topic,
             json.dumps(
                 heartbeat_payload(
@@ -223,6 +192,9 @@ class Publisher:
             qos=0,
             retain=False,
         )
+
+    async def publish_availability(self, mq: Client, payload: str) -> None:
+        await mq.publish(self.opts.availability_topic, payload, qos=1, retain=True)
 
     # -- watchdogs ---------------------------------------------------------
 
@@ -264,87 +236,15 @@ class Publisher:
             )
             self._last_stall_warned = now_mono
 
-    def tick(self) -> None:
-        """One publish cycle."""
-        if self.health.connected and not self._discovered:
-            self.publish_discovery()
+    async def tick(self, mq: Client) -> None:
+        """One publish cycle. Broker faults propagate so the caller reconnects."""
+        if not self._discovered:
+            # Immediately on (re)connect, so entities exist in HA before the
+            # first state lands.
+            await self.publish_discovery(mq)
+            await self.publish_availability(mq, "online")
             self._discovered = True
         self.parser.sample_rates()
-        self.publish_states()
-        self.publish_heartbeat(time.time())
+        await self.publish_states(mq)
+        await self.publish_heartbeat(mq, time.time())
         self.check_watchdogs(time.monotonic())
-
-    def _loop(self) -> None:
-        while not self.stop.wait(self.opts.interval):
-            try:
-                self.tick()
-            except Exception as e:  # noqa: BLE001 one bad cycle must not end them all
-                log("ERROR", f"publish cycle failed: {e!r}", self.opts.log_level)
-
-    # -- paho callbacks ----------------------------------------------------
-
-    # paho re-raises callback exceptions out of the network loop, killing that
-    # thread permanently and disabling reconnect. Nothing may escape any of them.
-    def _guard(self, name: str, fn: object, *args: object) -> None:
-        try:
-            fn(*args)  # type: ignore[operator]
-        except Exception as e:  # noqa: BLE001 must not kill paho's network thread
-            log("ERROR", f"{name} failed: {e!r}", self.opts.log_level)
-
-    def _guarded_on_connect(
-        self, client: mqtt.Client, _userdata: object, _flags: object, rc: int
-    ) -> None:
-        self._guard("on_connect", self._on_connect, client, rc)
-
-    def _guarded_on_disconnect(
-        self, client: mqtt.Client, _userdata: object, rc: int
-    ) -> None:
-        self._guard("on_disconnect", self._on_disconnect, client, None, rc)
-
-    def _guarded_on_message(
-        self, client: mqtt.Client, _userdata: object, msg: mqtt.MQTTMessage
-    ) -> None:
-        self._guard("on_message", self._on_message, client, None, msg)
-
-    def _on_connect(self, client: mqtt.Client, rc: int) -> None:
-        o = self.opts
-        if rc != 0:
-            self.health.connected = False
-            log("ERROR", f"MQTT connect failed rc={rc}", o.log_level)
-            return
-        self.health.connected = True
-        self.health.last_connect_ok = time.time()
-        log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
-        try:
-            client.subscribe(f"{o.discovery_prefix}/status", qos=1)
-        except ValueError as e:
-            # Costs us the HA birth message; discovery is still republished on
-            # every reconnect. Must not cost us MQTT.
-            log(
-                "ERROR",
-                f"cannot subscribe to {o.discovery_prefix}/status: {e};"
-                " HA restart will not trigger rediscovery",
-                o.log_level,
-            )
-        self._publish(o.availability_topic, "online", qos=1, retain=True)
-        # Immediately, so entities exist in HA on (re)connect.
-        self.publish_discovery()
-        self.publish_states()
-        self._discovered = True
-
-    def _on_disconnect(self, _client: mqtt.Client, _userdata: object, rc: int) -> None:
-        self.health.connected = False
-        self.health.last_disconnect = time.time()
-        self.health.last_disconnect_monotonic = time.monotonic()
-        log("WARNING", f"MQTT disconnected rc={rc}", self.opts.log_level)
-
-    def _on_message(
-        self, _client: mqtt.Client, _userdata: object, msg: mqtt.MQTTMessage
-    ) -> None:
-        if msg.payload.decode(errors="replace").strip() == "online":
-            log(
-                "INFO",
-                "HA birth message received — will republish discovery",
-                self.opts.log_level,
-            )
-            self._discovered = False

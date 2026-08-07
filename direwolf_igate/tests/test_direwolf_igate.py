@@ -257,90 +257,6 @@ def test_connectivity_sensor_expires_but_rf_sensors_do_not() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MQTT client helpers. Exercised against the repo-wide paho stub installed by
-# the root conftest, matching how turbostat_mqtt and intel_gpu_top_mqtt test
-# theirs -- no broker, and no attempt to stand in for absent radio hardware.
-# ---------------------------------------------------------------------------
-
-
-def test_mqtt_publish_success_marks_state() -> None:
-    from direwolf_igate import MqttHealth, mqtt_publish
-
-    health = MqttHealth()
-    client = _StubClient(rc=0)
-
-    assert mqtt_publish(
-        client,
-        "t/x/state",
-        "1",
-        qos=0,
-        retain=True,
-        log_level="ERROR",
-        health=health,
-        mark_state=True,
-    )
-    assert health.last_state_publish_ok > 0
-    assert client.published == [("t/x/state", "1", 0, True)]
-
-
-def test_mqtt_publish_reports_failure_without_raising() -> None:
-    """A publish failure must be survivable: this process feeds the add-on log
-    and must not take direwolf down with it."""
-    from direwolf_igate import MqttHealth, mqtt_publish
-
-    health = MqttHealth()
-
-    assert not mqtt_publish(
-        _StubClient(rc=1),
-        "t/x/state",
-        "1",
-        qos=0,
-        retain=True,
-        log_level="ERROR",
-        health=health,
-        # WITH mark_state: without it the assertion below is vacuous, since
-        # the stamp is gated on mark_state (default False) and could never
-        # fire regardless of rc. A broker rejecting every publish would then
-        # keep stamping a fresh state_publish_age_s, so the diagnostic meant
-        # to reveal a stuck publisher reports healthy through the outage.
-        mark_state=True,
-    )
-    assert health.last_state_publish_ok == 0
-
-    class _Boom:
-        def publish(self, *_a: object, **_k: object) -> None:
-            raise RuntimeError("broker exploded")
-
-    assert not mqtt_publish(
-        _Boom(),
-        "t/x/state",
-        "1",
-        qos=0,
-        retain=True,
-        log_level="ERROR",
-        health=health,
-    )
-
-
-class _StubClient:
-    def __init__(self, rc: int = 0) -> None:
-        self.rc = rc
-        self.published: list[tuple[str, str, int, bool]] = []
-
-    def publish(
-        self, topic: str, payload: str = "", qos: int = 0, retain: bool = False
-    ) -> object:
-        self.published.append((topic, payload, qos, retain))
-
-        class _Info:
-            pass
-
-        info = _Info()
-        info.rc = self.rc  # type: ignore[attr-defined]
-        return info
-
-
-# ---------------------------------------------------------------------------
 # Resilience parity with the sibling MQTT add-ons
 # ---------------------------------------------------------------------------
 
@@ -896,17 +812,19 @@ def test_mqtt_enabled_reads_a_string_the_way_it_is_written() -> None:
 def test_pass_through_fallback_restores_default_signal_handlers(monkeypatch) -> None:
     """The fallback blocks the main thread in a plain read.
 
-    Our handlers only run between bytecodes, so one left installed there would
-    be lost exactly as it was in the main loop; the default disposition
-    terminates in the kernel instead.
+    Closing the loop restores SIGTERM to SIG_DFL but SIGINT only to
+    default_int_handler, which is still a Python-level handler and so still
+    loseable in that read; both must end up on the default disposition.
     """
+    import asyncio
     import signal
 
     from direwolf_igate import app as app_mod
 
-    def boom() -> int:
-        signal.signal(signal.SIGTERM, lambda *_: None)
-        signal.signal(signal.SIGINT, lambda *_: None)
+    async def boom() -> int:
+        loop = asyncio.get_running_loop()
+        for signum in app_mod.EXIT_SIGNALS:
+            loop.add_signal_handler(signum, lambda: None)
         raise RuntimeError("publisher blew up after installing handlers")
 
     seen: dict[str, object] = {}

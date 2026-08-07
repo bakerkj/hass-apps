@@ -6,15 +6,23 @@
 This process sits in a pipe between direwolf and the log, so it must never exit:
 that would SIGPIPE direwolf and stop the IGate over a metrics fault. Every line
 is teed before anything else runs, and unexpected failures degrade to a plain
-pass-through. The MQTT side lives in publisher.py.
+pass-through. The MQTT surface lives in publisher.py.
+
+One asyncio loop, aiohttp-style: aiomqtt for the broker, connect_read_pipe for
+direwolf's output, asyncio.Event for shutdown. There are no threads and no
+``signal.signal``, so the tee cannot stall on a broker fault and a signal cannot
+be lost -- ``add_signal_handler`` rides ``set_wakeup_fd``, which wakes the
+selector whenever the signal lands rather than needing the main thread to be
+between bytecodes.
 """
 
 import argparse
-import os
+import asyncio
+import contextlib
 import signal
 import sys
-import threading
-from types import FrameType
+
+import aiomqtt
 
 from . import __version__
 from . import config as config_mod
@@ -22,25 +30,26 @@ from .parser import DirewolfParser
 from .publisher import Publisher
 from .util import log
 
-# Upper bound on how long a pending signal handler waits for the main thread.
-_SIGNAL_POLL_SECONDS = 0.25
+EXIT_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+# Broker reconnect backoff. The tee runs regardless, so this only delays stats.
+_RECONNECT_SECONDS = 3
 
 
 def main() -> int:
     """Never die of our own accord: any failure degrades to a pass-through."""
     _reconfigure_stdio()
     try:
-        return _run()
+        return asyncio.run(_run())
     except Exception as e:  # noqa: BLE001 last line of defence; see module docstring
         print(
             f"[WARNING] statistics publisher failed ({e!r}); "
             f"continuing as a plain pass-through",
             flush=True,
         )
-        # tee_only blocks the main thread in a plain read, so leaving our
-        # handlers installed would lose a signal exactly as _run did. The
-        # default disposition terminates in the kernel, with no dependence on
-        # the interpreter ever running again.
+        # Closing the loop restores SIGTERM to SIG_DFL but SIGINT only to
+        # default_int_handler, which is still a Python-level handler and so
+        # still loseable in the blocking read below.
         _restore_default_signal_handlers()
         try:
             tee_only()
@@ -50,7 +59,7 @@ def main() -> int:
 
 
 def _restore_default_signal_handlers() -> None:
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    for signum in EXIT_SIGNALS:
         try:
             signal.signal(signum, signal.SIG_DFL)
         except OSError, ValueError:
@@ -71,7 +80,77 @@ def _reconfigure_stdio() -> None:
             pass
 
 
-def _run() -> int:
+async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    """Sleep, but return early once shutdown is requested."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+
+
+async def _tee(pub: Publisher, stop: asyncio.Event) -> None:
+    """Drain direwolf forever. Never gated on MQTT: if this stops, the pipe
+    fills at 64 KiB and direwolf blocks on write, taking the gateway off air."""
+    reader = asyncio.StreamReader()
+    await asyncio.get_running_loop().connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
+    )
+    while line := await reader.readline():
+        # Tee first and byte-exact: the log must not depend on anything below
+        # succeeding, and an 8-bit APRS payload must round-trip untouched.
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+        pub.feed_observed(line.decode("utf-8", "surrogateescape"))
+    stop.set()  # EOF: direwolf is gone, so we are done
+
+
+async def _watch_birth(mq: aiomqtt.Client, pub: Publisher) -> None:
+    """Republish discovery when HA announces it has restarted."""
+    async for message in mq.messages:
+        if (
+            message.payload
+            and bytes(message.payload).decode(errors="replace").strip() == "online"
+        ):
+            pub.on_ha_birth()
+
+
+async def _publish_loop(
+    mq: aiomqtt.Client, pub: Publisher, stop: asyncio.Event
+) -> None:
+    """Publish until shutdown or a broker fault, which the caller reconnects."""
+    while not stop.is_set():
+        await pub.tick(mq)
+        await _wait_or_stop(stop, pub.opts.interval)
+
+
+async def _session(pub: Publisher, stop: asyncio.Event) -> None:
+    """One connected session: subscribe, publish, and surface faults."""
+    o = pub.opts
+    async with aiomqtt.Client(
+        hostname=o.mqtt_host,
+        port=o.mqtt_port,
+        username=o.mqtt_username or None,
+        password=o.mqtt_password or None,
+        identifier=o.client_id,
+        will=aiomqtt.Will(
+            topic=o.availability_topic, payload=b"offline", qos=1, retain=True
+        ),
+        keepalive=60,
+    ) as mq:
+        log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
+        pub.on_connected()
+        await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+        birth = asyncio.create_task(_watch_birth(mq, pub), name="birth")
+        try:
+            await _publish_loop(mq, pub, stop)
+        finally:
+            birth.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await birth
+            # Supersede the will while the session is still up.
+            with contextlib.suppress(aiomqtt.MqttError):
+                await pub.publish_availability(mq, "offline")
+
+
+async def _run() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--options", required=True)
     ap.add_argument(
@@ -105,54 +184,32 @@ def _run() -> int:
     log("INFO", opts.summary(args.mycall), opts.log_level)
 
     pub = Publisher(opts, DirewolfParser(args.mycall))
-    pub.start()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in EXIT_SIGNALS:
+        loop.add_signal_handler(signum, stop.set)
 
-    def shutdown(signum: int, _frame: FrameType | None) -> None:
-        """Publish the farewell, then re-raise for the conventional exit status.
-
-        The read loop never consults the stop event, so the ``finally`` below is
-        unreachable on a signal and the retained "offline" has to go out here.
-        """
-        try:
-            pub.shutdown(farewell=True)
-        finally:
-            signal.signal(signum, signal.SIG_DFL)
-            os.kill(os.getpid(), signum)
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
-
-    # The tee runs off the main thread so the main thread never parks in a
-    # blocking read. Python runs handlers only between bytecodes on the main
-    # thread, and a signal landing just before read() enters the kernel leaves
-    # no EINTR to wake it -- the handler never runs and SIGTERM is lost, not
-    # delayed. Waiting with a timeout keeps returning to the interpreter.
-    finished = threading.Event()
-    failure: list[BaseException] = []
-
-    def drain() -> None:
-        try:
-            for line in sys.stdin:
-                # Tee first: the log must not depend on anything below succeeding.
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                pub.feed_observed(line)
-        except BaseException as e:  # noqa: BLE001 re-raised on the main thread
-            failure.append(e)
-        finally:
-            finished.set()
-
-    threading.Thread(target=drain, daemon=True, name="tee").start()
-
+    tee = asyncio.create_task(_tee(pub, stop), name="tee")
     try:
-        while not finished.wait(_SIGNAL_POLL_SECONDS):
-            pass
-        if failure:
-            # Surfaced here so main()'s pass-through fallback still covers it.
-            raise failure[0]
+        while not stop.is_set():
+            try:
+                await _session(pub, stop)
+            except aiomqtt.MqttError as e:
+                pub.on_disconnected()
+                log(
+                    "WARNING",
+                    f"MQTT: {e}; reconnecting in {_RECONNECT_SECONDS}s",
+                    opts.log_level,
+                )
+                pub.check_watchdogs(asyncio.get_running_loop().time())
+                await _wait_or_stop(stop, _RECONNECT_SECONDS)
     finally:
-        # EOF path; the signal handler publishes its own farewell.
-        pub.shutdown(farewell=True)
+        tee.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tee
+        if not tee.cancelled() and (tee_error := tee.exception()) is not None:
+            # main()'s pass-through fallback covers a broken tee.
+            raise tee_error
 
     return 0
 

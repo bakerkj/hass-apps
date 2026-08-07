@@ -1,14 +1,9 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""MQTT client helpers: health tracking, publish wrapper, discovery payloads."""
+"""MQTT helpers: health tracking, discovery payloads, sensor definitions."""
 
-import time
 from typing import Any, NamedTuple
-
-import paho.mqtt.client as mqtt
-
-from .util import log
 
 
 class MqttHealth:
@@ -138,51 +133,6 @@ BINARY_SENSORS: dict[str, SensorMeta] = {
         device_class="connectivity",
     ),
 }
-
-
-def mqtt_publish(
-    client: mqtt.Client,
-    topic: str,
-    payload: str,
-    *,
-    qos: int,
-    retain: bool,
-    log_level: str,
-    health: MqttHealth,
-    mark_state: bool = False,
-) -> bool:
-    try:
-        info = client.publish(topic, payload=payload, qos=qos, retain=retain)
-        if info.rc == mqtt.MQTT_ERR_SUCCESS:
-            if mark_state:
-                health.last_state_publish_ok = time.time()
-            return True
-        log("WARNING", f"MQTT publish rc={info.rc} topic={topic}", log_level)
-    except Exception as e:  # noqa: BLE001 publish wrapper must not crash caller
-        log("WARNING", f"MQTT publish failed topic={topic}: {e}", log_level)
-    return False
-
-
-def connect_mqtt_with_retry(
-    client: mqtt.Client,
-    mqtt_host: str,
-    mqtt_port: int,
-    log_level: str,
-) -> None:
-    delay = 5
-    while True:
-        try:
-            client.connect(mqtt_host, mqtt_port, keepalive=60)
-            return
-        except Exception as e:  # noqa: BLE001 retry loop must not crash
-            log(
-                "WARNING",
-                f"Cannot connect to MQTT broker {mqtt_host}:{mqtt_port}: {e}"
-                f" — retrying in {delay}s",
-                log_level,
-            )
-            time.sleep(delay)
-            delay = min(delay * 2, 60)
 
 
 def build_discovery_payloads(
