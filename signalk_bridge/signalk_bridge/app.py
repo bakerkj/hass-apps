@@ -1,21 +1,29 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Bridge Signal K marine data into Home Assistant as MQTT Discovery entities."""
+"""Bridge Signal K marine data into Home Assistant as MQTT Discovery entities.
+
+The bridge runs on a single asyncio event loop: aiohttp for the SK REST calls,
+aiomqtt for the MQTT client, and asyncio.sleep for the poll cadence. Every
+sync-blocking call (urllib, paho.loop_start's thread, threading.Event) was
+removed so a slow SK response or MQTT reconnect cannot starve the other side.
+Pure computation (entity resolution, path flattening, staleness scoring) stays
+sync -- it's microseconds and adding coroutines around it would only add noise.
+"""
 
 import argparse
+import asyncio
+import contextlib
 import json
 import logging
 import re
 import signal
 import sys
-import threading
-import time
 from datetime import UTC, datetime
-from types import FrameType
 from typing import Any
 
-import paho.mqtt.client as mqtt
+import aiohttp
+import aiomqtt
 
 from . import __version__, auth, paths, staleness
 from .busstats import BusStats
@@ -35,13 +43,6 @@ from .mqtt import (
 from .paths import PATH_MAP, flatten, match_path, resolve_group, slugify
 
 log = logging.getLogger(__name__)
-
-_stop = threading.Event()
-
-
-def _handle_signal(signum: int, _frame: FrameType | None) -> None:
-    log.info("Received signal %d; shutting down", signum)
-    _stop.set()
 
 
 def configure_logging(level: str) -> None:
@@ -661,14 +662,222 @@ def _unmapped_entities(
     return entities
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="signalk_bridge")
-    ap.add_argument("--options", default="/data/options.json")
-    args = ap.parse_args(argv)
+# ---- runtime -----------------------------------------------------------------
 
+
+async def _obtain_token(
+    session: aiohttp.ClientSession,
+    stop: asyncio.Event,
+    base_url: str,
+    data_dir: str,
+) -> str | None:
+    """Run the request-and-approve handshake until we have a token, ``stop`` is
+    set, or the request is denied. Returns the token (also saved to disk), or
+    None on ``stop``/DENIED so the caller re-enters the loop.
+
+    Kept as its own coroutine so :func:`_run` reads as a normal poll loop
+    instead of interleaving the handshake state machine.
+    """
+    cid = auth.client_id(data_dir)
+    access_href: str | None = None
+    while not stop.is_set():
+        if access_href is None:
+            try:
+                access_href = await auth.request_access(
+                    session, base_url, cid, "Signal K to Home Assistant bridge"
+                )
+                log.warning(
+                    "Requested access from Signal K. APPROVE IT: Signal K -> "
+                    "Security -> Access Requests -> approve (read, no expiry)."
+                )
+            except SignalKError as exc:
+                log.warning("Could not submit access request: %s", exc)
+                await _wait_or_stop(stop, 5)
+                continue
+        try:
+            state, tok = await auth.poll_request(session, base_url, access_href)
+        except SignalKError as exc:
+            log.debug("poll error: %s", exc)
+            await _wait_or_stop(stop, 3)
+            continue
+        if state == "APPROVED" and tok:
+            auth.save_token(data_dir, tok)
+            log.warning("Access approved -- token saved. Bridge is authenticated.")
+            return tok
+        if state == "DENIED":
+            log.error("Access request was DENIED in Signal K; re-requesting shortly.")
+            access_href = None
+            await _wait_or_stop(stop, 30)
+            continue
+        log.info("Waiting for approval in Signal K -> Security -> Access Requests...")
+        await _wait_or_stop(stop, 3)
+    return None
+
+
+async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    """Sleep for ``seconds`` unless ``stop`` is set. Returns as soon as either
+    happens. Used everywhere the poll loop would sleep so shutdown is prompt."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except TimeoutError:
+        return
+
+
+async def _run(
+    session: aiohttp.ClientSession,
+    mq: aiomqtt.Client,
+    stop: asyncio.Event,
+    opts_summary: dict[str, Any],
+) -> None:
+    """One MQTT session's worth of the poll loop.
+
+    Returns cleanly on ``stop`` and returns (letting the ``aiomqtt.MqttError``
+    catch in :func:`main_async` reconnect) on any broker disruption. State that
+    should survive reconnects (``announced``, staleness, source_tags) is held
+    in :func:`main_async` and passed in via ``opts_summary``.
+    """
+    base_url = opts_summary["base_url"]
+    data_dir = opts_summary["data_dir"]
+    discovery_prefix = opts_summary["discovery_prefix"]
+    base_topic = opts_summary["base_topic"]
+    interval = opts_summary["interval"]
+    expire_after_s = opts_summary["expire_after_s"]
+    suppress_paths = opts_summary["suppress_paths"]
+    suppress_primary_on_fanout = opts_summary["suppress_primary_on_fanout"]
+    publish_unmapped = opts_summary["publish_unmapped"]
+    tracker: staleness.StalenessTracker | None = opts_summary["tracker"]
+    announced: set[str] = opts_summary["announced"]
+    bus: BusStats = opts_summary["bus"]
+    use_access_flow: bool = opts_summary["use_access_flow"]
+
+    token: str | None = opts_summary.get("token")
+    sources_cache: dict[str, Any] = {}
+    source_tags: dict[str, str] = {}
+    cycle = 0
+    warned_empty = False
+
+    save_every = max(1, 300 // max(1, interval))
+    sources_every = max(1, 60 // max(1, interval))
+
+    while not stop.is_set():
+        started = asyncio.get_running_loop().time()
+
+        if use_access_flow and not token:
+            token = await _obtain_token(session, stop, base_url, data_dir)
+            opts_summary["token"] = token
+            if token is None:
+                continue  # stop or DENIED loop -- re-check stop and retry
+
+        try:
+            tree = await get_self(session, base_url, token)
+        except SignalKAuthError:
+            if use_access_flow:
+                log.warning("Token rejected by Signal K; requesting access again.")
+                auth.clear_token(data_dir)
+                token = None
+                opts_summary["token"] = None
+            else:
+                log.warning("Signal K rejected the configured signalk_token (401/403).")
+            await mq.publish(
+                availability_topic(base_topic), payload=b"offline", qos=1, retain=True
+            )
+            await _wait_or_stop(stop, 2)
+            continue
+        except SignalKError as exc:
+            log.warning("%s", exc)
+            await mq.publish(
+                availability_topic(base_topic), payload=b"offline", qos=1, retain=True
+            )
+            await _wait_or_stop(stop, max(1, interval))
+            continue
+
+        # Refresh /sources first so resolve_entities can disambiguate
+        # multi-source leaves (two BMVs on the same batteries.0 path, etc.)
+        # via friendly source tags.
+        if cycle % sources_every == 0:
+            try:
+                sources_cache = await get_sources(session, base_url, token)
+                source_tags = paths.build_source_tags(sources_cache)
+            except SignalKError as exc:
+                log.debug("sources fetch failed: %s", exc)
+
+        try:
+            data_entities = _map_tree(
+                tracker,
+                tree,
+                source_tags,
+                suppress_paths,
+                suppress_primary_on_fanout,
+                datetime.now(UTC),
+                publish_unmapped,
+            )
+        except Exception:
+            log.exception("Error mapping Signal K data, skipping cycle")
+            await _wait_or_stop(stop, max(1, interval))
+            continue
+
+        if not data_entities and not warned_empty:
+            # Almost always means no NMEA 2000 traffic rather than a bridge
+            # fault, so say so explicitly instead of sitting silent.
+            log.warning(
+                "Signal K reachable but produced no mapped values. If this "
+                "persists, check that can0 is receiving frames "
+                "(cat /sys/class/net/can0/statistics/rx_packets) and that a "
+                "canbus connection is configured in Signal K."
+            )
+            warned_empty = True
+        elif data_entities:
+            warned_empty = False
+
+        bus_entities: dict[str, dict[str, Any]] = {}
+        if bus.available():
+            try:
+                bus_entities = bus.sample(sources_cache)
+            except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon
+                log.debug("bus stats sample failed: %s", exc)
+        cycle += 1
+        if tracker is not None and cycle % save_every == 0:
+            tracker.save(datetime.now(UTC))
+
+        entities = {**data_entities, **bus_entities}
+
+        for key, ent in entities.items():
+            if key not in announced:
+                await publish_discovery(
+                    mq, discovery_prefix, base_topic, key, ent, expire_after_s
+                )
+                announced.add(key)
+                log.info(
+                    "Discovered %s -> %s (%s)",
+                    ent.get("path", key),
+                    ent["name"],
+                    ent["group_label"],
+                )
+            value = ent.get("state")
+            if value is not None:
+                await mq.publish(state_topic(base_topic, key), payload=value, qos=0)
+            attrs = ent.get("attributes")
+            if attrs is not None:
+                await mq.publish(
+                    attributes_topic(base_topic, key),
+                    payload=json.dumps(attrs),
+                    qos=0,
+                )
+
+        await mq.publish(
+            availability_topic(base_topic), payload=b"online", qos=1, retain=True
+        )
+        log.debug("Published %d entities", len(entities))
+
+        elapsed = asyncio.get_running_loop().time() - started
+        await _wait_or_stop(stop, max(0.0, interval - elapsed))
+
+
+async def main_async(opts_path: str) -> int:
     from .config import load_options_file, redact_options_for_log, resolve_mqtt_config
 
-    opts = load_options_file(args.options, ap)
+    ap = argparse.ArgumentParser(prog="signalk_bridge")
+    opts = load_options_file(opts_path, ap)
     configure_logging(str(opts.get("log_level") or "INFO"))
 
     log.info("Signal K -> Home Assistant bridge v%s starting", __version__)
@@ -680,8 +889,6 @@ def main(argv: list[str] | None = None) -> int:
 
     base_url = str(opts.get("signalk_url") or "http://localhost:3000")
     data_dir = str(opts.get("data_dir") or "/data")
-    # An explicit signalk_token wins. Otherwise use the request-and-approve flow,
-    # reusing a previously granted (persisted) token if we have one.
     token = str(opts.get("signalk_token") or "") or None
     use_access_flow = token is None
     if use_access_flow:
@@ -706,34 +913,11 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s", exc)
         return 1
 
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
 
-    try:
-        info = get_server_info(base_url)
-        ver = info.get("server", {}).get("version", "unknown")
-        log.info("Signal K server at %s (version %s)", base_url, ver)
-    except SignalKError as exc:
-        log.warning("Signal K not reachable yet: %s", exc)
-
-    client = mqtt.Client(client_id=client_id)
-    if mqtt_cfg["username"]:
-        client.username_pw_set(mqtt_cfg["username"], mqtt_cfg["password"])
-    client.will_set(availability_topic(base_topic), "offline", qos=1, retain=True)
-    try:
-        client.connect(mqtt_cfg["host"], mqtt_cfg["port"], keepalive=60)
-    except OSError as exc:
-        log.error("Could not connect to MQTT broker: %s", exc)
-        return 1
-    client.loop_start()
-
-    announced: set[str] = set()
-    warned_empty = False
-    access_href: str | None = None
-    bus = BusStats()
-    sources_cache: dict[str, Any] = {}
-    source_tags: dict[str, str] = {}
-    cycle = 0
     tracker: staleness.StalenessTracker | None = None
     if stale_after_s > 0:
         if stale_after_s < expire_after_s:
@@ -756,179 +940,92 @@ def main(argv: list[str] | None = None) -> int:
             stale_after_s,
             f"{stale_learning_max_age}s" if stale_learning_max_age > 0 else "off",
         )
-    # Learned cadences change slowly; persist ~every 5 min (plus on shutdown) to
-    # spare the flash rather than rewriting the snapshot every cycle.
-    save_every = max(1, 300 // max(1, interval))
-    # /sources is a large payload; refresh the device inventory ~once a minute.
-    sources_every = max(1, 60 // max(1, interval))
 
-    # Polling model, not the delta websocket: each cycle pulls a full REST
-    # snapshot and republishes. Marine data is human-timescale, a snapshot is
-    # internally consistent, and there is no reconnect/backfill state machine to
-    # get wrong. `interval` governs freshness; the delta stream is the upgrade
-    # path only if sub-second latency is ever needed.
-    try:
-        while not _stop.is_set():
-            started = time.monotonic()
+    announced: set[str] = set()
+    bus = BusStats()
 
-            # Obtain a token via the request-and-approve flow if we don't have one.
-            if use_access_flow and not token:
-                if access_href is None:
-                    try:
-                        cid = auth.client_id(data_dir)
-                        access_href = auth.request_access(
-                            base_url, cid, "Signal K to Home Assistant bridge"
-                        )
-                        log.warning(
-                            "Requested access from Signal K. APPROVE IT: Signal K "
-                            "-> Security -> Access Requests -> approve (read, no expiry)."
-                        )
-                    except SignalKError as exc:
-                        log.warning("Could not submit access request: %s", exc)
-                        _stop.wait(max(2, interval))
-                    continue
+    opts_summary: dict[str, Any] = {
+        "base_url": base_url,
+        "data_dir": data_dir,
+        "discovery_prefix": discovery_prefix,
+        "base_topic": base_topic,
+        "interval": interval,
+        "expire_after_s": expire_after_s,
+        "suppress_paths": suppress_paths,
+        "suppress_primary_on_fanout": suppress_primary_on_fanout,
+        "publish_unmapped": publish_unmapped,
+        "tracker": tracker,
+        "announced": announced,
+        "bus": bus,
+        "use_access_flow": use_access_flow,
+        "token": token,
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            info = await get_server_info(session, base_url)
+            ver = info.get("server", {}).get("version", "unknown")
+            log.info("Signal K server at %s (version %s)", base_url, ver)
+        except SignalKError as exc:
+            log.warning("Signal K not reachable yet: %s", exc)
+
+        will = aiomqtt.Will(
+            topic=availability_topic(base_topic),
+            payload=b"offline",
+            qos=1,
+            retain=True,
+        )
+
+        try:
+            while not stop.is_set():
                 try:
-                    state, tok = auth.poll_request(base_url, access_href)
-                except SignalKError as exc:
-                    log.debug("poll error: %s", exc)
-                    _stop.wait(3)
-                    continue
-                if state == "APPROVED" and tok:
-                    token = tok
-                    auth.save_token(data_dir, tok)
-                    access_href = None
-                    log.warning(
-                        "Access approved -- token saved. Bridge is authenticated."
-                    )
-                elif state == "DENIED":
-                    log.error(
-                        "Access request was DENIED in Signal K; re-requesting shortly."
-                    )
-                    access_href = None
-                    _stop.wait(30)
-                    continue
-                else:
-                    log.info(
-                        "Waiting for approval in Signal K -> Security -> Access Requests..."
-                    )
-                    _stop.wait(3)
-                    continue
-
-            try:
-                tree = get_self(base_url, token)
-            except SignalKAuthError:
-                if use_access_flow:
-                    log.warning("Token rejected by Signal K; requesting access again.")
-                    auth.clear_token(data_dir)
-                    token = None
-                    access_href = None
-                else:
-                    log.warning(
-                        "Signal K rejected the configured signalk_token (401/403)."
-                    )
-                client.publish(
-                    availability_topic(base_topic), "offline", qos=1, retain=True
-                )
-                _stop.wait(2)
-                continue
-            except SignalKError as exc:
-                log.warning("%s", exc)
-                client.publish(
-                    availability_topic(base_topic), "offline", qos=1, retain=True
-                )
-                _stop.wait(max(1, interval))
-                continue
-
-            # Refresh /sources first so resolve_entities can disambiguate
-            # multi-source leaves (two BMVs on the same batteries.0 path,
-            # etc.) via friendly source tags.
-            if cycle % sources_every == 0:
-                try:
-                    sources_cache = get_sources(base_url, token)
-                    source_tags = paths.build_source_tags(sources_cache)
-                except SignalKError as exc:
-                    log.debug("sources fetch failed: %s", exc)
-
-            try:
-                data_entities = _map_tree(
-                    tracker,
-                    tree,
-                    source_tags,
-                    suppress_paths,
-                    suppress_primary_on_fanout,
-                    datetime.now(UTC),
-                    publish_unmapped,
-                )
-            except Exception:
-                log.exception("Error mapping Signal K data, skipping cycle")
-                _stop.wait(max(1, interval))
-                continue
-
-            if not data_entities and not warned_empty:
-                # Almost always means no NMEA 2000 traffic rather than a bridge
-                # fault, so say so explicitly instead of sitting silent.
-                log.warning(
-                    "Signal K reachable but produced no mapped values. If this "
-                    "persists, check that can0 is receiving frames "
-                    "(cat /sys/class/net/can0/statistics/rx_packets) and that a "
-                    "canbus connection is configured in Signal K."
-                )
-                warned_empty = True
-            elif data_entities:
-                warned_empty = False
-
-            bus_entities: dict[str, dict[str, Any]] = {}
-            if bus.available():
-                try:
-                    bus_entities = bus.sample(sources_cache)
-                except Exception as exc:  # noqa: BLE001 - bus stats must not kill the daemon
-                    log.debug("bus stats sample failed: %s", exc)
-            cycle += 1
-            if tracker is not None and cycle % save_every == 0:
+                    async with aiomqtt.Client(
+                        hostname=mqtt_cfg["host"],
+                        port=mqtt_cfg["port"],
+                        username=mqtt_cfg["username"],
+                        password=mqtt_cfg["password"],
+                        identifier=client_id,
+                        will=will,
+                        keepalive=60,
+                    ) as mq:
+                        await _run(session, mq, stop, opts_summary)
+                        # Clean shutdown: publish ``offline`` on the LIVE
+                        # session before ``async with`` sends the DISCONNECT.
+                        # A clean DISCONNECT suppresses the LWT, so without
+                        # this HA would keep seeing the last "online" retained
+                        # from the poll loop. Bounded so a slow broker on the
+                        # way out doesn't hang shutdown -- LWT covers a hard
+                        # drop if this fails.
+                        if stop.is_set():
+                            with contextlib.suppress(aiomqtt.MqttError, TimeoutError):
+                                await asyncio.wait_for(
+                                    mq.publish(
+                                        availability_topic(base_topic),
+                                        payload=b"offline",
+                                        qos=1,
+                                        retain=True,
+                                    ),
+                                    timeout=1.5,
+                                )
+                except aiomqtt.MqttError as exc:
+                    log.warning("MQTT: %s; reconnecting in 3s", exc)
+                    await _wait_or_stop(stop, 3)
+        finally:
+            log.info("Shutting down")
+            if tracker is not None:
                 tracker.save(datetime.now(UTC))
 
-            entities = {**data_entities, **bus_entities}
-
-            for key, ent in entities.items():
-                if key not in announced:
-                    publish_discovery(
-                        client, discovery_prefix, base_topic, key, ent, expire_after_s
-                    )
-                    announced.add(key)
-                    log.info(
-                        "Discovered %s -> %s (%s)",
-                        ent.get("path", key),
-                        ent["name"],
-                        ent["group_label"],
-                    )
-                value = ent.get("state")
-                if value is not None:
-                    client.publish(state_topic(base_topic, key), value, qos=0)
-                attrs = ent.get("attributes")
-                if attrs is not None:
-                    client.publish(
-                        attributes_topic(base_topic, key), json.dumps(attrs), qos=0
-                    )
-
-            client.publish(availability_topic(base_topic), "online", qos=1, retain=True)
-            log.debug("Published %d entities", len(entities))
-
-            _stop.wait(max(0.0, interval - (time.monotonic() - started)))
-    finally:
-        log.info("Publishing offline availability and disconnecting")
-        if tracker is not None:
-            tracker.save(datetime.now(UTC))
-        try:
-            pub = client.publish(
-                availability_topic(base_topic), "offline", qos=1, retain=True
-            )
-            pub.wait_for_publish(timeout=0.3)  # best-effort flush; LWT covers the rest
-            client.loop_stop()
-            client.disconnect()
-        except Exception as exc:  # noqa: BLE001 - best effort on the way out
-            log.debug("Error during MQTT shutdown: %s", exc)
-
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="signalk_bridge")
+    ap.add_argument("--options", default="/data/options.json")
+    args = ap.parse_args(argv)
+    try:
+        return asyncio.run(main_async(args.options))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":

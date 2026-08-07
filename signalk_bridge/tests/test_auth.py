@@ -6,6 +6,8 @@
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from signalk_bridge import auth
 
 
@@ -27,33 +29,61 @@ def test_token_save_load_clear(tmp_path: Any) -> None:
     assert auth.client_id(d)
 
 
-def test_request_access_returns_href() -> None:
+def _async_return(value: Any) -> Any:
+    """AsyncMock-style helper: a coroutine that returns ``value``."""
+
+    async def _coro(*_a: Any, **_kw: Any) -> Any:
+        return value
+
+    return _coro
+
+
+@pytest.mark.asyncio
+async def test_request_access_returns_href() -> None:
     with mock.patch.object(
         auth,
         "_request",
-        return_value={"href": "/signalk/v1/requests/x", "state": "PENDING"},
+        new=_async_return({"href": "/signalk/v1/requests/x", "state": "PENDING"}),
     ):
         assert (
-            auth.request_access("http://sk:3000", "cid", "desc")
+            await auth.request_access(mock.MagicMock(), "http://sk:3000", "cid", "desc")
             == "/signalk/v1/requests/x"
         )
 
 
-def test_poll_pending_approved_denied() -> None:
-    with mock.patch.object(auth, "_request", return_value={"state": "PENDING"}):
-        assert auth.poll_request("http://sk:3000", "/r") == ("PENDING", None)
+@pytest.mark.asyncio
+async def test_poll_pending_approved_denied() -> None:
+    session = mock.MagicMock()
+
+    with mock.patch.object(auth, "_request", new=_async_return({"state": "PENDING"})):
+        assert await auth.poll_request(session, "http://sk:3000", "/r") == (
+            "PENDING",
+            None,
+        )
+
     with mock.patch.object(
         auth,
         "_request",
-        return_value={
-            "state": "COMPLETED",
-            "accessRequest": {"permission": "APPROVED", "token": "T"},
-        },
+        new=_async_return(
+            {
+                "state": "COMPLETED",
+                "accessRequest": {"permission": "APPROVED", "token": "T"},
+            }
+        ),
     ):
-        assert auth.poll_request("http://sk:3000", "/r") == ("APPROVED", "T")
+        assert await auth.poll_request(session, "http://sk:3000", "/r") == (
+            "APPROVED",
+            "T",
+        )
+
     with mock.patch.object(
         auth,
         "_request",
-        return_value={"state": "COMPLETED", "accessRequest": {"permission": "DENIED"}},
+        new=_async_return(
+            {"state": "COMPLETED", "accessRequest": {"permission": "DENIED"}}
+        ),
     ):
-        assert auth.poll_request("http://sk:3000", "/r") == ("DENIED", None)
+        assert await auth.poll_request(session, "http://sk:3000", "/r") == (
+            "DENIED",
+            None,
+        )

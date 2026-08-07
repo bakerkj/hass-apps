@@ -7,6 +7,9 @@ Signal K issues device tokens by request-and-approve: the client POSTs an access
 request, an admin approves it in the Signal K UI, and the client polls until it
 receives a token. The clientId is persisted so the same request is recognised
 across restarts, and the granted token is persisted so approval is a one-time step.
+
+The HTTP calls are async; the local-disk persistence stays sync -- filesystem
+ops are microseconds and moving them off-loop would gain nothing but boilerplate.
 """
 
 import json
@@ -14,6 +17,8 @@ import logging
 import os
 import uuid
 from typing import Any
+
+import aiohttp
 
 from .client import SignalKError, _request
 
@@ -71,11 +76,16 @@ def clear_token(data_dir: str) -> None:
     _save(data_dir, a)
 
 
-def request_access(
-    base_url: str, cid: str, description: str, timeout: float = 10.0
+async def request_access(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    cid: str,
+    description: str,
+    timeout: float = 10.0,
 ) -> str:
     """POST an access request; return the request href to poll."""
-    r = _request(
+    r = await _request(
+        session,
         base_url.rstrip("/") + _ACCESS_PATH,
         method="POST",
         body={"clientId": cid, "description": description},
@@ -86,12 +96,15 @@ def request_access(
     return str(r["href"])
 
 
-def poll_request(
-    base_url: str, href: str, timeout: float = 10.0
+async def poll_request(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    href: str,
+    timeout: float = 10.0,
 ) -> tuple[str, str | None]:
     """Poll a pending request. Returns (state, token) where state is one of
     PENDING / APPROVED / DENIED."""
-    r = _request(base_url.rstrip("/") + href, timeout=timeout)
+    r = await _request(session, base_url.rstrip("/") + href, timeout=timeout)
     if not isinstance(r, dict):
         return ("PENDING", None)
     if r.get("state") == "COMPLETED":

@@ -75,6 +75,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiomqtt"
+version = "2.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "paho-mqtt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/70/44/cfc58272783a11729462dc6df5adbfeabd084f840f609054ac772ae98c19/aiomqtt-2.5.1.tar.gz", hash = "sha256:25a0a47d157e8f158d2da1110ea4786c0615518751e94f7b04976c977a8ff20d", size = 86641, upload-time = "2026-03-05T18:28:56.421Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/9e/5089fa596220bf0dc73deeb23db27904e4b3504986caf08571f6f5cb84a8/aiomqtt-2.5.1-py3-none-any.whl", hash = "sha256:fd58c3593160e4d475d90ce911cdfc4239cd64de96b0ba22edf6c86bd7afa278", size = 16051, upload-time = "2026-03-05T18:28:55.14Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -228,6 +240,7 @@ source = { virtual = "." }
 dev = [
     { name = "aiodocker" },
     { name = "aiohttp" },
+    { name = "aiomqtt" },
     { name = "humanfriendly" },
     { name = "mypy" },
     { name = "paho-mqtt" },
@@ -252,6 +265,7 @@ dev = [
 dev = [
     { name = "aiodocker", specifier = ">=0.24" },
     { name = "aiohttp", specifier = ">=3.13.5" },
+    { name = "aiomqtt", specifier = ">=2.5.1" },
     { name = "humanfriendly", specifier = ">=10.0" },
     { name = "mypy", specifier = ">=1.20.0" },
     { name = "paho-mqtt", specifier = ">=1.6" },
