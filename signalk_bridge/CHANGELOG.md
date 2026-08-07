@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.8](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.7...signalk_bridge-v0.0.8) (2026-08-07)
+
+
+### Bug Fixes
+
+* **signalk_bridge:** publish_path_overrides schema — list of objects, not wildcard-key dict ([#422](https://github.com/bakerkj/hass-apps/issues/422)) ([4476d14](https://github.com/bakerkj/hass-apps/commit/4476d14a629cb95c4baacdb03be655afef443c6e))
+
 ## [0.0.7](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.6...signalk_bridge-v0.0.7) (2026-08-07)
 
 
