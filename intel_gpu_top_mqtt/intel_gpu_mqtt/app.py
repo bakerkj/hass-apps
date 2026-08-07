@@ -7,8 +7,10 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -23,6 +25,55 @@ from .device import (
 from .metrics import build_metrics
 from .mqtt import MqttHealth, publish_discovery
 from .util import extract_latest_json_object
+
+# Upper bound on how long a pending signal handler waits for the main thread.
+_READ_POLL_SECONDS = 0.25
+
+# Pushed by the reader once its stream ends, so the loop sees EOF as an event
+# rather than by blocking on a read that will never return.
+_EOF = None
+
+# Enough stderr to diagnose a crash without holding the whole stream.
+_STDERR_TAIL_LINES = 200
+
+
+def _start_reader(proc: subprocess.Popen, out: queue.Queue[str | None]) -> list[str]:
+    """Drain intel_gpu_top's stdout and stderr on their own threads.
+
+    The main thread must not park in a read: Python runs signal handlers only
+    there and only between bytecodes, and the handler here just sets a stop
+    flag, so an interrupted read is retried and nothing rechecks the flag until
+    the next line. At a 60s sample interval against a 10s stop grace that means
+    SIGTERM is usually missed outright and the add-on is SIGKILLed.
+
+    stderr is drained too, rather than read on demand once the process looks
+    dead: stdout can reach EOF while the process is still alive, and a
+    ``stderr.read()`` then blocks until it exits. Returns the bounded tail
+    buffer, which the caller may read without blocking.
+    """
+    err_tail: list[str] = []
+
+    def run_stdout() -> None:
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    out.put(line)
+        finally:
+            out.put(_EOF)
+
+    def run_stderr() -> None:
+        if proc.stderr is None:
+            return
+        for line in proc.stderr:
+            err_tail.append(line)
+            del err_tail[:-_STDERR_TAIL_LINES]
+
+    for name, target in (
+        ("intel-gpu-top-reader", run_stdout),
+        ("intel-gpu-top-stderr", run_stderr),
+    ):
+        threading.Thread(target=target, daemon=True, name=name).start()
+    return err_tail
 
 
 def main() -> int:
@@ -223,8 +274,10 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_sig)
 
     # Start intel_gpu_top
+    lines: queue.Queue[str | None] = queue.Queue()
     try:
         proc = start_intel_gpu_top(interval_ms, dev_arg, log)
+        err_tail = _start_reader(proc, lines)
     except FileNotFoundError:
         return 2
 
@@ -252,7 +305,9 @@ def main() -> int:
     samples_since_intel_start = 0
 
     def restart_intel_gpu_top(reason: str) -> None:
-        nonlocal proc, buf, last_intel_restart_attempt, dev_arg, dev_path, listing
+        nonlocal proc, lines, err_tail, buf, last_intel_restart_attempt, dev_arg
+        nonlocal dev_path
+        nonlocal listing
         nonlocal samples_since_intel_start
         # Monotonic: the restart-grace debounce is a pure duration and must
         # not be defeated by a wall-clock step.
@@ -287,6 +342,10 @@ def main() -> int:
         buf = ""
         samples_since_intel_start = 0
         proc = start_intel_gpu_top(interval_ms, dev_arg, log)
+        # Fresh queue per process: a reader still draining the old pipe cannot
+        # then inject a stale sample into the new one.
+        lines = queue.Queue()
+        err_tail = _start_reader(proc, lines)
 
     try:
         if proc.stdout is None:
@@ -357,8 +416,14 @@ def main() -> int:
 
             # ----- Read intel_gpu_top output line-by-line -----
 
-            line = proc.stdout.readline()
-            if line:
+            try:
+                line = lines.get(timeout=_READ_POLL_SECONDS)
+            except queue.Empty:
+                # No sample this tick; go round so the watchdogs above still run
+                # and a pending signal handler gets its chance.
+                continue
+
+            if line is not _EOF:
                 # Log *each line* from intel_gpu_top
                 log.debug("intel_gpu_top: %s", line.rstrip("\n"))
 
@@ -430,20 +495,16 @@ def main() -> int:
                     log.debug("MQTT raw_sample mid=%s rc=%s", rinfo.mid, rinfo.rc)
 
             else:
-                # No line read. Check if process died.
+                # Reader hit EOF. With it gone no further line can arrive, so
+                # restart rather than wait on the pid and stall until a watchdog
+                # fires; the restart grace debounces a flapping process.
                 rc = proc.poll()
-                if rc is not None:
-                    err_tail = ""
-                    if proc.stderr is not None:
-                        try:
-                            err_tail = proc.stderr.read()[-4000:]
-                        except OSError:
-                            err_tail = "(stderr read failed)"
-                    log.error("intel_gpu_top exited rc=%s stderr_tail=%s", rc, err_tail)
-                    restart_intel_gpu_top("intel_gpu_top_exited")
-                else:
-                    # Still running but no line available; small sleep
-                    time.sleep(0.05)
+                log.error(
+                    "intel_gpu_top exited rc=%s stderr_tail=%s",
+                    rc,
+                    "".join(err_tail)[-4000:],
+                )
+                restart_intel_gpu_top("intel_gpu_top_exited")
 
     finally:
         try:
