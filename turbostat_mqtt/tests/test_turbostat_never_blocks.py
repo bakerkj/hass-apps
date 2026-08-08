@@ -1,12 +1,13 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""The main loop must stay responsive to signals while turbostat is quiet.
+"""Shutdown must stay inside the supervisor's grace, whatever turbostat or the
+broker are doing.
 
-The handler only sets a stop flag, so the loop has to reach its own condition
-to act on it. Parked in a blocking read that no longer produces lines it never
-does: the interrupted read is simply retried once the handler returns, and
-SIGTERM is ignored until the supervisor escalates to SIGKILL.
+Two ways to blow it, both previously shipped: park the main thread in a read
+that no longer produces lines (a signal arriving as the read enters the kernel
+leaves no EINTR, so it is lost rather than delayed), or spend the whole stop
+budget waiting on a broker that has gone quiet.
 
 Each test runs the real module as a subprocess against a stub broker and a
 turbostat that stops emitting.
@@ -41,12 +42,12 @@ _SELF_REAP = (
 
 
 def _stub_broker() -> tuple[int, socket.socket]:
-    """Enough of a broker to reach a normally-connected paho client.
+    """Enough of a broker to reach a connected client, and no more.
 
-    Accepting alone would get main() into the loop -- connect() writes CONNECT
-    without waiting -- but the client would then sit unacknowledged and
-    loop_stop()'s join at shutdown would never return, hanging the teardown for
-    a reason unrelated to what these tests cover.
+    It CONNACKs and then acknowledges nothing, so it doubles as the deaf-broker
+    case: aiomqtt will send the qos=1 farewell and wait for a PUBACK that never
+    arrives. Left on aiomqtt's 10s default that wait, plus the disconnect in
+    __aexit__, outlasts the supervisor's stop grace.
     """
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -144,9 +145,9 @@ def _wait_until_running(proc: subprocess.Popen, timeout: float = 15.0) -> None:
 def test_sigterm_is_prompt_while_turbostat_is_silent(tmp_path: Path) -> None:
     """A quiet turbostat must not pin the process past SIGTERM.
 
-    Blocking readline() on the main thread makes this deterministic rather than
-    racy: the handler sets the flag, the read is retried, and nothing rechecks
-    the flag until a line that never comes.
+    The sampler waits on turbostat with a bounded timeout and shutdown rides the
+    event loop, so this is deterministic rather than racy: there is no read for
+    the signal to be lost behind.
     """
     port, srv = _stub_broker()
     proc = _spawn(tmp_path, port, _fake_turbostat(tmp_path))
@@ -156,9 +157,12 @@ def test_sigterm_is_prompt_while_turbostat_is_silent(tmp_path: Path) -> None:
 
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=15)
+            # The supervisor's default stop_timeout is 10s and this add-on
+            # declares none, so anything at or past it is a SIGKILL in
+            # production. Assert well inside it.
+            proc.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            pytest.fail("ignored SIGTERM while blocked reading a quiet turbostat")
+            pytest.fail("shutdown did not finish inside the supervisor's grace")
 
         assert proc.returncode == 0, f"unexpected exit status {proc.returncode}"
     finally:
@@ -172,8 +176,9 @@ def test_sigterm_is_prompt_while_turbostat_is_silent(tmp_path: Path) -> None:
 def test_main_thread_never_parks_in_the_blocking_read(tmp_path: Path) -> None:
     """The invariant behind the test above, asserted directly.
 
-    The main thread is the only one that runs Python signal handlers, so it
-    must not be the one sitting in turbostat's pipe.
+    The main thread is the only one that runs Python signal handlers, so it must
+    be in the event loop's selector -- which the signal wakeup fd writes into --
+    rather than parked in turbostat's pipe.
     """
     port, srv = _stub_broker()
     proc = _spawn(tmp_path, port, _fake_turbostat(tmp_path))

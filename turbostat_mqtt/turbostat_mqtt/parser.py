@@ -3,14 +3,19 @@
 
 """Streaming turbostat parser + subprocess helper."""
 
+import asyncio
 import re
-import subprocess
 
 from .metadata import COLUMN_RENAMES
 
 
-def start_turbostat(interval_s: float) -> subprocess.Popen:
-    cmd = [
+async def start_turbostat(interval_s: float) -> asyncio.subprocess.Process:
+    """Spawn turbostat with its stdout as an asyncio stream.
+
+    Bytes, not text: the caller decodes with a replacement policy, so a stray
+    non-UTF-8 byte cannot raise out of the read and kill the sampler.
+    """
+    return await asyncio.create_subprocess_exec(
         "turbostat",
         "--Summary",
         "--quiet",
@@ -18,14 +23,8 @@ def start_turbostat(interval_s: float) -> subprocess.Popen:
         "all",
         "--interval",
         str(interval_s),
-    ]
-    return subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
     )
 
 

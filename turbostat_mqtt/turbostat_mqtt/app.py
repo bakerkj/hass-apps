@@ -1,607 +1,306 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Entry-point orchestration: option parsing, MQTT lifecycle, turbostat loop."""
+"""Process plumbing: run turbostat, drive the publisher, own the exit codes.
+
+One asyncio loop: aiomqtt for the broker, create_subprocess_exec for turbostat,
+asyncio.Event for shutdown. There are no threads and no ``signal.signal``, so a
+signal cannot be lost -- ``add_signal_handler`` rides ``set_wakeup_fd``, which
+wakes the selector whenever the signal lands rather than needing the main thread
+to be between bytecodes. The MQTT surface lives in publisher.py.
+
+Exit codes are the interface to run.sh, which restarts us on any non-zero:
+11 MQTT down past its timeout, 12 publishes stalled while samples flowed,
+14 an unexpected fault. 0 means we were asked to stop.
+"""
 
 import argparse
-import json
-import queue
-import re
+import asyncio
+import contextlib
 import signal
-import subprocess
-import threading
 import time
-from typing import Any
 
-import paho.mqtt.client as mqtt
+import aiomqtt
 
 from . import __version__
-from .metadata import friendly_name, missing_expected_columns
-from .mqtt import (
-    MqttHealth,
-    build_discovery_payloads,
-    connect_mqtt_with_retry,
-    mqtt_publish,
-)
+from . import config as config_mod
 from .parser import TurbostatParser, start_turbostat
-from .util import log, sanitize_key
+from .publisher import Fault, Publisher
+from .util import log
 
-# Upper bound on how long a pending signal handler waits for the main thread.
-_READ_POLL_SECONDS = 0.25
+EXIT_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
-# Pushed by the reader once its stream ends, so the loop sees EOF as an event
-# rather than by blocking on a read that will never return.
-_EOF = None
+EXIT_OK = 0
+EXIT_MQTT_DOWN = 11
+EXIT_PUBLISH_STALLED = 12
+EXIT_UNEXPECTED = 14
+
+# Broker reconnect backoff, doubling to a cap. Capped rather than flat: a broker
+# down for hours would otherwise draw a fresh TCP connect -- and a fresh DNS
+# lookup, when mqtt_host is a name -- every few seconds for the whole outage.
+_RECONNECT_MIN_SECONDS = 3
+_RECONNECT_MAX_SECONDS = 60
+
+# How long to wait for turbostat to die on terminate() before killing it.
+_TERM_TIMEOUT_SECONDS = 3
+
+# Ceiling on any single aiomqtt operation. aiomqtt defaults to 10s, which is the
+# whole budget the supervisor gives us to stop: a qos=1 publish awaiting a PUBACK
+# and then the disconnect in __aexit__ can each burn the full 10s, so a broker
+# that holds the TCP connection open without acking would push us past SIGKILL.
+_MQTT_TIMEOUT_SECONDS = 5
+
+# The farewell is best-effort and rides an even shorter leash. If the broker is
+# not acking we are being killed regardless, and the retained last will already
+# says "offline" -- which is exactly the case it exists for.
+_FAREWELL_TIMEOUT_SECONDS = 2
+
+# Faults the loop fixes in place by restarting turbostat, rather than exiting.
+_RESTART_FAULTS = {Fault.NO_SAMPLES_SINCE_START, Fault.SAMPLE_TIMEOUT}
+
+_FAULT_EXIT = {
+    Fault.MQTT_DOWN: EXIT_MQTT_DOWN,
+    Fault.PUBLISH_STALLED: EXIT_PUBLISH_STALLED,
+}
 
 
-def _start_reader(
-    proc: subprocess.Popen, out: queue.Queue[str | None]
-) -> threading.Thread:
-    """Drain turbostat's stdout on its own thread.
+class Turbostat:
+    """The turbostat child process and the one task draining it.
 
-    The main thread must not park in readline(): Python runs signal handlers
-    only there and only between bytecodes, so a signal arriving as the read
-    enters the kernel leaves no EINTR to wake it and is lost, not delayed.
+    Restarts are debounced: a flapping turbostat must not be respawned faster
+    than HA notices the gap it leaves.
     """
 
-    def run() -> None:
+    def __init__(self, pub: Publisher) -> None:
+        self.pub = pub
+        self.proc: asyncio.subprocess.Process | None = None
+        self._last_restart_attempt = 0.0
+
+    async def restart(self, reason: str) -> bool:
+        """Replace the running turbostat. False if the debounce declined."""
+        o = self.pub.opts
+        # Monotonic: a pure duration must not be defeated by a wall-clock step.
+        now = asyncio.get_running_loop().time()
+        if (
+            reason != "initial_start"
+            and (now - self._last_restart_attempt) < o.restart_grace_seconds
+        ):
+            log(
+                "WARNING",
+                f"Skipping turbostat restart (grace period) reason={reason}",
+                o.log_level,
+            )
+            return False
+        self._last_restart_attempt = now
+
+        await self.stop()
+        self.pub.on_turbostat_started()
+        self.proc = await start_turbostat(o.interval)
+        log(
+            "INFO",
+            f"Started turbostat: interval={o.interval}s reason={reason}",
+            o.log_level,
+        )
+        return True
+
+    async def stop(self) -> None:
+        proc = self.proc
+        self.proc = None
+        if proc is None or proc.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
         try:
-            if proc.stdout is not None:
-                for line in proc.stdout:
-                    out.put(line)
+            await asyncio.wait_for(proc.wait(), timeout=_TERM_TIMEOUT_SECONDS)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+
+    async def readline(self) -> str | None:
+        """Next line, or None at EOF. Never blocks anything but this task."""
+        proc = self.proc
+        if proc is None or proc.stdout is None:
+            return None
+        raw = await proc.stdout.readline()
+        if not raw:
+            return None
+        return raw.decode("utf-8", "replace")
+
+
+async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    """Sleep, but return early once shutdown is requested."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+
+
+async def _watch_birth(mq: aiomqtt.Client, pub: Publisher) -> None:
+    """Republish discovery when HA announces it has restarted."""
+    async for message in mq.messages:
+        if (
+            message.payload
+            and bytes(message.payload).decode(errors="replace").strip() == "online"
+        ):
+            pub.on_ha_birth()
+
+
+async def _sample_loop(
+    mq: aiomqtt.Client, pub: Publisher, ts: Turbostat, stop: asyncio.Event
+) -> int:
+    """Drain turbostat and publish, until shutdown or a fault we cannot fix here.
+
+    Returns an exit code; 0 means shutdown was requested. Broker faults are left
+    to propagate so the caller reconnects rather than treating them as fatal.
+    """
+    while not stop.is_set():
+        now = asyncio.get_running_loop().time()
+        fault = pub.check_watchdogs(time.time(), now)
+        if fault in _RESTART_FAULTS:
+            await ts.restart(fault.value)
+        elif fault is not Fault.NONE:
+            return _FAULT_EXIT[fault]
+
+        await pub.maybe_heartbeat(mq, time.time())
+
+        # Bounded so the watchdogs and heartbeat above still run while turbostat
+        # is quiet -- and so shutdown is noticed without a sample to carry it.
+        try:
+            line = await asyncio.wait_for(ts.readline(), timeout=pub.opts.interval)
+        except TimeoutError:
+            continue
+
+        if line is None:
+            rc = ts.proc.returncode if ts.proc is not None else None
+            if rc is not None:
+                log("ERROR", f"turbostat exited rc={rc}", pub.opts.log_level)
+            # The stream is done either way; waiting on the pid would just stall
+            # until a watchdog fired.
+            await ts.restart("process_eof")
+            continue
+
+        try:
+            await pub.publish_sample(mq, line)
+        except aiomqtt.MqttError:
+            raise  # the session is gone; _reconnect_loop reconnects
+        except Exception as e:  # noqa: BLE001 one bad sample must not end them all
+            # Anything else is our own bug -- a column we mishandle, a payload
+            # that will not serialise. Skip it: letting it out would exit the
+            # process over a single malformed line.
+            log("ERROR", f"sample failed: {e!r}", pub.opts.log_level)
+    return EXIT_OK
+
+
+async def _session(pub: Publisher, ts: Turbostat, stop: asyncio.Event) -> int:
+    """One connected session: subscribe, publish, and surface faults."""
+    o = pub.opts
+    async with aiomqtt.Client(
+        hostname=o.mqtt_host,
+        port=o.mqtt_port,
+        username=o.mqtt_username or None,
+        password=o.mqtt_password or None,
+        identifier=o.client_id,
+        will=aiomqtt.Will(
+            topic=o.availability_topic, payload=b"offline", qos=1, retain=True
+        ),
+        keepalive=60,
+        timeout=_MQTT_TIMEOUT_SECONDS,
+    ) as mq:
+        log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
+        pub.on_connected()
+        try:
+            await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+        except (ValueError, aiomqtt.MqttError) as e:
+            # ValueError is a malformed prefix (a config typo); MqttError is the
+            # broker refusing -- an ACL granting publish on our base topic but
+            # not subscribe elsewhere is a normal lockdown for a stats-only
+            # client. Neither may end the session: letting them out means we
+            # reconnect and die here again every time, so no sample is ever
+            # published. Costs the HA birth message; discovery is republished on
+            # every reconnect anyway.
+            log(
+                "ERROR",
+                f"cannot subscribe to {o.discovery_prefix}/status: {e};"
+                " HA restart will not trigger rediscovery",
+                o.log_level,
+            )
+        birth = asyncio.create_task(_watch_birth(mq, pub), name="birth")
+        try:
+            return await _sample_loop(mq, pub, ts, stop)
         finally:
-            out.put(_EOF)
+            birth.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await birth
+            # Supersede the will while the session is still up, on a short leash
+            # so an unresponsive broker cannot spend our whole stop budget here.
+            try:
+                await asyncio.wait_for(
+                    pub.publish_availability(mq, "offline"),
+                    timeout=_FAREWELL_TIMEOUT_SECONDS,
+                )
+            except Exception as e:  # noqa: BLE001 shutdown must not raise
+                log("WARNING", f"error during shutdown publish: {e!r}", o.log_level)
 
-    t = threading.Thread(target=run, daemon=True, name="turbostat-reader")
-    t.start()
-    return t
+
+async def _reconnect_loop(pub: Publisher, ts: Turbostat, stop: asyncio.Event) -> int:
+    """Hold a session up, reconnecting with a capped backoff when it drops."""
+    delay = _RECONNECT_MIN_SECONDS
+    while not stop.is_set():
+        connected_at = pub.health.last_connect_ok
+        try:
+            return await _session(pub, ts, stop)
+        except aiomqtt.MqttError as e:
+            pub.on_disconnected()
+            # A session that got as far as connecting starts the ramp over:
+            # backoff is for a broker that is down, not one that dropped a
+            # client it was happy to serve a moment ago.
+            if pub.health.last_connect_ok != connected_at:
+                delay = _RECONNECT_MIN_SECONDS
+            log("WARNING", f"MQTT: {e}; reconnecting in {delay}s", pub.opts.log_level)
+            # Checked here too: with no session the sample loop is not running,
+            # so this is the only place the disconnect watchdog gets to fire.
+            fault = pub.check_watchdogs(time.time(), asyncio.get_running_loop().time())
+            if fault in _FAULT_EXIT:
+                return _FAULT_EXIT[fault]
+            await _wait_or_stop(stop, delay)
+            delay = min(delay * 2, _RECONNECT_MAX_SECONDS)
+    return EXIT_OK
 
 
-def main() -> int:
+async def _run() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--options", required=True)
     args = ap.parse_args()
 
-    with open(args.options, "r", encoding="utf-8") as f:
-        opts = json.load(f)
+    opts = config_mod.from_mapping(config_mod.read(args.options))
+    log("INFO", f"Turbostat to MQTT v{__version__} starting", opts.log_level)
+    log("INFO", opts.summary(), opts.log_level)
 
-    log_level = (opts.get("log_level") or "INFO").upper()
-    log("INFO", f"Turbostat to MQTT v{__version__} starting", log_level)
-
-    interval = max(1.0, float(opts.get("interval_seconds", 10)))
-    discovery_prefix = opts.get("mqtt_discovery_prefix", "homeassistant")
-    base_topic = (opts.get("mqtt_base_topic") or "turbostat").rstrip("/")
-
-    mqtt_host = opts.get("mqtt_host", "core-mosquitto")
-    mqtt_port = int(opts.get("mqtt_port", 1883))
-    mqtt_username = opts.get("mqtt_username", "") or ""
-    mqtt_password = opts.get("mqtt_password", "") or ""
-    client_id = opts.get("client_id") or "turbostat-app"
-
-    publish_raw = bool(opts.get("publish_raw_sample", False))
-
-    heartbeat_interval = int(interval)
-    disconnect_timeout = max(5, int(opts.get("mqtt_disconnect_timeout_seconds", 300)))
-    expire_after_multiplier = max(
-        2, min(10, int(opts.get("expire_after_multiplier", 4)))
-    )
-    expire_after_s = max(60, int(interval) * expire_after_multiplier)
-
-    raw_topic = f"{base_topic}/raw_sample"
-    availability_topic = f"{base_topic}/availability"
-    heartbeat_topic = f"{base_topic}/heartbeat"
-
-    log(
-        "INFO",
-        "\n".join(
-            [
-                "Configuration:",
-                f"  base_topic:         {base_topic}",
-                f"  client_id:          {client_id}",
-                f"  disconnect_timeout: {disconnect_timeout}s",
-                f"  discovery_prefix:   {discovery_prefix}",
-                f"  interval:           {interval}s",
-                f"  log_level:          {log_level}",
-                f"  mqtt_host:          {mqtt_host}:{mqtt_port}",
-                f"  mqtt_username:      {mqtt_username or '(none)'}",
-                f"  publish_raw:        {publish_raw}",
-                f"  expire_after:       {expire_after_s}s",
-            ]
-        ),
-        log_level,
-    )
-
-    health = MqttHealth()
-
-    client = mqtt.Client(client_id=client_id, clean_session=True)
-    if mqtt_username:
-        client.username_pw_set(mqtt_username, mqtt_password)
-
-    client.will_set(availability_topic, "offline", qos=1, retain=True)
-    client.reconnect_delay_set(min_delay=1, max_delay=30)
-
-    def on_connect(_client, _userdata, _flags, rc):
-        if rc == 0:
-            health.connected = True
-            health.last_connect_ok = time.time()
-            log("INFO", f"MQTT connected to {mqtt_host}:{mqtt_port}", log_level)
-            _client.subscribe(f"{discovery_prefix}/status", qos=1)
-            mqtt_publish(
-                _client,
-                availability_topic,
-                "online",
-                qos=1,
-                retain=True,
-                log_level=log_level,
-                health=health,
-            )
-        else:
-            health.connected = False
-            log("ERROR", f"MQTT connect failed rc={rc}", log_level)
-
-    def on_disconnect(_client, _userdata, rc):
-        health.connected = False
-        health.last_disconnect = time.time()
-        if rc == 0:
-            log("WARNING", "MQTT disconnected (clean)", log_level)
-        else:
-            log("WARNING", f"MQTT disconnected rc={rc}", log_level)
-
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-
-    log("INFO", f"Connecting MQTT to {mqtt_host}:{mqtt_port}", log_level)
-    connect_mqtt_with_retry(client, mqtt_host, mqtt_port, log_level)
-
-    client.loop_start()
-
-    stop = {"v": False}
-
-    def handle(sig, frame):
-        stop["v"] = True
-
-    signal.signal(signal.SIGINT, handle)
-    signal.signal(signal.SIGTERM, handle)
-
-    device_id = "turbostat"
-    device_name = "Turbostat"
-    cols_map: dict[str, str] = {}
-    filtered_out_sensor_keys: set[str] = set()
-    discovered = False
-    last_heartbeat = 0.0
-    last_status_line = 0.0
-    last_sample_time = 0.0
-    # Monotonic mirror of last_sample_time used only by the stall watchdog:
-    # the published last_sample_age_s stays on wall clock, but the restart
-    # decision must survive an NTP step.
-    last_sample_monotonic = 0.0
-    first_sample_time = 0.0
-
-    def on_message(_client, _userdata, msg):
-        nonlocal discovered
-        if msg.payload.decode(errors="replace").strip() == "online":
-            log(
-                "INFO",
-                "HA birth message received — will republish discovery",
-                log_level,
-            )
-            discovered = False
-
-    client.on_message = on_message
-
-    proc: subprocess.Popen | None = None
-    lines: queue.Queue[str | None] = queue.Queue()
+    pub = Publisher(opts, TurbostatParser())
+    ts = Turbostat(pub)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in EXIT_SIGNALS:
+        loop.add_signal_handler(signum, stop.set)
 
     try:
-        parser = TurbostatParser()
-        restart_grace_seconds = max(1.0, min(expire_after_s / 2.0, 30.0))
-        last_turbostat_restart_attempt = 0.0
-        turbostat_started_at = 0.0
-        samples_since_turbostat_start = 0
+        await ts.restart("initial_start")
+    except FileNotFoundError:
+        log(
+            "ERROR",
+            "turbostat not found in container; check package install.",
+            opts.log_level,
+        )
+        return EXIT_UNEXPECTED
 
-        def restart_turbostat(reason: str) -> None:
-            nonlocal proc, lines, last_sample_time, last_sample_monotonic
-            nonlocal first_sample_time
-            nonlocal last_turbostat_restart_attempt, turbostat_started_at
-            nonlocal samples_since_turbostat_start
-
-            # Monotonic: the restart-grace debounce is a pure duration and
-            # must not be defeated by a wall-clock step.
-            now_local = time.monotonic()
-            if (
-                reason != "initial_start"
-                and (now_local - last_turbostat_restart_attempt) < restart_grace_seconds
-            ):
-                log(
-                    "WARNING",
-                    f"Skipping turbostat restart (grace period) reason={reason}",
-                    log_level,
-                )
-                return
-
-            last_turbostat_restart_attempt = now_local
-
-            try:
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-            except OSError as e:
-                log("WARNING", f"Error stopping turbostat: {e}", log_level)
-
-            parser.reset()
-            first_sample_time = 0.0
-            last_sample_time = 0.0
-            last_sample_monotonic = 0.0
-            samples_since_turbostat_start = 0
-            health.last_state_publish_ok = 0.0
-
-            try:
-                proc = start_turbostat(interval)
-                # Fresh queue per process: a reader still draining the old pipe
-                # cannot then inject a stale sample into the new one.
-                lines = queue.Queue()
-                _start_reader(proc, lines)
-            except FileNotFoundError:
-                log(
-                    "ERROR",
-                    "turbostat not found in container; check package install.",
-                    log_level,
-                )
-                raise
-            # Monotonic: only feeds the startup-no-samples restart watchdog,
-            # never exposed as a wall-clock timestamp.
-            turbostat_started_at = time.monotonic()
-            log(
-                "INFO",
-                f"Started turbostat: interval={interval}s reason={reason}",
-                log_level,
-            )
-
-        restart_turbostat("initial_start")
-
-        while not stop["v"]:
-            now = time.time()
-            now_mono = time.monotonic()
-
-            if (
-                not health.connected
-                and health.last_disconnect > 0
-                and (now - health.last_disconnect) > disconnect_timeout
-            ):
-                log(
-                    "ERROR",
-                    f"MQTT disconnected for {now - health.last_disconnect:.1f}s (> {disconnect_timeout}s). Exiting for supervisor restart.",
-                    log_level,
-                )
-                return 11
-
-            if (
-                samples_since_turbostat_start == 0
-                and turbostat_started_at > 0
-                and (now_mono - turbostat_started_at) > expire_after_s
-            ):
-                log(
-                    "ERROR",
-                    f"No turbostat samples since process start for {now_mono - turbostat_started_at:.1f}s",
-                    log_level,
-                )
-                restart_turbostat("startup_no_samples")
-
-            if (
-                samples_since_turbostat_start > 0
-                and last_sample_monotonic > 0
-                and (now_mono - last_sample_monotonic) > expire_after_s
-            ):
-                log(
-                    "ERROR",
-                    f"No turbostat samples for {now_mono - last_sample_monotonic:.1f}s",
-                    log_level,
-                )
-                restart_turbostat("sample_timeout")
-
-            if (
-                health.connected
-                and last_sample_time > 0
-                and (now - last_sample_time) <= max(expire_after_s, interval * 2)
-            ):
-                if (
-                    health.last_state_publish_ok > 0
-                    and (now - health.last_state_publish_ok) > expire_after_s
-                ):
-                    log(
-                        "ERROR",
-                        "Detected MQTT state publish stall while samples are active. Exiting for supervisor restart.",
-                        log_level,
-                    )
-                    return 12
-                if (
-                    health.last_state_publish_ok == 0
-                    and first_sample_time > 0
-                    and (now - first_sample_time) > expire_after_s
-                ):
-                    log(
-                        "ERROR",
-                        "No successful MQTT state publish since first sample. Exiting for supervisor restart.",
-                        log_level,
-                    )
-                    return 12
-
-            if now - last_heartbeat >= heartbeat_interval:
-                last_heartbeat = now
-                hb = {
-                    "ts_ms": int(now * 1000),
-                    "connected": health.connected,
-                    "last_sample_age_s": round(now - last_sample_time, 1)
-                    if last_sample_time
-                    else None,
-                    "state_publish_age_s": round(now - health.last_state_publish_ok, 1)
-                    if health.last_state_publish_ok
-                    else None,
-                }
-                mqtt_publish(
-                    client,
-                    heartbeat_topic,
-                    json.dumps(hb, separators=(",", ":")),
-                    qos=0,
-                    retain=False,
-                    log_level=log_level,
-                    health=health,
-                )
-
-            if proc is None or proc.stdout is None:
-                restart_turbostat("stdout_missing")
-                time.sleep(0.2)
-                continue
-
-            try:
-                line = lines.get(timeout=_READ_POLL_SECONDS)
-            except queue.Empty:
-                # No sample this tick; go round so the heartbeat and watchdogs
-                # above still run and a pending signal handler gets its chance.
-                continue
-
-            if line is _EOF:
-                rc = proc.poll()
-                if rc is not None:
-                    log("ERROR", f"turbostat exited rc={rc}", log_level)
-                # The stream is done either way -- with the reader gone no
-                # further line can arrive, so waiting on the pid would just
-                # stall until a watchdog fired.
-                restart_turbostat("process_eof")
-                continue
-
-            parsed = parser.parse_line(line)
-            if parsed is None:
-                continue
-
-            header, values, raw_line = parsed
-            now = time.time()
-
-            samples_since_turbostat_start += 1
-            last_sample_time = now
-            last_sample_monotonic = time.monotonic()
-            if first_sample_time == 0.0:
-                first_sample_time = now
-
-            if not cols_map:
-                all_cols_map = {col: sanitize_key(col) for col in header}
-                skip_cols = {
-                    "IRQ",
-                    "NMI",
-                    "SMI",
-                    "Pkg%pc2",
-                    "Pkg%pc3",
-                    "Pkg%pc6",
-                    "Pkg%pc8",
-                    "Pk%pc10",
-                    "CPU%LPI",
-                    "SYS%LPI",
-                    # turbostat internal / topology columns (always emitted
-                    # under --enable all, no HA value): keep them out of the
-                    # unmapped-warning path so we're not chatty at every
-                    # restart just because turbostat still prints them.
-                    "usec",
-                    "Time_Of_Day_Seconds",
-                    "APIC",
-                    "X2APIC",
-                }
-                cols_map = {
-                    c: k
-                    for c, k in all_cols_map.items()
-                    if c not in skip_cols and friendly_name(c) != f"Turbostat {c}"
-                }
-                filtered_out_sensor_keys = {
-                    k
-                    for c, k in all_cols_map.items()
-                    if c not in skip_cols and c not in cols_map
-                }
-                missing = missing_expected_columns(header)
-                if missing:
-                    log(
-                        "WARNING",
-                        f"turbostat is not emitting expected column(s): "
-                        f"{missing}. Likely an upstream rename or kernel "
-                        "change; HA entities for these will go unavailable. "
-                        "Update EXPECTED_COLS and the friendly_name() "
-                        "mapping in turbostat_mqtt/metadata.py if the "
-                        "column moved.",
-                        log_level,
-                    )
-
-            payload: dict[str, Any] = {}
-            for col, val in values.items():
-                if col not in cols_map:
-                    continue
-                key = cols_map.get(col) or sanitize_key(col)
-                try:
-                    if re.fullmatch(r"[-+]?\d+", val):
-                        payload[key] = int(val)
-                    else:
-                        payload[key] = float(val)
-                except ValueError:
-                    payload[key] = val
-
-            if not discovered and health.connected:
-                mqtt_publish(
-                    client,
-                    availability_topic,
-                    "online",
-                    qos=1,
-                    retain=True,
-                    log_level=log_level,
-                    health=health,
-                )
-                for stale_sensor_key in sorted(filtered_out_sensor_keys):
-                    mqtt_publish(
-                        client,
-                        f"{discovery_prefix}/sensor/{device_id}/{stale_sensor_key}/config",
-                        "",
-                        qos=1,
-                        retain=True,
-                        log_level=log_level,
-                        health=health,
-                    )
-
-                if filtered_out_sensor_keys:
-                    log(
-                        "INFO",
-                        f"Removed discovery for {len(filtered_out_sensor_keys)} unmapped columns",
-                        log_level,
-                    )
-
-                disc = build_discovery_payloads(
-                    discovery_prefix=discovery_prefix,
-                    device_id=device_id,
-                    device_name=device_name,
-                    base_topic=base_topic,
-                    availability_topic=availability_topic,
-                    cols=cols_map,
-                    expire_after_s=expire_after_s,
-                )
-                for t, cfg in disc.items():
-                    mqtt_publish(
-                        client,
-                        t,
-                        json.dumps(cfg, separators=(",", ":")),
-                        qos=1,
-                        # retain=True so an HA restart re-reads the current
-                        # discovery config from the broker on subscribe.
-                        # Without this, HA can silently revert to whatever
-                        # ancient config was retained by some older addon
-                        # version (e.g. LLCkRPS with unit=1/s from before
-                        # the M/s rescale) — invisible until HA restarts.
-                        # The cleanup path above already uses retain=True
-                        # for the same reason.
-                        retain=True,
-                        log_level=log_level,
-                        health=health,
-                    )
-
-                for sensor_key in cols_map.values():
-                    mqtt_publish(
-                        client,
-                        f"{base_topic}/{sensor_key}/availability",
-                        "",
-                        qos=1,
-                        retain=True,
-                        log_level=log_level,
-                        health=health,
-                    )
-
-                discovered = True
-                log(
-                    "INFO",
-                    f"Published discovery for {len(disc)} sensors",
-                    log_level,
-                )
-
-            if publish_raw:
-                # `_raw` mirrors the regular sensor payload (canonical
-                # post-alias keys, parser-scaled values). `_raw_header` is
-                # the verbatim turbostat header from parser.original_header,
-                # so zipping it against `_raw_line.split()` produces
-                # consistent pre-alias name→raw-value pairs.
-                raw_payload = {
-                    "_ts_ms": int(now * 1000),
-                    "_raw": {cols_map[c]: values[c] for c in values if c in cols_map},
-                    "_raw_header": parser.original_header,
-                    "_raw_line": raw_line,
-                }
-                mqtt_publish(
-                    client,
-                    raw_topic,
-                    json.dumps(raw_payload, separators=(",", ":")),
-                    qos=0,
-                    retain=False,
-                    log_level=log_level,
-                    health=health,
-                )
-            for k, v in payload.items():
-                mqtt_publish(
-                    client,
-                    f"{base_topic}/{k}/state",
-                    str(v),
-                    qos=0,
-                    retain=False,
-                    log_level=log_level,
-                    health=health,
-                    mark_state=True,
-                )
-
-            if now - last_status_line >= 10.0:
-                last_status_line = now
-                bits = []
-                for k in ("pkgwatt", "corwatt", "gfxwatt", "ramwatt"):
-                    if k in payload:
-                        bits.append(f"{k}={payload[k]}")
-                log(
-                    "INFO",
-                    " | ".join(bits) if bits else f"Published {len(payload)} keys",
-                    log_level,
-                )
-
-    except Exception as e:  # noqa: BLE001 supervisor safety net
-        log("ERROR", f"Main loop exception: {e}", log_level)
-        return 14
+    try:
+        return await _reconnect_loop(pub, ts, stop)
     finally:
-        stop["v"] = True
-        # Only with a live session: publish() takes paho mutexes an in-flight
-        # connect on the network thread may hold, and with no session there is
-        # nothing to say anyway. The last will covers the ungraceful case.
-        if health.connected:
-            try:
-                mqtt_publish(
-                    client,
-                    availability_topic,
-                    "offline",
-                    qos=1,
-                    retain=True,
-                    log_level=log_level,
-                    health=health,
-                )
-                time.sleep(0.2)
-            except Exception:  # noqa: BLE001, S110 shutdown best-effort
-                pass
+        await ts.stop()
 
-            try:
-                # A clean DISCONNECT, which also suppresses the will we just
-                # superseded. Never loop_stop(): that joins the network thread,
-                # which can be mid-connect() to an unreachable broker -- Linux's
-                # TCP connect timeout is 60-120s, well past the supervisor's
-                # SIGKILL grace -- or holding an unacked qos=1 message, since
-                # loop_forever only ends once _out_messages drains. The thread
-                # is a daemon, so the OS reaps it when we exit.
-                client.disconnect()
-            except Exception:  # noqa: BLE001, S110 shutdown best-effort
-                pass
 
-        try:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-        except Exception:  # noqa: BLE001, S110 shutdown best-effort
-            pass
-
-    return 0
+def main() -> int:
+    try:
+        return asyncio.run(_run())
+    except Exception as e:  # noqa: BLE001 supervisor safety net
+        print(f"[ERROR] Main loop exception: {e!r}", flush=True)
+        return EXIT_UNEXPECTED
