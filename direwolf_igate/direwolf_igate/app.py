@@ -47,6 +47,12 @@ _RECONNECT_MAX_SECONDS = 60
 # the exact escalation this add-on's shutdown path exists to avoid.
 _MQTT_TIMEOUT_SECONDS = 5
 
+# SUBSCRIBE needs a SUBACK too, and it runs at session start where a SIGTERM
+# cannot shorten it -- a signal landing mid-subscribe still pays the remaining
+# wait before shutdown even begins. Bounded separately so it stays part of the
+# stop budget rather than sitting outside it.
+_SUBSCRIBE_TIMEOUT_SECONDS = 2
+
 # The farewell is best-effort and rides an even shorter leash. If the broker is
 # not acking we are being killed regardless, and the retained last will already
 # says "offline" -- which is precisely the case it exists for.
@@ -173,7 +179,11 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
         log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
         pub.on_connected()
         try:
-            await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+            await mq.subscribe(
+                f"{o.discovery_prefix}/status",
+                qos=1,
+                timeout=_SUBSCRIBE_TIMEOUT_SECONDS,
+            )
         except (ValueError, aiomqtt.MqttError) as e:
             # ValueError is a malformed prefix (a config typo); MqttError is the
             # broker refusing -- an ACL that grants publish on our base topic but

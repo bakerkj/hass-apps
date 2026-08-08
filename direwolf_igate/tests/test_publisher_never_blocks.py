@@ -370,3 +370,52 @@ def test_sigterm_is_prompt_against_a_broker_that_never_acks(tmp_path: Path) -> N
             proc.kill()
             proc.wait(timeout=5)
         srv.close()
+
+
+def test_sigterm_during_subscribe_still_stops_in_time(tmp_path: Path) -> None:
+    """SIGTERM landing mid-SUBSCRIBE must not stack that wait onto the teardown.
+
+    subscribe() needs a SUBACK, and ``stop.set()`` cannot shorten it -- the
+    signal handler only ends the publish loop, which has not started yet. So the
+    remaining subscribe wait is paid in full *before* shutdown begins, and it
+    lands on top of the farewell and the disconnect. Left on the client-wide
+    bound that is 5 + 2 + 5 = 12s against a 10s stop_timeout.
+
+    Deterministic rather than racy: the broker CONNACKs and then answers
+    nothing, and the signal is sent as soon as the connection exists, which is
+    while subscribe is necessarily still in flight.
+    """
+    port, srv = _mute_broker()
+    proc = _spawn(
+        tmp_path,
+        {
+            "mqtt_enabled": True,
+            "mqtt_host": "127.0.0.1",
+            "mqtt_port": port,
+            "interval_seconds": 5,
+            "log_level": "INFO",
+        },
+    )
+    try:
+        assert "W1XM-15" in _expect_tee(proc)
+        # Just long enough for the TCP connect and CONNACK, well inside the
+        # subscribe wait that follows.
+        time.sleep(0.3)
+
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            pytest.fail("subscribe's unfinished wait pushed shutdown past the grace")
+        elapsed = time.monotonic() - t0
+
+        assert proc.returncode == 0, f"unexpected exit status {proc.returncode}"
+        # Belt and braces: 8s above is the supervisor's grace with a little
+        # slack, but the documented budget is tighter and worth pinning.
+        assert elapsed < 8, f"shutdown took {elapsed:.1f}s"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        srv.close()
