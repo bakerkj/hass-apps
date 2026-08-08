@@ -213,9 +213,10 @@ target permanently gone don't linger forever.
 
 There is also a `sensor.signalk_ais_inventory` whose state is the current
 tracked-target count. Its `targets` attribute carries a sorted (most-recent
-first) list of `{mmsi, name, lat, lon, sog, cog, last_seen}` summaries,
-truncated with a `truncated: true` flag if the batch would exceed HA's
-per-attribute size budget.
+first) list of
+`{mmsi, name, latitude, longitude, speed_over_ground, course_over_ground, last_seen}`
+summaries (speed in knots, course in degrees), truncated with a
+`truncated: true` flag if the batch would exceed HA's per-attribute size budget.
 
 Filter noisy AIS entities out of your recorder so long-running captures don't
 bloat the database:
