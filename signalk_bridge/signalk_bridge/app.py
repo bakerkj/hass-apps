@@ -39,6 +39,7 @@ from .health import health_entities as _fleet_health_entities
 from .mqtt import (
     attributes_topic,
     availability_topic,
+    discovery_signature,
     publish_discovery,
     state_topic,
 )
@@ -897,7 +898,7 @@ async def _run(
     suppress_primary_on_fanout = opts_summary["suppress_primary_on_fanout"]
     publish_unmapped = opts_summary["publish_unmapped"]
     tracker: staleness.StalenessTracker | None = opts_summary["tracker"]
-    announced: set[str] = opts_summary["announced"]
+    announced: dict[str, tuple[Any, ...]] = opts_summary["announced"]
     bus: BusStats = opts_summary["bus"]
     use_access_flow: bool = opts_summary["use_access_flow"]
     limiter: PublishRateLimiter = opts_summary["limiter"]
@@ -1126,23 +1127,26 @@ async def _run(
                 qos=1,
                 retain=True,
             )
-            announced.discard(expired_key)
+            announced.pop(expired_key, None)
             limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position")
             limiter.forget(f"vessels.urn:mrn:imo:mmsi:{mmsi}.navigation.position.attrs")
             log.info("Unregistered expired AIS target %s", mmsi)
 
         for key, ent in entities.items():
-            if key not in announced:
-                # Discovery is one-shot per entity: publish immediately,
-                # never through the rate limiter -- HA needs to see the
-                # entity before any state matters, and discovery updates
-                # are rare enough that a cap would only slow reconnect.
+            sig = discovery_signature(ent)
+            if announced.get(key) != sig:
+                # Re-announce on signature change: catches display names that
+                # only arrive after first sight (AIS Type 5, fleet-health
+                # product-info PGN). Uncapped by the limiter -- discovery
+                # updates are rare enough that a cap would only slow reconnect.
+                verb = "Re-announced" if key in announced else "Discovered"
                 await publish_discovery(
                     mq, discovery_prefix, base_topic, key, ent, expire_after_s
                 )
-                announced.add(key)
+                announced[key] = sig
                 log.info(
-                    "Discovered %s -> %s (%s)",
+                    "%s %s -> %s (%s)",
+                    verb,
                     ent.get("path", key),
                     ent["name"],
                     ent["group_label"],
@@ -1300,7 +1304,7 @@ async def main_async(opts_path: str) -> int:
             f"{stale_learning_max_age}s" if stale_learning_max_age > 0 else "off",
         )
 
-    announced: set[str] = set()
+    announced: dict[str, tuple[Any, ...]] = {}
     bus = BusStats()
     subscriber_holder: dict[str, WSSubscriber | None] = {"ws": None}
 

@@ -309,7 +309,7 @@ PATH_MAP: dict[str, dict[str, Any]] = {
         "state_class": "measurement",
     },
     "navigation.gnss.horizontalDilution": {
-        "name": "HDOP",
+        "name": "Horizontal dilution of precision",
         "unit": None,
         "convert": identity,
         "icon": "mdi:crosshairs-gps",
