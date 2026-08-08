@@ -16,6 +16,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +26,46 @@ ADDON_DIR = Path(__file__).resolve().parents[1]  # .../direwolf_igate
 REPO_ROOT = ADDON_DIR.parent
 
 SAMPLE = "[0.3] W1XM-15>APOT30:!4221.62N/07105.36Wr test\n"
+
+
+_CONNACK = b"\x20\x02\x00\x00"  # accepted, no session present
+
+
+def _mute_broker() -> tuple[int, socket.socket]:
+    """A broker that completes CONNECT and then acknowledges nothing.
+
+    Every other test here points at a dead port, so the client never connects
+    and the shutdown path is never reached. This is the case that matters for
+    teardown: the TCP connection is up, so aiomqtt happily sends the qos=1
+    farewell and then waits for a PUBACK that never comes -- an overloaded
+    broker, one mid-restart, or a partition where the socket stays open.
+    """
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+
+    def session(conn: socket.socket) -> None:
+        try:
+            conn.recv(4096)  # CONNECT
+            conn.sendall(_CONNACK)
+            while conn.recv(4096):  # swallow SUBSCRIBE/PUBLISH, never ack
+                pass
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=session, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return int(srv.getsockname()[1]), srv
 
 
 def _dead_port() -> int:
@@ -287,3 +328,45 @@ def test_a_bad_mqtt_option_degrades_to_the_tee_when_enabled(tmp_path: Path) -> N
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_sigterm_is_prompt_against_a_broker_that_never_acks(tmp_path: Path) -> None:
+    """Shutdown must stay inside the supervisor's grace even if the broker went
+    deaf while still holding the socket open.
+
+    aiomqtt's default per-operation timeout is 10s, and the teardown does two of
+    them -- the retained qos=1 farewell, then the disconnect in __aexit__. Left
+    at the default that is 20s against a stop_timeout of 10s, so the add-on is
+    SIGKILLed and the farewell never lands: exactly the escalation this add-on's
+    shutdown path exists to avoid, just moved from paho to aiomqtt.
+    """
+    port, srv = _mute_broker()
+    proc = _spawn(
+        tmp_path,
+        {
+            "mqtt_enabled": True,
+            "mqtt_host": "127.0.0.1",
+            "mqtt_port": port,
+            "interval_seconds": 5,
+            "log_level": "INFO",
+        },
+    )
+    try:
+        assert "W1XM-15" in _expect_tee(proc)
+        time.sleep(1.0)  # let the session establish and publish
+
+        proc.send_signal(signal.SIGTERM)
+        try:
+            # The supervisor's default stop_timeout is 10s; anything at or past
+            # that is a SIGKILL in production, so assert well inside it.
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "shutdown blocked on an unresponsive broker past the stop grace"
+            )
+        assert proc.returncode == 0, f"unexpected exit status {proc.returncode}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        srv.close()
