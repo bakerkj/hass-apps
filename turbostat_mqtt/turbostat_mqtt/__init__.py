@@ -8,12 +8,12 @@ package level.
 """
 
 import os
-import subprocess  # noqa: F401 — exposed so tests can patch via turbostat_mqtt.subprocess
 import time  # noqa: F401 — exposed so tests can patch via turbostat_mqtt.time
 
 __version__ = os.environ.get("ADDON_VERSION", "dev")
 
 from .app import main  # noqa: F401
+from .config import Options, from_mapping, read  # noqa: F401
 from .metadata import (  # noqa: F401
     COLUMNS,
     COUNT_COLS,
@@ -24,11 +24,7 @@ from .metadata import (  # noqa: F401
     guess_meta,
     missing_expected_columns,
 )
-from .mqtt import (  # noqa: F401
-    MqttHealth,
-    build_discovery_payloads,
-    connect_mqtt_with_retry,
-    mqtt_publish,
-)
+from .mqtt import MqttHealth, build_discovery_payloads  # noqa: F401
 from .parser import TurbostatParser, start_turbostat  # noqa: F401
+from .publisher import Fault, Publisher, coerce, map_columns  # noqa: F401
 from .util import log, sanitize_key  # noqa: F401
