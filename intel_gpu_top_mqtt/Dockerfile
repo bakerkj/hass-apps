@@ -17,11 +17,18 @@ LABEL \
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      py3-paho-mqtt=1.6.1-r4 \
       python3=3.14.5-r0 \
+      uv=0.11.19-r0 \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
       igt-gpu-tools=2.3-r0
+
+# aiomqtt is not packaged in any Alpine branch, so it comes in via uv. It needs
+# paho 2.x, which is likewise newer than the py3-paho-mqtt apk.
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install \
+        --system --no-cache --break-system-packages \
+        aiomqtt==2.5.1 \
+        paho-mqtt==2.1.0
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh

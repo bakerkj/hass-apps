@@ -3,6 +3,7 @@
 
 """Intel GPU device enumeration + subprocess management for intel_gpu_top."""
 
+import asyncio
 import logging
 import re
 import subprocess
@@ -56,22 +57,25 @@ def auto_select_device_arg(
     return f"drm:{path}", path
 
 
-def start_intel_gpu_top(
+async def start_intel_gpu_top(
     interval_ms: int,
     dev_arg: str | None,
     log: logging.Logger,
-) -> subprocess.Popen:
+) -> asyncio.subprocess.Process:
+    """Spawn intel_gpu_top with its pipes as asyncio streams.
+
+    Bytes, not text: the caller decodes with a replacement policy, so a stray
+    non-UTF-8 byte cannot raise out of the read and kill the sampler.
+    """
     cmd = ["intel_gpu_top", "-J", "-s", str(interval_ms), "-o", "-"]
     if dev_arg:
         cmd += ["-d", dev_arg]
     log.info("Starting: %s", " ".join(cmd))
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,  # line-buffered in text mode
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
         log.error("intel_gpu_top not found in container; check package install.")

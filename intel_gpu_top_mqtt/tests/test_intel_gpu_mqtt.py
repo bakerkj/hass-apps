@@ -6,10 +6,11 @@
 import json
 import logging
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import intel_gpu_mqtt as igm
 import pytest
+from intel_gpu_mqtt import discovery_payloads
 
 _LOG = logging.getLogger("test")
 
@@ -389,6 +390,30 @@ def test_list_devices_file_not_found_returns_empty():
 # ---------------------------------------------------------------------------
 
 
+def _publish_discovery(
+    *,
+    client,
+    discovery_prefix,
+    base_topic,
+    device_id,
+    device_name,
+    metrics,
+    expire_after_s,
+    log,
+):
+    """Shim for the tests below, which predate the pure payload builder.
+
+    Discovery is built by ``discovery_payloads`` and published by the Publisher
+    now; these tests still assert the payload shape, which is what matters, so
+    they keep driving a mock client through this adapter.
+    """
+    del log
+    for topic, payload in discovery_payloads(
+        discovery_prefix, base_topic, device_id, device_name, metrics, expire_after_s
+    ).items():
+        client.publish(topic, json.dumps(payload), qos=1, retain=False)
+
+
 def test_publish_discovery_publishes_correct_topics():
     client = MagicMock()
     client.publish.return_value = MagicMock(mid=1, rc=0)
@@ -410,7 +435,7 @@ def test_publish_discovery_publishes_correct_topics():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -464,7 +489,7 @@ def test_publish_discovery_engine_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -493,7 +518,7 @@ def test_publish_discovery_freq_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -514,53 +539,53 @@ def test_publish_discovery_freq_icon():
 # ---------------------------------------------------------------------------
 
 
-def test_start_intel_gpu_top_without_dev_arg():
+async def test_start_intel_gpu_top_without_dev_arg():
     mock_proc = MagicMock()
     mock_proc.pid = 12345
-    with patch("intel_gpu_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
-        result = igm.start_intel_gpu_top(1000, None, _LOG)
+    with patch(
+        "intel_gpu_mqtt.device.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=mock_proc),
+    ) as spawn:
+        result = await igm.start_intel_gpu_top(1000, None, _LOG)
 
     assert result is mock_proc
-    mock_popen.assert_called_once_with(
-        ["intel_gpu_top", "-J", "-s", "1000", "-o", "-"],
+    spawn.assert_awaited_once_with(
+        "intel_gpu_top",
+        "-J",
+        "-s",
+        "1000",
+        "-o",
+        "-",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
     )
 
 
-def test_start_intel_gpu_top_with_dev_arg():
+async def test_start_intel_gpu_top_with_dev_arg():
     mock_proc = MagicMock()
     mock_proc.pid = 12345
-    with patch("intel_gpu_mqtt.subprocess.Popen", return_value=mock_proc) as mock_popen:
-        result = igm.start_intel_gpu_top(500, "drm:/dev/dri/renderD128", _LOG)
+    with patch(
+        "intel_gpu_mqtt.device.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=mock_proc),
+    ) as spawn:
+        result = await igm.start_intel_gpu_top(500, "drm:/dev/dri/renderD128", _LOG)
 
     assert result is mock_proc
-    mock_popen.assert_called_once_with(
-        [
-            "intel_gpu_top",
-            "-J",
-            "-s",
-            "500",
-            "-o",
-            "-",
-            "-d",
-            "drm:/dev/dri/renderD128",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
+    assert list(spawn.await_args.args[-2:]) == ["-d", "drm:/dev/dri/renderD128"]
+    assert spawn.await_args.args[3] == "500"
 
 
-def test_start_intel_gpu_top_file_not_found():
+async def test_start_intel_gpu_top_file_not_found():
+    """A missing binary must surface, not be swallowed: app.py turns it into
+    EXIT_NO_BINARY so the supervisor stops retrying a broken image."""
     with (
-        patch("intel_gpu_mqtt.subprocess.Popen", side_effect=FileNotFoundError),
+        patch(
+            "intel_gpu_mqtt.device.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=FileNotFoundError),
+        ),
         pytest.raises(FileNotFoundError),
     ):
-        igm.start_intel_gpu_top(1000, None, _LOG)
+        await igm.start_intel_gpu_top(1000, None, _LOG)
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +707,7 @@ def test_publish_discovery_interrupts_no_special_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -717,7 +742,7 @@ def test_publish_discovery_videoenhance_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -747,7 +772,7 @@ def test_publish_discovery_blitter_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -777,7 +802,7 @@ def test_publish_discovery_render3d_icon():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
@@ -807,7 +832,7 @@ def test_publish_discovery_freq_requested():
         },
     }
 
-    igm.publish_discovery(
+    _publish_discovery(
         client=client,
         discovery_prefix="homeassistant",
         base_topic="intel_gpu_top",
