@@ -185,8 +185,9 @@ sensor when present.
 Opt-in via `ais_enabled: true`. When set, the bridge widens its Signal K
 subscription to include all `vessels.*` contexts and publishes one HA
 `device_tracker` per AIS-detected vessel on top of the boat's own instruments.
-Each tracker's attributes carry position, SoG, CoG, heading, plus static data
-(name, ship type, callsign, IMO, dimensions) as SK receives them.
+Each tracker's attributes carry position, speed over ground (knots), course over
+ground and heading (degrees), plus static data (name, ship type, callsign,
+length/beam/draft in meters) as SK receives them.
 
 ```yaml
 ais_enabled: false # off by default
