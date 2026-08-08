@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.10](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.9...signalk_bridge-v0.0.10) (2026-08-08)
+
+
+### Features
+
+* **signalk_bridge:** re-announce discovery on signature change; spelled-out AIS attrs ([#437](https://github.com/bakerkj/hass-apps/issues/437)) ([9f5baeb](https://github.com/bakerkj/hass-apps/commit/9f5baebfa7724c0e687a1fa22b42f5800dc4ef41))
+
 ## [0.0.9](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.8...signalk_bridge-v0.0.9) (2026-08-07)
 
 

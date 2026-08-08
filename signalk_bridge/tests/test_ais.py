@@ -213,6 +213,41 @@ def test_silent_target_expires_when_dirty_set_omits_it() -> None:
     assert dropped == ["367674550"]
 
 
+def test_attribute_names_are_spelled_out_with_converted_units() -> None:
+    """Attribute keys drop the ``sog``/``cog``/``hdg`` marine abbreviations,
+    and the values are converted at the edge -- knots for speed, degrees for
+    bearings -- so a downstream template can read the bearing without
+    remembering it's Signal K radians."""
+    import math
+
+    reg = AISRegistry(expire_seconds=900)
+    reg.ingest(
+        {
+            "367674550": _sk_target(
+                lat=42.0,
+                lon=-71.0,
+                # 5.0 m/s -> 9.72 kn; pi/2 rad -> 90.0 deg
+                sog=5.0,
+            )
+        },
+        now_monotonic=100.0,
+    )
+    # Splice in course + heading via a follow-up ingest since the helper
+    # doesn't expose them directly.
+    reg._targets["367674550"].course_over_ground_rad = math.pi / 2
+    reg._targets["367674550"].heading_rad = math.pi
+    attrs = reg.entities()["ais_367674550"]["attributes"]
+    assert attrs["speed_over_ground"] == round(5.0 * 1.94384, 2)
+    assert attrs["course_over_ground"] == 90.0
+    assert attrs["heading"] == 180.0
+    # Inventory summary follows the same convention.
+    inv = reg.inventory_entity()
+    row = inv["attributes"]["targets"][0]
+    assert "speed_over_ground" in row
+    assert "course_over_ground" in row
+    assert "latitude" in row and "longitude" in row
+
+
 def test_sticky_flag_reflected_in_attributes() -> None:
     reg = AISRegistry(expire_seconds=900, always_retain=frozenset({"367674550"}))
     reg.ingest(
