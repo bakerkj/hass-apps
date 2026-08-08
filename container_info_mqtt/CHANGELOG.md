@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.26](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.25...container_info_mqtt-v0.1.26) (2026-08-08)
+
+
+### Bug Fixes
+
+* never join paho's network thread on any shutdown path ([#444](https://github.com/bakerkj/hass-apps/issues/444)) ([bdc2c02](https://github.com/bakerkj/hass-apps/commit/bdc2c025aa644eb37f79f346130ba0e148546f23))
+
 ## [0.1.25](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.24...container_info_mqtt-v0.1.25) (2026-07-31)
 
 
