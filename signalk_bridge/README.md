@@ -185,8 +185,9 @@ sensor when present.
 Opt-in via `ais_enabled: true`. When set, the bridge widens its Signal K
 subscription to include all `vessels.*` contexts and publishes one HA
 `device_tracker` per AIS-detected vessel on top of the boat's own instruments.
-Each tracker's attributes carry position, SoG, CoG, heading, plus static data
-(name, ship type, callsign, IMO, dimensions) as SK receives them.
+Each tracker's attributes carry position, speed over ground (knots), course over
+ground and heading (degrees), plus static data (name, ship type, callsign,
+length/beam/draft in meters) as SK receives them.
 
 ```yaml
 ais_enabled: false # off by default
@@ -213,9 +214,10 @@ target permanently gone don't linger forever.
 
 There is also a `sensor.signalk_ais_inventory` whose state is the current
 tracked-target count. Its `targets` attribute carries a sorted (most-recent
-first) list of `{mmsi, name, lat, lon, sog, cog, last_seen}` summaries,
-truncated with a `truncated: true` flag if the batch would exceed HA's
-per-attribute size budget.
+first) list of
+`{mmsi, name, latitude, longitude, speed_over_ground, course_over_ground, last_seen}`
+summaries (speed in knots, course in degrees), truncated with a
+`truncated: true` flag if the batch would exceed HA's per-attribute size budget.
 
 Filter noisy AIS entities out of your recorder so long-running captures don't
 bloat the database:

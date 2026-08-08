@@ -19,6 +19,7 @@ from signalk_bridge.app import resolve_entities, resolve_special
 from signalk_bridge.mqtt import (
     attributes_topic,
     availability_topic,
+    discovery_signature,
     publish_discovery,
     state_topic,
 )
@@ -158,3 +159,22 @@ async def test_diagnostic_catch_all_reaches_discovery_payload() -> None:
     assert bcfg["entity_category"] == "diagnostic"
     assert bcfg["payload_on"] == "ON"
     assert bcfg["payload_off"] == "OFF"
+
+
+def test_discovery_signature_changes_when_display_name_arrives_late() -> None:
+    """Late-arriving display names (AIS Type 5 static-data after position;
+    N2K device product-info PGN after address-claim) must alter the signature
+    so ``_run`` re-publishes the discovery config and HA's device card
+    reflects the new label rather than being stuck on the fallback."""
+    fallback = {
+        "component": "device_tracker",
+        "name": "AIS 367674550",
+        "group_id": "ais.367674550",
+        "group_label": "AIS 367674550",
+        "icon": "mdi:ferry",
+        "attributes": {"latitude": 42.0, "longitude": -71.0, "mmsi": "367674550"},
+    }
+    resolved = {**fallback, "name": "MOLLY B", "group_label": "MOLLY B"}
+    assert discovery_signature(fallback) != discovery_signature(resolved)
+    # Same-content re-emission (nothing new arrived) does NOT trip a re-announce.
+    assert discovery_signature(fallback) == discovery_signature(dict(fallback))
