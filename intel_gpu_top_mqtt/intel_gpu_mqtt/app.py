@@ -116,7 +116,14 @@ class GpuTop:
 
         # Re-select: the GPU nodes may have changed, which is the whole point of
         # the render-node watchdog.
-        listing = list_intel_gpu_top_devices(self.log)
+        #
+        # Off-loop: list_intel_gpu_top_devices shells out to `intel_gpu_top -L`
+        # with a 5s timeout, and blocking here would freeze everything this loop
+        # now owns -- MQTT reads and writes, the heartbeat, and stop.set() from
+        # the signal handler. Under paho that work lived on its own thread, so
+        # blocking was harmless; it is not any more, and 5s on top of the ~9s
+        # teardown budget would put a restart-then-SIGTERM past the stop grace.
+        listing = await asyncio.to_thread(list_intel_gpu_top_devices, self.log)
         dev_arg, dev_path = auto_select_device_arg(
             listing, o.preferred_device_regex, self.log
         )

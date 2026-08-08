@@ -10,6 +10,7 @@ the reconnect backoff.
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -494,3 +495,57 @@ async def test_the_disconnect_watchdog_still_fires_with_no_session(monkeypatch) 
         app_mod._reconnect_loop(pub, _FakeGpu([]), asyncio.Event()), timeout=10
     )
     assert rc == app_mod.EXIT_MQTT_DOWN
+
+
+# --- the loop must stay free during a restart --------------------------------
+
+
+class _FakeProc:
+    stdout = None
+    stderr = None
+    returncode = None
+
+
+async def test_device_enumeration_does_not_freeze_the_loop(monkeypatch) -> None:
+    """`intel_gpu_top -L` is a blocking subprocess call with a 5s timeout.
+
+    Under paho it ran while MQTT lived on its own thread, so stalling here cost
+    nothing. This loop now owns MQTT I/O, the heartbeat and `stop.set()` from the
+    signal handler, so blocking on it freezes all three -- and 5s on top of the
+    ~9s teardown budget puts a restart-then-SIGTERM past the supervisor's grace.
+
+    Asserted by watching whether anything else gets scheduled while the restart
+    is in flight, which is the property that actually matters.
+    """
+    blocked_for = 0.4
+    ticks: list[int] = []
+
+    def slow_listing(_log):
+        time.sleep(blocked_for)  # exactly what check_output does to the loop
+        return ""
+
+    async def fake_spawn(*_a):
+        return _FakeProc()
+
+    monkeypatch.setattr(app_mod, "list_intel_gpu_top_devices", slow_listing)
+    monkeypatch.setattr(app_mod, "auto_select_device_arg", lambda *_a: (None, None))
+    monkeypatch.setattr(app_mod, "start_intel_gpu_top", fake_spawn)
+
+    async def ticker() -> None:
+        while True:
+            ticks.append(1)
+            await asyncio.sleep(0.02)
+
+    gpu = app_mod.GpuTop(_pub(), LOG)
+    tick_task = asyncio.create_task(ticker())
+    await asyncio.sleep(0)  # let the ticker start before we time anything
+    ticks.clear()
+    try:
+        await gpu.restart("initial_start")
+    finally:
+        tick_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tick_task
+
+    # On-loop, nothing else can run for the whole 0.4s and this is ~0.
+    assert len(ticks) > 5, f"event loop was frozen during restart ({len(ticks)} ticks)"
