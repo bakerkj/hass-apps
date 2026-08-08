@@ -40,6 +40,24 @@ EXIT_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 _RECONNECT_MIN_SECONDS = 3
 _RECONNECT_MAX_SECONDS = 60
 
+# Ceiling on any single aiomqtt operation. aiomqtt defaults to 10s, which is the
+# whole budget the supervisor gives us to stop: a qos=1 publish awaiting a PUBACK
+# and then the disconnect in __aexit__ can each burn the full 10s, so a broker
+# holding the TCP connection open without acking would push us past SIGKILL --
+# the exact escalation this add-on's shutdown path exists to avoid.
+_MQTT_TIMEOUT_SECONDS = 5
+
+# SUBSCRIBE needs a SUBACK too, and it runs at session start where a SIGTERM
+# cannot shorten it -- a signal landing mid-subscribe still pays the remaining
+# wait before shutdown even begins. Bounded separately so it stays part of the
+# stop budget rather than sitting outside it.
+_SUBSCRIBE_TIMEOUT_SECONDS = 2
+
+# The farewell is best-effort and rides an even shorter leash. If the broker is
+# not acking we are being killed regardless, and the retained last will already
+# says "offline" -- which is precisely the case it exists for.
+_FAREWELL_TIMEOUT_SECONDS = 2
+
 
 def main() -> int:
     """Never die of our own accord: any failure degrades to a pass-through."""
@@ -137,6 +155,12 @@ async def _publish_loop(
         await _wait_or_stop(stop, pub.opts.interval)
 
 
+async def _flush_and_say_goodbye(mq: aiomqtt.Client, pub: Publisher) -> None:
+    """Last states, then the retained farewell that supersedes the will."""
+    await pub.publish_states(mq)
+    await pub.publish_availability(mq, "offline")
+
+
 async def _session(pub: Publisher, stop: asyncio.Event) -> None:
     """One connected session: subscribe, publish, and surface faults."""
     o = pub.opts
@@ -150,11 +174,16 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
             topic=o.availability_topic, payload=b"offline", qos=1, retain=True
         ),
         keepalive=60,
+        timeout=_MQTT_TIMEOUT_SECONDS,
     ) as mq:
         log("INFO", f"MQTT connected to {o.mqtt_host}:{o.mqtt_port}", o.log_level)
         pub.on_connected()
         try:
-            await mq.subscribe(f"{o.discovery_prefix}/status", qos=1)
+            await mq.subscribe(
+                f"{o.discovery_prefix}/status",
+                qos=1,
+                timeout=_SUBSCRIBE_TIMEOUT_SECONDS,
+            )
         except (ValueError, aiomqtt.MqttError) as e:
             # ValueError is a malformed prefix (a config typo); MqttError is the
             # broker refusing -- an ACL that grants publish on our base topic but
@@ -181,9 +210,13 @@ async def _session(pub: Publisher, stop: asyncio.Event) -> None:
             # Flush current values, then supersede the will, while the session
             # is still up -- otherwise the retained states HA keeps while we are
             # away are a whole interval stale.
+            # Bounded as one budget: an unresponsive broker must not spend our
+            # whole stop allowance here.
             try:
-                await pub.publish_states(mq)
-                await pub.publish_availability(mq, "offline")
+                await asyncio.wait_for(
+                    _flush_and_say_goodbye(mq, pub),
+                    timeout=_FAREWELL_TIMEOUT_SECONDS,
+                )
             except Exception as e:  # noqa: BLE001 shutdown must not raise
                 log("WARNING", f"error during shutdown publish: {e!r}", o.log_level)
 
