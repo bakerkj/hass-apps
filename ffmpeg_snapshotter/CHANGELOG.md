@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.16](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.15...ffmpeg_snapshotter-v0.8.16) (2026-08-08)
+
+
+### Bug Fixes
+
+* never join paho's network thread on any shutdown path ([#444](https://github.com/bakerkj/hass-apps/issues/444)) ([bdc2c02](https://github.com/bakerkj/hass-apps/commit/bdc2c025aa644eb37f79f346130ba0e148546f23))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency mesa-va-gallium to v26.1.6-r0 ([#377](https://github.com/bakerkj/hass-apps/issues/377)) ([bc9ad29](https://github.com/bakerkj/hass-apps/commit/bc9ad293e73a02654200ff5244c232e970117691))
+
 ## [0.8.15](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.14...ffmpeg_snapshotter-v0.8.15) (2026-07-24)
 
 

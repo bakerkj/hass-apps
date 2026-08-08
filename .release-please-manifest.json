@@ -5,7 +5,7 @@
   "dashboard_entity_proxy": "0.1.4",
   "dashboard_web_proxy": "0.0.4",
   "direwolf_igate": "0.0.6",
-  "ffmpeg_snapshotter": "0.8.15",
+  "ffmpeg_snapshotter": "0.8.16",
   "frigate_compressor": "0.0.56",
   "halpi2_power": "0.0.3",
   "haos_configurator": "0.0.7",
