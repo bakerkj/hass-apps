@@ -55,6 +55,29 @@ def _device_block(group_id: str, group_label: str) -> dict[str, Any]:
     }
 
 
+def discovery_signature(entity: dict[str, Any]) -> tuple[Any, ...]:
+    """Fields whose change requires re-publishing the discovery config.
+
+    Must cover every entity field that ends up in the payload written by
+    :func:`publish_discovery` -- otherwise a late-arriving value (AIS vessel
+    name from a Type 5 static-data broadcast; a fleet-health device whose
+    product-info PGN follows its address-claim) never reaches HA's card.
+    """
+    return (
+        entity.get("component", "sensor"),
+        entity.get("name"),
+        entity.get("group_id"),
+        entity.get("group_label"),
+        entity.get("unit"),
+        entity.get("device_class"),
+        entity.get("state_class"),
+        entity.get("icon"),
+        entity.get("entity_category"),
+        entity.get("suggested_display_precision"),
+        entity.get("attributes") is not None,
+    )
+
+
 async def publish_discovery(
     client: _Publisher,
     discovery_prefix: str,

@@ -25,34 +25,41 @@ existing publish loop consumes them without a second discovery/state pipeline.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from .paths import slugify
 
+_MS_TO_KNOTS = 1.94384
+
+
+def _rad_to_deg_bearing(rad: float) -> float:
+    """Signal K radians to a 0-360° compass bearing."""
+    return math.degrees(rad) % 360.0
+
 
 @dataclass
 class _Target:
     """One AIS contact's aggregated state.
 
-    Dynamic fields (position, sog, cog, heading) come from the frequent
-    Class-A/B position PGNs; static fields (name, ship_type, callsign, imo,
-    dimensions) arrive rarely on the static-data PGN and are held until
-    superseded. ``last_delta_monotonic`` is the freshest change of ANY field
-    -- so a target that keeps broadcasting position but not static info still
-    stays alive.
+    Dynamic fields (position, speed_over_ground, course_over_ground,
+    heading) come from the frequent Class-A/B position PGNs; static fields
+    (name, ship_type, callsign, dimensions) arrive rarely on the static-data
+    PGN and are held until superseded. ``last_delta_monotonic`` is the
+    freshest change of ANY field -- so a target that keeps broadcasting
+    position but not static info still stays alive.
     """
 
     mmsi: str
     position: dict[str, float] | None = None  # {latitude, longitude}
-    sog: float | None = None  # m/s
-    cog: float | None = None  # radians
-    heading: float | None = None  # radians
+    speed_over_ground_ms: float | None = None
+    course_over_ground_rad: float | None = None
+    heading_rad: float | None = None
     name: str | None = None
     callsign: str | None = None
     ship_type: str | int | None = None
-    imo: str | int | None = None
     length: float | None = None
     beam: float | None = None
     draft: float | None = None
@@ -121,21 +128,21 @@ class AISRegistry:
                 ts = pos.get("timestamp") if isinstance(pos, dict) else None
                 if isinstance(ts, str):
                     t.last_seen_iso = ts
-        sog = nav.get("speedOverGround") if isinstance(nav, dict) else None
-        if isinstance(sog, dict):
-            sv = sog.get("value")
+        speed = nav.get("speedOverGround") if isinstance(nav, dict) else None
+        if isinstance(speed, dict):
+            sv = speed.get("value")
             if isinstance(sv, (int, float)):
-                t.sog = float(sv)
-        cog = nav.get("courseOverGroundTrue") if isinstance(nav, dict) else None
-        if isinstance(cog, dict):
-            cv = cog.get("value")
+                t.speed_over_ground_ms = float(sv)
+        course = nav.get("courseOverGroundTrue") if isinstance(nav, dict) else None
+        if isinstance(course, dict):
+            cv = course.get("value")
             if isinstance(cv, (int, float)):
-                t.cog = float(cv)
-        hdg = nav.get("headingTrue") if isinstance(nav, dict) else None
-        if isinstance(hdg, dict):
-            hv = hdg.get("value")
+                t.course_over_ground_rad = float(cv)
+        heading = nav.get("headingTrue") if isinstance(nav, dict) else None
+        if isinstance(heading, dict):
+            hv = heading.get("value")
             if isinstance(hv, (int, float)):
-                t.heading = float(hv)
+                t.heading_rad = float(hv)
 
     def _read_static(self, tree: dict[str, Any], t: _Target) -> None:
         # SK carries static AIS info at a mix of paths; canboatjs varies by
@@ -191,15 +198,6 @@ class AISRegistry:
                         t.draft = float(max_d)
                 elif isinstance(dv, (int, float)):
                     t.draft = float(dv)
-            imo = (
-                design.get("imo") or design.get("registrations", {}).get("imo")
-                if isinstance(design.get("registrations"), dict)
-                else design.get("imo")
-            )
-            if isinstance(imo, dict):
-                iv = imo.get("value")
-                if iv:
-                    t.imo = str(iv)
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -262,26 +260,31 @@ class AISRegistry:
                 "longitude": t.position["longitude"],
                 "mmsi": mmsi,
             }
-            if t.sog is not None:
-                attrs["speed_over_ground_ms"] = t.sog
-            if t.cog is not None:
-                attrs["course_over_ground_rad"] = t.cog
-            if t.heading is not None:
-                attrs["heading_rad"] = t.heading
+            # Converted from Signal K's native SI (m/s → knots, radians →
+            # degrees) at the edge so consumers can read a bearing without
+            # remembering it's in radians.
+            if t.speed_over_ground_ms is not None:
+                attrs["speed_over_ground"] = round(
+                    t.speed_over_ground_ms * _MS_TO_KNOTS, 2
+                )
+            if t.course_over_ground_rad is not None:
+                attrs["course_over_ground"] = round(
+                    _rad_to_deg_bearing(t.course_over_ground_rad), 1
+                )
+            if t.heading_rad is not None:
+                attrs["heading"] = round(_rad_to_deg_bearing(t.heading_rad), 1)
             if t.name is not None:
                 attrs["name"] = t.name
             if t.callsign is not None:
                 attrs["callsign"] = t.callsign
             if t.ship_type is not None:
                 attrs["ship_type"] = t.ship_type
-            if t.imo is not None:
-                attrs["imo"] = t.imo
             if t.length is not None:
-                attrs["length_m"] = t.length
+                attrs["length"] = t.length
             if t.beam is not None:
-                attrs["beam_m"] = t.beam
+                attrs["beam"] = t.beam
             if t.draft is not None:
-                attrs["draft_m"] = t.draft
+                attrs["draft"] = t.draft
             if t.last_seen_iso is not None:
                 attrs["last_seen"] = t.last_seen_iso
             attrs["sticky"] = mmsi in self.always_retain
@@ -319,12 +322,16 @@ class AISRegistry:
             if t.name is not None:
                 row["name"] = t.name
             if t.position is not None:
-                row["lat"] = t.position["latitude"]
-                row["lon"] = t.position["longitude"]
-            if t.sog is not None:
-                row["sog"] = round(t.sog, 2)
-            if t.cog is not None:
-                row["cog"] = round(t.cog, 3)
+                row["latitude"] = t.position["latitude"]
+                row["longitude"] = t.position["longitude"]
+            if t.speed_over_ground_ms is not None:
+                row["speed_over_ground"] = round(
+                    t.speed_over_ground_ms * _MS_TO_KNOTS, 2
+                )
+            if t.course_over_ground_rad is not None:
+                row["course_over_ground"] = round(
+                    _rad_to_deg_bearing(t.course_over_ground_rad), 1
+                )
             if t.last_seen_iso is not None:
                 row["last_seen"] = t.last_seen_iso
             # Rough estimate; ~60 bytes per compact row on average.
