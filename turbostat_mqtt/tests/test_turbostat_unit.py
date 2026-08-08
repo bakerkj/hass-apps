@@ -338,16 +338,23 @@ async def test_the_heartbeat_distinguishes_never_from_just_now() -> None:
 class _FakeTurbostat:
     """Feeds canned lines, then blocks so the loop hits its bounded wait."""
 
-    def __init__(self, lines: list[str | None]) -> None:
+    def __init__(self, lines: list[str | None], *, gap: float = 0.0) -> None:
         self.lines = list(lines)
         self.restarts: list[str] = []
         self.proc = None
+        self.gap = gap  # models turbostat emitting one line per interval
+        self._read_task: asyncio.Task | None = None
 
     async def readline(self) -> str | None:
+        if self.gap:
+            await asyncio.sleep(self.gap)
         if self.lines:
             return self.lines.pop(0)
-        await asyncio.sleep(3600)  # never returns; the loop's timeout must win
+        await asyncio.sleep(3600)  # never returns; the race with stop must win
         return None
+
+    # Mirrors Turbostat.next_line so the loop exercises the real control flow.
+    next_line = app_mod.Turbostat.next_line
 
     async def restart(self, reason: str) -> bool:
         self.restarts.append(reason)
@@ -433,6 +440,38 @@ async def test_a_quiet_turbostat_still_lets_shutdown_through() -> None:
         app_mod._sample_loop(_Recorder(), pub, _FakeTurbostat([]), stop), timeout=5
     )
     assert rc == app_mod.EXIT_OK
+
+
+async def test_shutdown_does_not_wait_out_the_sampling_interval() -> None:
+    """SIGTERM must not sit unnoticed until the next sample is due.
+
+    turbostat emits one line per interval, so a loop that only rechecks `stop`
+    between samples notices a signal after up to `interval` seconds. config.json
+    ships 30s and permits 60 -- both longer than the supervisor's whole 10s stop
+    grace, so the bounded MQTT teardown would never run and every restart would
+    end in SIGKILL with no farewell.
+
+    The earlier tests all used interval_seconds=1, which hid this entirely, and
+    the one above sets `stop` *before* entering the loop so it never waits while
+    armed. This one enters the wait first, then signals.
+    """
+    pub = _pub(interval_seconds=60)  # the schema maximum
+    stop = asyncio.Event()
+    ts = _FakeTurbostat([SAMPLE] * 10, gap=60.0)  # a line only once per interval
+
+    async def signal_soon() -> None:
+        await asyncio.sleep(0.05)  # let the loop reach the wait first
+        stop.set()
+
+    started = asyncio.get_running_loop().time()
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(signal_soon())
+        task = tg.create_task(app_mod._sample_loop(_Recorder(), pub, ts, stop))
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert task.result() == app_mod.EXIT_OK
+    # Well under the 60s interval: the loop woke on the event, not the timeout.
+    assert elapsed < 5, f"shutdown waited {elapsed:.1f}s for the sampling interval"
 
 
 # --- reconnect backoff -------------------------------------------------------

@@ -63,6 +63,10 @@ _FAULT_EXIT = {
     Fault.PUBLISH_STALLED: EXIT_PUBLISH_STALLED,
 }
 
+# Returned when a pass produced no line: either the wait elapsed or shutdown was
+# requested. Distinct from None, which means EOF and calls for a restart.
+_NO_LINE = object()
+
 
 class Turbostat:
     """The turbostat child process and the one task draining it.
@@ -75,6 +79,7 @@ class Turbostat:
         self.pub = pub
         self.proc: asyncio.subprocess.Process | None = None
         self._last_restart_attempt = 0.0
+        self._read_task: asyncio.Task | None = None
 
     async def restart(self, reason: str) -> bool:
         """Replace the running turbostat. False if the debounce declined."""
@@ -106,6 +111,11 @@ class Turbostat:
     async def stop(self) -> None:
         proc = self.proc
         self.proc = None
+        read, self._read_task = self._read_task, None
+        if read is not None:
+            read.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await read
         if proc is None or proc.returncode is not None:
             return
         with contextlib.suppress(ProcessLookupError):
@@ -126,6 +136,40 @@ class Turbostat:
         if not raw:
             return None
         return raw.decode("utf-8", "replace")
+
+    async def next_line(
+        self, stop: asyncio.Event, timeout: float
+    ) -> str | None | object:
+        """A line, EOF (None), or _NO_LINE, whichever comes first.
+
+        Raced against ``stop`` rather than polled: turbostat emits one line per
+        interval, so waiting only on the read would leave a SIGTERM unnoticed for
+        a whole interval. config.json ships 30s and allows 60, both longer than
+        the supervisor's entire 10s stop grace -- so the carefully bounded MQTT
+        teardown would never get to run at all, and every restart would end in
+        SIGKILL with no farewell.
+
+        The read task outlives a timeout instead of being cancelled and
+        restarted, so a line still arriving in pieces is never abandoned
+        half-read.
+        """
+        if self._read_task is None:
+            self._read_task = asyncio.create_task(
+                self.readline(), name="turbostat-read"
+            )
+        stopped = asyncio.create_task(stop.wait(), name="turbostat-stop")
+        try:
+            await asyncio.wait(
+                {self._read_task, stopped},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            stopped.cancel()
+        if not self._read_task.done():
+            return _NO_LINE
+        task, self._read_task = self._read_task, None
+        return task.result()
 
 
 async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
@@ -163,10 +207,10 @@ async def _sample_loop(
         await pub.maybe_heartbeat(mq, time.time())
 
         # Bounded so the watchdogs and heartbeat above still run while turbostat
-        # is quiet -- and so shutdown is noticed without a sample to carry it.
-        try:
-            line = await asyncio.wait_for(ts.readline(), timeout=pub.opts.interval)
-        except TimeoutError:
+        # is quiet, and raced against stop so shutdown does not wait for a sample
+        # that is up to a whole interval away.
+        line = await ts.next_line(stop, pub.opts.interval)
+        if line is _NO_LINE:
             continue
 
         if line is None:
@@ -179,7 +223,7 @@ async def _sample_loop(
             continue
 
         try:
-            await pub.publish_sample(mq, line)
+            await pub.publish_sample(mq, str(line))
         except aiomqtt.MqttError:
             raise  # the session is gone; _reconnect_loop reconnects
         except Exception as e:  # noqa: BLE001 one bad sample must not end them all
