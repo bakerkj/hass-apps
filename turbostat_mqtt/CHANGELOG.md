@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.41](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.40...turbostat_mqtt-v0.0.41) (2026-08-08)
+
+
+### Code Refactoring
+
+* **turbostat_mqtt:** asyncio + aiomqtt, and split main() into testable parts ([#439](https://github.com/bakerkj/hass-apps/issues/439)) ([df98002](https://github.com/bakerkj/hass-apps/commit/df98002405582b149e4014721ba477d03ef04e5e))
+
+
+### Tests
+
+* **turbostat_mqtt:** stop the fake turbostat outliving the add-on ([#424](https://github.com/bakerkj/hass-apps/issues/424)) ([1fe4182](https://github.com/bakerkj/hass-apps/commit/1fe418225bb310226fe131be7cd9f288cc6c6f4c))
+
 ## [0.0.40](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.39...turbostat_mqtt-v0.0.40) (2026-08-07)
 
 
