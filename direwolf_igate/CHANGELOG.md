@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.5...direwolf_igate-v0.0.6) (2026-08-08)
+
+
+### Bug Fixes
+
+* **direwolf_igate:** bound the shutdown so a deaf broker cannot cost us SIGKILL ([#436](https://github.com/bakerkj/hass-apps/issues/436)) ([793c5c5](https://github.com/bakerkj/hass-apps/commit/793c5c55ee506993c84e65bc9869788b0c355380))
+
 ## [0.0.5](https://github.com/bakerkj/hass-apps/compare/direwolf_igate-v0.0.4...direwolf_igate-v0.0.5) (2026-08-07)
 
 
