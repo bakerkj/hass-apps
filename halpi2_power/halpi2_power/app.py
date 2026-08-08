@@ -453,7 +453,12 @@ def main(argv: list[str] | None = None) -> int:
                 availability_topic(base_topic), "offline", qos=1, retain=True
             )
             info.wait_for_publish(timeout=0.3)  # best-effort flush; LWT covers the rest
-            client.loop_stop()
+            # Never loop_stop(): paho documents it as blocking until the network
+            # thread finishes, and that thread only exits once _out_packet and
+            # _out_messages are both empty. A qos=1 message the broker never acks
+            # keeps _out_messages non-empty, so the join is unbounded -- >75s
+            # measured, well past the supervisor's SIGKILL grace. The thread is a
+            # daemon, so the OS reaps it when we exit; disconnect() is enough.
             client.disconnect()
         except Exception as exc:  # noqa: BLE001 - best effort on the way out
             log.debug("Error during MQTT shutdown: %s", exc)

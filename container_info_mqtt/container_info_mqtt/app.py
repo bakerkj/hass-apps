@@ -611,9 +611,29 @@ def main() -> int:
         sleep_to_interval(loop_start_monotonic)
 
     log.info("Shutting down")
+    # Order matters: publish and drain before disconnecting. paho's network
+    # thread is the only one that drains the outbound queue, so an unflushed
+    # farewell never reaches the socket and the broker falls back to the LWT.
     try:
-        client.publish(f"{base_topic}/availability", "offline", qos=1, retain=True)
+        info = client.publish(
+            f"{base_topic}/availability", "offline", qos=1, retain=True
+        )
+        try:
+            info.wait_for_publish(timeout=2.0)
+        except RuntimeError, ValueError:
+            # paho raises if the loop is not running or the broker has dropped
+            # -- best-effort, and the LWT covers that case.
+            pass
     except Exception:  # noqa: BLE001, S110  # best-effort shutdown publish
         pass
-    client.loop_stop()
+    # Never loop_stop(): paho documents it as blocking until the network
+    # thread finishes, and that thread only exits once _out_packet and
+    # _out_messages are both empty. A qos=1 message the broker never acks
+    # keeps _out_messages non-empty, so the join is unbounded -- >75s
+    # measured, well past the supervisor's SIGKILL grace. The thread is a
+    # daemon, so the OS reaps it when we exit; disconnect() is enough.
+    try:
+        client.disconnect()
+    except Exception:  # noqa: BLE001, S110  # best-effort shutdown
+        pass
     return 0
