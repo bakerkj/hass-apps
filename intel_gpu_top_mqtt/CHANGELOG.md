@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.32](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.31...intel_gpu_top_mqtt-v0.3.32) (2026-08-08)
+
+
+### Code Refactoring
+
+* **intel_gpu_top_mqtt:** asyncio + aiomqtt, and split main() into testable parts ([#441](https://github.com/bakerkj/hass-apps/issues/441)) ([e769af3](https://github.com/bakerkj/hass-apps/commit/e769af3d070798c9da75eef8125d788938a00e1d))
+
 ## [0.3.31](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.30...intel_gpu_top_mqtt-v0.3.31) (2026-07-24)
 
 
