@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.57](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.56...frigate_compressor-v0.0.57) (2026-08-08)
+
+
+### Bug Fixes
+
+* never join paho's network thread on any shutdown path ([#444](https://github.com/bakerkj/hass-apps/issues/444)) ([bdc2c02](https://github.com/bakerkj/hass-apps/commit/bdc2c025aa644eb37f79f346130ba0e148546f23))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency mesa-va-gallium to v26.1.6-r0 ([#377](https://github.com/bakerkj/hass-apps/issues/377)) ([bc9ad29](https://github.com/bakerkj/hass-apps/commit/bc9ad293e73a02654200ff5244c232e970117691))
+
+
+### Tests
+
+* fix aiohttp and sqlite ResourceWarning in test suites ([#348](https://github.com/bakerkj/hass-apps/issues/348)) ([d1f9186](https://github.com/bakerkj/hass-apps/commit/d1f9186a4f8c1393e3ffc57b8910e0774fc3ff53))
+
 ## [0.0.56](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.55...frigate_compressor-v0.0.56) (2026-07-24)
 
 
