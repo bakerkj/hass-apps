@@ -332,6 +332,8 @@ class AISRegistry:
                 row["course_over_ground"] = round(
                     _rad_to_deg_bearing(t.course_over_ground_rad), 1
                 )
+            if t.heading_rad is not None:
+                row["heading"] = round(_rad_to_deg_bearing(t.heading_rad), 1)
             if t.last_seen_iso is not None:
                 row["last_seen"] = t.last_seen_iso
             # Rough estimate; ~60 bytes per compact row on average.

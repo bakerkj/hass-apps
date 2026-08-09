@@ -161,6 +161,61 @@ async def test_diagnostic_catch_all_reaches_discovery_payload() -> None:
     assert bcfg["payload_off"] == "OFF"
 
 
+@pytest.mark.asyncio
+async def test_sole_slot_entity_suppresses_name_to_avoid_doubling() -> None:
+    """When a device carries a single entity and the entity's name matches the
+    device's name (AIS tracker, N2K fleet-health slot), HA composes
+    friendly_name as ``<device.name> <entity.name>`` -- the doubled string
+    lands in cards as ``AIS 367674550 AIS 367674550``. Drop the entity-side
+    name so HA renders device.name alone."""
+    client = RecordingClient()
+    ent = {
+        "component": "device_tracker",
+        "name": "AIS 367674550",
+        "group_id": "ais.367674550",
+        "group_label": "AIS 367674550",
+        "icon": "mdi:ferry",
+        "attributes": {"latitude": 42.0, "longitude": -71.0, "mmsi": "367674550"},
+    }
+    await publish_discovery(
+        client, "homeassistant", "signalk", "ais_367674550", ent, 40
+    )
+    cfg = json.loads(
+        _by_topic(client)["homeassistant/device_tracker/signalk/ais_367674550/config"][
+            0
+        ]
+    )
+    assert cfg["name"] is None
+    assert cfg["device"]["name"] == "AIS 367674550"
+
+    # A per-slot entity whose name genuinely differs from the device name (a
+    # voltage sensor under a battery device) still carries its own name.
+    client2 = RecordingClient()
+    ent2 = {
+        "component": "sensor",
+        "name": "Voltage",
+        "group_id": "batteries.house",
+        "group_label": "Battery house",
+        "unit": "V",
+        "device_class": "voltage",
+        "state": "12.6",
+    }
+    await publish_discovery(
+        client2,
+        "homeassistant",
+        "signalk",
+        "electrical_batteries_house_voltage",
+        ent2,
+        40,
+    )
+    cfg2 = json.loads(
+        _by_topic(client2)[
+            "homeassistant/sensor/signalk/electrical_batteries_house_voltage/config"
+        ][0]
+    )
+    assert cfg2["name"] == "Voltage"
+
+
 def test_discovery_signature_changes_when_display_name_arrives_late() -> None:
     """Late-arriving display names (AIS Type 5 static-data after position;
     N2K device product-info PGN after address-claim) must alter the signature

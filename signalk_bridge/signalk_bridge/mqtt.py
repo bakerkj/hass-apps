@@ -87,8 +87,17 @@ async def publish_discovery(
     expire_after_s: int,
 ) -> None:
     component = entity.get("component", "sensor")
+    # has_entity_name=true makes HA render friendly_name as
+    # "<device.name> <entity.name>", so when the entity is the device's sole
+    # slot (AIS tracker, fleet-health binary_sensor) the same string ends up
+    # doubled. Suppress the entity-side name in that case; HA falls back to
+    # device.name alone, and a late-arriving vessel name flows through the
+    # device block cleanly.
+    entity_name = entity["name"]
+    if entity_name == entity["group_label"]:
+        entity_name = None
     payload: dict[str, Any] = {
-        "name": entity["name"],
+        "name": entity_name,
         "has_entity_name": True,
         "unique_id": f"signalk_{key}",
         "default_entity_id": f"{component}.signalk_{key}",
