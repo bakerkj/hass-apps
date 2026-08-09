@@ -245,6 +245,7 @@ def test_attribute_names_are_spelled_out_with_converted_units() -> None:
     row = inv["attributes"]["targets"][0]
     assert "speed_over_ground" in row
     assert "course_over_ground" in row
+    assert row["heading"] == 180.0
     assert "latitude" in row and "longitude" in row
 
 
