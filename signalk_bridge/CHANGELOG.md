@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.11](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.10...signalk_bridge-v0.0.11) (2026-08-09)
+
+
+### Bug Fixes
+
+* **signalk_bridge:** stop doubling friendly_name on sole-slot devices ([#447](https://github.com/bakerkj/hass-apps/issues/447)) ([70227e8](https://github.com/bakerkj/hass-apps/commit/70227e804cb512a1049d9cc468115f5a1dec1b75))
+
 ## [0.0.10](https://github.com/bakerkj/hass-apps/compare/signalk_bridge-v0.0.9...signalk_bridge-v0.0.10) (2026-08-08)
 
 
