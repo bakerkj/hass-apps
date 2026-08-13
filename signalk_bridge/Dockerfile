@@ -16,7 +16,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      python3=3.14.5-r0 \
+      python3=3.14.7-r0 \
       py3-aiohttp=3.13.5-r0 \
       py3-websockets=16.0-r1 \
       uv=0.11.19-r0

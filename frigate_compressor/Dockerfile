@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       mesa-va-gallium=26.1.6-r0 \
       py3-paho-mqtt=1.6.1-r4 \
       py3-yaml=6.0.3-r2 \
-      python3=3.14.5-r0 \
+      python3=3.14.7-r0 \
       sqlite=3.53.2-r0 \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
