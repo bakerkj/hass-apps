@@ -14,7 +14,7 @@ LABEL \
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   docker-cli=29.5.3-r0 \
   py3-paho-mqtt=1.6.1-r4 \
-  python3=3.14.5-r0
+  python3=3.14.7-r0
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh

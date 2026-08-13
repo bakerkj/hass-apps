@@ -14,7 +14,7 @@ LABEL \
 RUN --mount=type=cache,target=/var/cache/apk set -eux; \
     apk add \
         direwolf=1.8.1-r1 \
-        python3=3.14.5-r0 \
+        python3=3.14.7-r0 \
         rtl-sdr=2.0.2-r1 \
         su-exec=0.3-r0 \
         uv=0.11.19-r0
