@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
   libva-utils=2.23.0-r0 \
   mesa-va-gallium=26.1.6-r0 \
   py3-paho-mqtt=1.6.1-r4 \
-  python3=3.14.7-r0
+  python3=3.14.7-r1
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh

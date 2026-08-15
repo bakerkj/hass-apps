@@ -13,7 +13,7 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   docker-cli=29.5.3-r0 \
-  python3=3.14.7-r0 \
+  python3=3.14.7-r1 \
   py3-pip=26.1.2-r0 \
   uv=0.11.19-r0
 RUN --mount=type=cache,target=/root/.cache/uv \
