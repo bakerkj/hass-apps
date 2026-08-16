@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.2](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.1...container_hooks-v0.1.2) (2026-08-16)
+
+
+### Bug Fixes
+
+* **container_hooks:** log bytes shipped, not tar stream length ([#470](https://github.com/bakerkj/hass-apps/issues/470)) ([e3aa5af](https://github.com/bakerkj/hass-apps/commit/e3aa5af120f718614b705ba610f422f791236ffa))
+* **container_hooks:** pin uv and py3-pip apk versions ([#412](https://github.com/bakerkj/hass-apps/issues/412)) ([fbab4a7](https://github.com/bakerkj/hass-apps/commit/fbab4a7f0b769ea6f20ebd4c6591e02d084bdffa))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+
+
+### Documentation
+
+* **container_hooks:** container names are app_*, not addon_* ([#471](https://github.com/bakerkj/hass-apps/issues/471)) ([8c319dd](https://github.com/bakerkj/hass-apps/commit/8c319ddac57aa4bfac87829b22cf45262af65b18))
+
+
+### Code Refactoring
+
+* **tests:** let Dockerfile BUILD_FROM default be the single base pin ([#355](https://github.com/bakerkj/hass-apps/issues/355)) ([55c1efd](https://github.com/bakerkj/hass-apps/commit/55c1efd30e1650e08d687d671260b171d359e6b5))
+
 ## [0.1.1](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.0...container_hooks-v0.1.1) (2026-07-24)
 
 
