@@ -2091,7 +2091,7 @@ async def test_put_archive_dir_logs_content_bytes_not_tar_length(
     fake_docker.containers.get = AsyncMock(return_value=fake_container)
 
     log_path = tmp_path / "logs" / "pre-start.log"
-    await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+    await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
 
     line = log_path.read_text()
     assert "2 files, 1500 bytes" in line
@@ -2114,7 +2114,7 @@ async def test_put_archive_dir_size_tracks_content(monkeypatch, tmp_path: Path) 
         fake_docker = MagicMock()
         fake_docker.containers.get = AsyncMock(return_value=fake_container)
         log_path = tmp_path / f"log{count}.log"
-        await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+        await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
         sizes.append(log_path.read_text())
     assert "1 files, 10 bytes" in sizes[0]
     assert "1 files, 4000 bytes" in sizes[1]
