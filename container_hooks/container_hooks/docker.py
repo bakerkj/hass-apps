@@ -84,7 +84,7 @@ def _own_container_id() -> str:
 
 
 async def self_container_name(docker: aiodocker.Docker) -> str:
-    """Resolve our own full docker name (e.g. ``addon_<slug>_container_hooks``).
+    """Resolve our own full docker name (e.g. ``app_<slug>_container_hooks``).
 
     Pulls the container ID from ``/proc/self/mountinfo`` (see
     ``_own_container_id``), then asks the docker API for the canonical

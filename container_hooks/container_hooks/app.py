@@ -442,7 +442,7 @@ async def main_async() -> int:
 
     # Resolve our own docker name now that we have a Docker client.
     # gethostname returns the short container ID (12 hex), but the
-    # events stream reports the full ``addon_<slug>_<name>`` form, so
+    # events stream reports the full ``app_<slug>_<name>`` form, so
     # we must look up the ID → name via the API before set-membership
     # can match. Without this, the self-skip is silently broken.
     own = await self_container_name(docker)

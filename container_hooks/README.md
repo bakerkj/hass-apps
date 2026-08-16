@@ -100,8 +100,20 @@ Everything for a single container lives under one directory:
 `/homeassistant/container_hooks/`); change it only if you also remap the
 underlying mount.
 
-The container name is the docker container name (e.g. `addon_xxxxxxxx_esphome`),
-found via `docker container ls`.
+The directory name must equal the docker container name **exactly** — it is
+matched literally, and a directory that matches nothing is silently inert: no
+hook runs, and nothing is logged, because logs are written per matched
+container. Read the name off the host rather than assuming a pattern:
+
+```sh
+docker ps --format '{{.Names}}'
+```
+
+Supervisor names add-on containers `app_<slug>_<name>` (e.g.
+`app_xxxxxxxx_esphome`). Older Supervisor releases used an `addon_` prefix, so a
+tree set up under the old scheme stops firing after an upgrade — with no error,
+since an unmatched directory is indistinguishable from one that was never meant
+to match.
 
 ### Ordering
 
@@ -110,7 +122,7 @@ Files inside `scripts/`, `pre-start/`, and `pre-start-patches/` run in
 `00-`, `10-`, `20-`, …:
 
 ```
-addon_xxxxxxxx_esphome/scripts/
+app_xxxxxxxx_esphome/scripts/
 ├── 00-first.sh
 ├── 10-second.sh
 └── 20-third.sh
@@ -165,7 +177,7 @@ esac
 | `base_dir`            | `/homeassistant/container_hooks` | Root of the per-container hook tree. See "Layout" above.                                                                                                                                                                       |
 | `initial_sweep`       | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                                                                   |
 | `debounce_seconds`    | `2`                              | Per-container debounce window for the post-start `scripts/` path only, in seconds, 0-60 (`0` disables). Pre-start hooks (`pre-start-files/`, `pre-start-patches/`, `pre-start/`) bypass debounce — see "Debounce scope" below. |
-| `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `addon_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here.                                                    |
+| `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `app_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here.                                                      |
 | `container_overrides` | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                                                                                  |
 
 ### Per-Container Overrides
@@ -173,9 +185,9 @@ esac
 ```yaml
 debounce_seconds: 2 # global default
 container_overrides:
-  - container: addon_xxxxxxxx_esphome
+  - container: app_xxxxxxxx_esphome
     debounce_seconds: 0 # never debounce this one
-  - container: addon_flapping_thing
+  - container: app_flapping_thing
     debounce_seconds: 10 # longer window for a noisy watchdog
 ```
 
@@ -228,7 +240,7 @@ against the docker socket. Path within the tree maps 1:1 to the target — e.g.
 `<container>:/etc/cont-init.d/00-rocs-probe`.
 
 ```
-<base_dir>/addon_xxxxxxxx_esphome/pre-start-files/
+<base_dir>/app_xxxxxxxx_esphome/pre-start-files/
 └── etc/
     └── cont-init.d/
         └── 00-my-init       # s6 runs this before any service starts
@@ -260,7 +272,7 @@ Drop unified-diff `*.patch` files at
 4. `put_archive`s the result back into the target.
 
 ```
-<base_dir>/addon_xxxxxxxx_esphome/pre-start-patches/
+<base_dir>/app_xxxxxxxx_esphome/pre-start-patches/
 ├── 00-disable-foo.patch
 └── 10-rename-bar.patch
 ```
@@ -280,7 +292,7 @@ When you need branching or scripted logic:
 
 ```bash
 #!/bin/bash
-# <base_dir>/addon_xxxxxxxx_esphome/pre-start/00-stage-patch.sh
+# <base_dir>/app_xxxxxxxx_esphome/pre-start/00-stage-patch.sh
 
 docker cp \
   "/homeassistant/container_hooks/$ROCS_CONTAINER/pre-start-files/usr/local/lib/python3.13/site-packages/foo/bar.py" \
