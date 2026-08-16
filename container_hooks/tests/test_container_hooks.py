@@ -93,17 +93,17 @@ def test_load_options_parses_container_overrides(tmp_path: Path) -> None:
     path = _write_options(
         tmp_path,
         container_overrides=[
-            {"container": "addon_a", "debounce_seconds": 10},
-            {"container": " addon_b ", "debounce_seconds": 0},
-            {"container": "addon_c"},  # no override fields → debounce stays None
+            {"container": "app_a", "debounce_seconds": 10},
+            {"container": " app_b ", "debounce_seconds": 0},
+            {"container": "app_c"},  # no override fields → debounce stays None
             {"container": "", "debounce_seconds": 5},  # skipped, empty name
         ],
     )
     o = load_options(str(path))
     assert o.container_overrides == (
-        ContainerOverride(container="addon_a", debounce_seconds=10),
-        ContainerOverride(container="addon_b", debounce_seconds=0),
-        ContainerOverride(container="addon_c", debounce_seconds=None),
+        ContainerOverride(container="app_a", debounce_seconds=10),
+        ContainerOverride(container="app_b", debounce_seconds=0),
+        ContainerOverride(container="app_c", debounce_seconds=None),
     )
 
 
@@ -134,14 +134,14 @@ def _opts(tmp_path: Path, **kw: Any) -> Options:
 
 def test_post_start_log_path(tmp_path: Path) -> None:
     o = _opts(tmp_path)
-    expected = tmp_path / "container_hooks" / "addon_x" / "logs" / "post-start.log"
-    assert post_start_log(o, "addon_x") == expected
+    expected = tmp_path / "container_hooks" / "app_x" / "logs" / "post-start.log"
+    assert post_start_log(o, "app_x") == expected
 
 
 def test_pre_start_log_path(tmp_path: Path) -> None:
     o = _opts(tmp_path)
-    expected = tmp_path / "container_hooks" / "addon_x" / "logs" / "pre-start.log"
-    assert pre_start_log(o, "addon_x") == expected
+    expected = tmp_path / "container_hooks" / "app_x" / "logs" / "pre-start.log"
+    assert pre_start_log(o, "app_x") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ _RESOLVER_CASES = [
 def test_resolver_empty_when_dir_missing(
     tmp_path: Path, resolver, subdir, suffix, ignored
 ) -> None:
-    assert resolver(_opts(tmp_path), "addon_x") == []
+    assert resolver(_opts(tmp_path), "app_x") == []
 
 
 @pytest.mark.parametrize("resolver, subdir, suffix, ignored", _RESOLVER_CASES)
@@ -185,38 +185,38 @@ def test_resolver_returns_lex_sorted_matching_suffix_only(
 ) -> None:
     """Lex order, suffix-filter, non-files ignored — for every directory."""
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", subdir)
+    d = _make_dir(opts, "app_x", subdir)
     for n in (f"99-c{suffix}", f"00-a{suffix}", f"10-b{suffix}"):
         (d / n).write_text("payload")
     (d / ignored).write_text("noise")
     (d / "subdir").mkdir()
-    got = resolver(opts, "addon_x")
+    got = resolver(opts, "app_x")
     assert [p.name for p in got] == [f"00-a{suffix}", f"10-b{suffix}", f"99-c{suffix}"]
 
 
 def test_resolve_scripts_scoped_per_container(tmp_path: Path) -> None:
     """A different container's directory is never picked up — one smoke test is enough."""
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", "scripts")
+    d = _make_dir(opts, "app_x", "scripts")
     (d / "00-x.sh").write_text("#!/bin/sh\n")
-    assert _resolve_scripts(opts, "addon_other") == []
+    assert _resolve_scripts(opts, "app_other") == []
 
 
 def test_resolve_pre_start_files_subdir_none_when_missing(tmp_path: Path) -> None:
-    assert _resolve_pre_start_files_subdir(_opts(tmp_path), "addon_x") is None
+    assert _resolve_pre_start_files_subdir(_opts(tmp_path), "app_x") is None
 
 
 def test_resolve_pre_start_files_subdir_none_when_empty(tmp_path: Path) -> None:
     opts = _opts(tmp_path)
-    _make_dir(opts, "addon_x", "pre-start-files")
-    assert _resolve_pre_start_files_subdir(opts, "addon_x") is None
+    _make_dir(opts, "app_x", "pre-start-files")
+    assert _resolve_pre_start_files_subdir(opts, "app_x") is None
 
 
 def test_resolve_pre_start_files_subdir_returns_when_populated(tmp_path: Path) -> None:
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", "pre-start-files")
+    d = _make_dir(opts, "app_x", "pre-start-files")
     (d / "marker").write_text("data")
-    assert _resolve_pre_start_files_subdir(opts, "addon_x") == d
+    assert _resolve_pre_start_files_subdir(opts, "app_x") == d
 
 
 # ---------------------------------------------------------------------------
@@ -225,30 +225,30 @@ def test_resolve_pre_start_files_subdir_returns_when_populated(tmp_path: Path) -
 
 
 def test_hook_env_baseline_keys_always_present() -> None:
-    env = _hook_env("addon_x", "initial_sweep")
-    assert env == {"ROCS_REASON": "initial_sweep", "ROCS_CONTAINER": "addon_x"}
+    env = _hook_env("app_x", "initial_sweep")
+    assert env == {"ROCS_REASON": "initial_sweep", "ROCS_CONTAINER": "app_x"}
 
 
 def test_hook_env_adds_event_fields_when_event_provided() -> None:
     event = {
         "Actor": {
             "ID": "abc123",
-            "Attributes": {"name": "addon_x", "image": "example/img:1.2"},
+            "Attributes": {"name": "app_x", "image": "example/img:1.2"},
         },
         "time": 1700000000,
     }
-    env = _hook_env("addon_x", "event_start", event=event)
+    env = _hook_env("app_x", "event_start", event=event)
     assert env["ROCS_REASON"] == "event_start"
-    assert env["ROCS_CONTAINER"] == "addon_x"
+    assert env["ROCS_CONTAINER"] == "app_x"
     assert env["ROCS_CONTAINER_ID"] == "abc123"
     assert env["ROCS_IMAGE"] == "example/img:1.2"
     assert env["ROCS_TIMESTAMP"] == "1700000000"
 
 
 def test_hook_env_tolerates_missing_event_attributes() -> None:
-    env = _hook_env("addon_x", "event_start", event={})
+    env = _hook_env("app_x", "event_start", event={})
     assert env["ROCS_REASON"] == "event_start"
-    assert env["ROCS_CONTAINER"] == "addon_x"
+    assert env["ROCS_CONTAINER"] == "app_x"
     assert env["ROCS_CONTAINER_ID"] == ""
     assert env["ROCS_IMAGE"] == ""
     assert "ROCS_TIMESTAMP" not in env
@@ -261,19 +261,17 @@ def test_hook_env_tolerates_missing_event_attributes() -> None:
 
 def test_resolve_debounce_falls_back_to_global(tmp_path: Path) -> None:
     opts = _opts(tmp_path, debounce_seconds=7)
-    assert _resolve_debounce(opts, "addon_x") == 7
+    assert _resolve_debounce(opts, "app_x") == 7
 
 
 def test_resolve_debounce_uses_per_container_override(tmp_path: Path) -> None:
     opts = _opts(
         tmp_path,
         debounce_seconds=7,
-        container_overrides=(
-            ContainerOverride(container="addon_x", debounce_seconds=0),
-        ),
+        container_overrides=(ContainerOverride(container="app_x", debounce_seconds=0),),
     )
-    assert _resolve_debounce(opts, "addon_x") == 0
-    assert _resolve_debounce(opts, "addon_other") == 7
+    assert _resolve_debounce(opts, "app_x") == 0
+    assert _resolve_debounce(opts, "app_other") == 7
 
 
 def test_resolve_debounce_override_with_no_field_falls_through(
@@ -282,9 +280,9 @@ def test_resolve_debounce_override_with_no_field_falls_through(
     opts = _opts(
         tmp_path,
         debounce_seconds=4,
-        container_overrides=(ContainerOverride(container="addon_x"),),
+        container_overrides=(ContainerOverride(container="app_x"),),
     )
-    assert _resolve_debounce(opts, "addon_x") == 4
+    assert _resolve_debounce(opts, "app_x") == 4
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +297,7 @@ async def test_fire_trailing_dispatches_after_delay(tmp_path: Path) -> None:
     docker = MagicMock()
     last_run: dict[str, float] = {}
     trailing: dict[str, asyncio.Task] = {}
-    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    trailing_event: dict[str, dict] = {"app_x": {"id": "abc", "Action": "start"}}
     spawned: list = []
     coros_to_close: list = []
 
@@ -312,7 +310,7 @@ async def test_fire_trailing_dispatches_after_delay(tmp_path: Path) -> None:
     # main loop does.
     task = asyncio.create_task(
         _fire_trailing(
-            "addon_x",
+            "app_x",
             delay=0.0,
             docker=docker,
             options=_opts(tmp_path),
@@ -324,12 +322,12 @@ async def test_fire_trailing_dispatches_after_delay(tmp_path: Path) -> None:
             stop=asyncio.Event(),
         )
     )
-    trailing["addon_x"] = task
+    trailing["app_x"] = task
     await task
 
     assert len(spawned) == 1
-    assert "addon_x" in last_run
-    assert "addon_x" not in trailing_event  # popped
+    assert "app_x" in last_run
+    assert "app_x" not in trailing_event  # popped
     # Close the unawaited coroutine to avoid the "never awaited" warning.
     for c in coros_to_close:
         c.close()
@@ -341,12 +339,12 @@ async def test_fire_trailing_cancellation_clears_state(tmp_path: Path) -> None:
     """
     last_run: dict[str, float] = {}
     trailing: dict[str, asyncio.Task] = {}
-    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    trailing_event: dict[str, dict] = {"app_x": {"id": "abc", "Action": "start"}}
     spawned: list = []
 
     task = asyncio.create_task(
         _fire_trailing(
-            "addon_x",
+            "app_x",
             delay=10.0,
             docker=MagicMock(),
             options=_opts(tmp_path),
@@ -358,15 +356,15 @@ async def test_fire_trailing_cancellation_clears_state(tmp_path: Path) -> None:
             stop=asyncio.Event(),
         )
     )
-    trailing["addon_x"] = task  # mimic the main-loop bookkeeping
+    trailing["app_x"] = task  # mimic the main-loop bookkeeping
     await asyncio.sleep(0)  # yield so the task starts its sleep
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     assert spawned == []  # nothing dispatched
-    assert "addon_x" not in trailing
-    assert "addon_x" not in trailing_event
+    assert "app_x" not in trailing
+    assert "app_x" not in trailing_event
     assert last_run == {}  # never updated
 
 
@@ -379,7 +377,7 @@ async def test_fire_trailing_stop_set_after_sleep_skips_dispatch(
     """
     last_run: dict[str, float] = {}
     trailing: dict[str, asyncio.Task] = {}
-    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    trailing_event: dict[str, dict] = {"app_x": {"id": "abc", "Action": "start"}}
     spawned: list = []
     stop = asyncio.Event()
     stop.set()  # pre-set so the post-sleep check immediately bails
@@ -387,12 +385,12 @@ async def test_fire_trailing_stop_set_after_sleep_skips_dispatch(
     # Register a sentinel so the identity guard passes the trailing.get
     # check and the stop branch is the path under test.
     sentinel_task = asyncio.create_task(asyncio.sleep(0))
-    trailing["addon_x"] = sentinel_task
+    trailing["app_x"] = sentinel_task
     # Make the sentinel BE the current task by passing it as the marker —
     # we do this by running _fire_trailing itself as the registered task.
     real_task = asyncio.create_task(
         _fire_trailing(
-            "addon_x",
+            "app_x",
             delay=0.0,
             docker=MagicMock(),
             options=_opts(tmp_path),
@@ -404,7 +402,7 @@ async def test_fire_trailing_stop_set_after_sleep_skips_dispatch(
             stop=stop,
         )
     )
-    trailing["addon_x"] = real_task
+    trailing["app_x"] = real_task
     sentinel_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await sentinel_task
@@ -412,8 +410,8 @@ async def test_fire_trailing_stop_set_after_sleep_skips_dispatch(
 
     assert spawned == []
     assert last_run == {}
-    assert "addon_x" not in trailing
-    assert "addon_x" not in trailing_event
+    assert "app_x" not in trailing
+    assert "app_x" not in trailing_event
 
 
 async def test_fire_trailing_superseded_after_sleep_bails(tmp_path: Path) -> None:
@@ -424,12 +422,12 @@ async def test_fire_trailing_superseded_after_sleep_bails(tmp_path: Path) -> Non
     """
     last_run: dict[str, float] = {}
     trailing: dict[str, asyncio.Task] = {}
-    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc", "Action": "start"}}
+    trailing_event: dict[str, dict] = {"app_x": {"id": "abc", "Action": "start"}}
     spawned: list = []
 
     task = asyncio.create_task(
         _fire_trailing(
-            "addon_x",
+            "app_x",
             delay=0.0,
             docker=MagicMock(),
             options=_opts(tmp_path),
@@ -441,14 +439,14 @@ async def test_fire_trailing_superseded_after_sleep_bails(tmp_path: Path) -> Non
             stop=asyncio.Event(),
         )
     )
-    trailing["addon_x"] = task
+    trailing["app_x"] = task
     # Yield so the task enters its sleep(0), which returns immediately
     # but parks at the next checkpoint. Then simulate the main loop's
     # outside-window supersede by popping our entry before letting the
     # task resume into its post-sleep block.
     await asyncio.sleep(0)
-    trailing.pop("addon_x", None)
-    trailing_event.pop("addon_x", None)
+    trailing.pop("app_x", None)
+    trailing_event.pop("app_x", None)
     await task
 
     assert spawned == []
@@ -463,12 +461,12 @@ async def test_fire_trailing_cancel_after_supersede_doesnt_clobber_state(
     """
     last_run: dict[str, float] = {}
     trailing: dict[str, asyncio.Task] = {}
-    trailing_event: dict[str, dict] = {"addon_x": {"id": "abc"}}
+    trailing_event: dict[str, dict] = {"app_x": {"id": "abc"}}
     spawned: list = []
 
     task = asyncio.create_task(
         _fire_trailing(
-            "addon_x",
+            "app_x",
             delay=10.0,
             docker=MagicMock(),
             options=_opts(tmp_path),
@@ -480,22 +478,22 @@ async def test_fire_trailing_cancel_after_supersede_doesnt_clobber_state(
             stop=asyncio.Event(),
         )
     )
-    trailing["addon_x"] = task
+    trailing["app_x"] = task
     await asyncio.sleep(0)
 
     # Replace the registration with a successor sentinel before cancelling.
     successor = asyncio.create_task(asyncio.sleep(0))
-    trailing["addon_x"] = successor
+    trailing["app_x"] = successor
     successor_event = {"id": "successor"}
-    trailing_event["addon_x"] = successor_event
+    trailing_event["app_x"] = successor_event
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     # Successor's registration must survive.
-    assert trailing["addon_x"] is successor
-    assert trailing_event["addon_x"] is successor_event
+    assert trailing["app_x"] is successor
+    assert trailing_event["app_x"] is successor_event
     with contextlib.suppress(asyncio.CancelledError):
         await successor  # let it complete before test teardown
 
@@ -508,7 +506,7 @@ async def test_fire_trailing_cancel_after_supersede_doesnt_clobber_state(
 async def test_dispatch_no_script_is_no_op(monkeypatch, tmp_path: Path) -> None:
     fake = AsyncMock()
     monkeypatch.setattr("container_hooks.app.run_hook", fake)
-    await _dispatch(MagicMock(), "addon_x", _opts(tmp_path), _LOG, reason="event_start")
+    await _dispatch(MagicMock(), "app_x", _opts(tmp_path), _LOG, reason="event_start")
     fake.assert_not_awaited()
 
 
@@ -516,7 +514,7 @@ async def test_dispatch_runs_all_scripts_in_lex_order(
     monkeypatch, tmp_path: Path
 ) -> None:
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", "scripts")
+    d = _make_dir(opts, "app_x", "scripts")
     for n in ("00-first.sh", "10-second.sh", "20-third.sh"):
         (d / n).write_text("#!/bin/sh\nexit 0\n")
 
@@ -537,13 +535,13 @@ async def test_dispatch_runs_all_scripts_in_lex_order(
         )
 
     monkeypatch.setattr("container_hooks.app.run_hook", AsyncMock(side_effect=_fake))
-    await _dispatch(MagicMock(), "addon_x", opts, _LOG, reason="event_start")
+    await _dispatch(MagicMock(), "app_x", opts, _LOG, reason="event_start")
     assert calls == ["00-first.sh", "10-second.sh", "20-third.sh"]
     # Every script received the dispatch env, not just the first.
     assert len(env_seen) == 3
     for env in env_seen:
         assert env.get("ROCS_REASON") == "event_start"
-        assert env.get("ROCS_CONTAINER") == "addon_x"
+        assert env.get("ROCS_CONTAINER") == "app_x"
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +553,7 @@ async def test_dispatch_pre_start_runs_put_archive_when_files_present(
     monkeypatch, tmp_path: Path
 ) -> None:
     opts = _opts(tmp_path)
-    files = opts.base_dir / "addon_x" / "pre-start-files"
+    files = opts.base_dir / "app_x" / "pre-start-files"
     files.mkdir(parents=True)
     (files / "marker").write_text("payload")
 
@@ -589,10 +587,10 @@ async def test_dispatch_pre_start_runs_put_archive_when_files_present(
         "container_hooks.app.run_pre_start_hook", run_pre_start_hook_mock
     )
     monkeypatch.setattr("container_hooks.app.apply_patch", apply_patch_mock)
-    await _dispatch_pre_start(MagicMock(), "addon_x", opts, _LOG, event={})
+    await _dispatch_pre_start(MagicMock(), "app_x", opts, _LOG, event={})
     assert captured.get("called") is True
     assert captured["src"] == files
-    assert captured["log_path"] == pre_start_log(opts, "addon_x")
+    assert captured["log_path"] == pre_start_log(opts, "app_x")
     # With only pre-start-files/ populated, the patch and script paths
     # must stay quiet — otherwise a future regression that wires them up
     # unconditionally would slip past this test.
@@ -609,7 +607,7 @@ async def test_dispatch_pre_start_skips_when_no_hooks(
     monkeypatch.setattr("container_hooks.app.put_archive_dir", pa)
     monkeypatch.setattr("container_hooks.app.run_pre_start_hook", ps)
     monkeypatch.setattr("container_hooks.app.apply_patch", ap)
-    await _dispatch_pre_start(MagicMock(), "addon_x", _opts(tmp_path), _LOG, event={})
+    await _dispatch_pre_start(MagicMock(), "app_x", _opts(tmp_path), _LOG, event={})
     pa.assert_not_awaited()
     ps.assert_not_awaited()
     ap.assert_not_awaited()
@@ -617,7 +615,7 @@ async def test_dispatch_pre_start_skips_when_no_hooks(
 
 async def test_dispatch_pre_start_runs_script_hook(monkeypatch, tmp_path: Path) -> None:
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", "pre-start")
+    d = _make_dir(opts, "app_x", "pre-start")
     (d / "00-hook.sh").write_text("#!/bin/sh\nexit 0\n")
 
     captured: dict[str, Any] = {}
@@ -646,10 +644,10 @@ async def test_dispatch_pre_start_runs_script_hook(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr("container_hooks.app.put_archive_dir", AsyncMock())
     monkeypatch.setattr("container_hooks.app.apply_patch", AsyncMock())
     event = {"Actor": {"ID": "id1", "Attributes": {"image": "img:1"}}, "time": 1}
-    await _dispatch_pre_start(MagicMock(), "addon_x", opts, _LOG, event=event)
+    await _dispatch_pre_start(MagicMock(), "app_x", opts, _LOG, event=event)
     assert captured["env"]["ROCS_REASON"] == "container_created"
     assert captured["env"]["ROCS_CONTAINER_ID"] == "id1"
-    assert captured["log_path"] == pre_start_log(opts, "addon_x")
+    assert captured["log_path"] == pre_start_log(opts, "app_x")
 
 
 # ---------------------------------------------------------------------------
@@ -693,8 +691,8 @@ async def test_put_archive_dir_calls_put_archive(monkeypatch, tmp_path: Path) ->
     fake_docker.containers.get = AsyncMock(return_value=fake_container)
 
     log_path = tmp_path / "logs" / "pre-start.log"
-    result = await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
-    fake_docker.containers.get.assert_awaited_once_with("addon_x")
+    result = await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
+    fake_docker.containers.get.assert_awaited_once_with("app_x")
     fake_container.put_archive.assert_awaited_once()
     call_kwargs = fake_container.put_archive.call_args.kwargs
     assert call_kwargs["path"] == "/"
@@ -876,10 +874,10 @@ async def test_self_container_name_resolves_id_to_full_name(monkeypatch) -> None
         lambda: _FAKE_CID,
     )
     fake_ctr = MagicMock()
-    fake_ctr.show = AsyncMock(return_value={"Name": "/addon_local_container_hooks"})
+    fake_ctr.show = AsyncMock(return_value={"Name": "/app_local_container_hooks"})
     fake_docker = MagicMock()
     fake_docker.containers.get = AsyncMock(return_value=fake_ctr)
-    assert await self_container_name(fake_docker) == "addon_local_container_hooks"
+    assert await self_container_name(fake_docker) == "app_local_container_hooks"
     fake_docker.containers.get.assert_awaited_once_with(_FAKE_CID)
 
 
@@ -1093,16 +1091,16 @@ async def test_dispatch_writes_exception_to_per_container_log(
 ) -> None:
     """If an exception escapes _dispatch, it must land in post-start.log."""
     opts = _opts(tmp_path)
-    d = _make_dir(opts, "addon_x", "scripts")
+    d = _make_dir(opts, "app_x", "scripts")
     (d / "00-marker.sh").write_text("#!/bin/sh\n")
 
     async def _boom(*a: Any, **k: Any) -> Any:
         raise RuntimeError("boom from inside run_hook")
 
     monkeypatch.setattr("container_hooks.app.run_hook", AsyncMock(side_effect=_boom))
-    await _dispatch(MagicMock(), "addon_x", opts, _LOG, reason="event_start")
+    await _dispatch(MagicMock(), "app_x", opts, _LOG, reason="event_start")
 
-    log = post_start_log(opts, "addon_x")
+    log = post_start_log(opts, "app_x")
     assert log.exists(), "post-start.log must be written even on dispatch failure"
     content = log.read_text()
     assert "DISPATCH FAILED" in content
@@ -1115,7 +1113,7 @@ async def test_dispatch_pre_start_writes_exception_to_per_container_log(
 ) -> None:
     """Same safety net for the pre-start dispatcher."""
     opts = _opts(tmp_path)
-    files = opts.base_dir / "addon_x" / "pre-start-files"
+    files = opts.base_dir / "app_x" / "pre-start-files"
     files.mkdir(parents=True)
     (files / "marker").write_text("payload")
 
@@ -1127,9 +1125,9 @@ async def test_dispatch_pre_start_writes_exception_to_per_container_log(
     )
     monkeypatch.setattr("container_hooks.app.apply_patch", AsyncMock())
     monkeypatch.setattr("container_hooks.app.run_pre_start_hook", AsyncMock())
-    await _dispatch_pre_start(MagicMock(), "addon_x", opts, _LOG, event={})
+    await _dispatch_pre_start(MagicMock(), "app_x", opts, _LOG, event={})
 
-    log = pre_start_log(opts, "addon_x")
+    log = pre_start_log(opts, "app_x")
     assert log.exists()
     content = log.read_text()
     assert "DISPATCH FAILED" in content
@@ -1178,9 +1176,9 @@ async def test_self_container_name_returns_empty_when_no_mountinfo_id(
 
 def test_with_self_skip_adds_resolved_name_to_existing_set(tmp_path: Path) -> None:
     """Resolved own-name is unioned into ``skip_containers``."""
-    opts = _opts(tmp_path, skip_containers=("addon_other",))
+    opts = _opts(tmp_path, skip_containers=("app_other",))
     merged = _with_self_skip(opts, "addon_xxxxxxxx_container_hooks")
-    assert "addon_other" in merged.skip_containers
+    assert "app_other" in merged.skip_containers
     assert "addon_xxxxxxxx_container_hooks" in merged.skip_containers
 
 
@@ -1193,9 +1191,9 @@ def test_with_self_skip_idempotent_when_already_listed(tmp_path: Path) -> None:
 
 def test_with_self_skip_no_op_on_empty_name(tmp_path: Path) -> None:
     """Empty own_name → return options unchanged (don't poison the set with '')."""
-    opts = _opts(tmp_path, skip_containers=("addon_other",))
+    opts = _opts(tmp_path, skip_containers=("app_other",))
     merged = _with_self_skip(opts, "")
-    assert merged.skip_containers == ("addon_other",)
+    assert merged.skip_containers == ("app_other",)
     assert "" not in merged.skip_containers
 
 
@@ -1282,18 +1280,18 @@ async def test_run_hook_passes_env_via_environment_kwarg(tmp_path: Path) -> None
 
     await run_hook(
         docker,
-        "addon_x",
+        "app_x",
         script,
         tmp_path / "logs" / "post-start.log",
         _LOG,
-        env={"ROCS_REASON": "event_start", "ROCS_CONTAINER": "addon_x"},
+        env={"ROCS_REASON": "event_start", "ROCS_CONTAINER": "app_x"},
     )
     # Second exec is the script (first is chmod).
     script_exec = captured["exec_calls"][1]
     env_list = script_exec["kwargs"].get("environment")
     assert env_list is not None
     assert "ROCS_REASON=event_start" in env_list
-    assert "ROCS_CONTAINER=addon_x" in env_list
+    assert "ROCS_CONTAINER=app_x" in env_list
 
 
 async def test_run_hook_remote_path_includes_script_stem(tmp_path: Path) -> None:
@@ -1308,14 +1306,14 @@ async def test_run_hook_remote_path_includes_script_stem(tmp_path: Path) -> None
     docker_a = MagicMock()
     docker_a.containers.get = AsyncMock(return_value=ctr_a)
     await run_hook(
-        docker_a, "addon_x", script_a, tmp_path / "post-start.log", _LOG, env={}
+        docker_a, "app_x", script_a, tmp_path / "post-start.log", _LOG, env={}
     )
 
     ctr_b, captured_b = _fake_run_hook_container(exit_code=0)
     docker_b = MagicMock()
     docker_b.containers.get = AsyncMock(return_value=ctr_b)
     await run_hook(
-        docker_b, "addon_x", script_b, tmp_path / "post-start.log", _LOG, env={}
+        docker_b, "app_x", script_b, tmp_path / "post-start.log", _LOG, env={}
     )
 
     # Different scripts → different remote paths under /tmp.
@@ -1335,7 +1333,7 @@ async def test_run_hook_surfaces_exit_code(tmp_path: Path) -> None:
     docker.containers.get = AsyncMock(return_value=ctr)
 
     result = await run_hook(
-        docker, "addon_x", script, tmp_path / "post-start.log", _LOG, env={}
+        docker, "app_x", script, tmp_path / "post-start.log", _LOG, env={}
     )
     assert result.returncode == 7
 
@@ -1353,7 +1351,7 @@ async def test_run_hook_docker_error_returns_minus_one_and_logs(
         side_effect=DockerError(500, {"message": "daemon gone"})
     )
 
-    result = await run_hook(docker, "addon_x", script, log_path, _LOG, env={})
+    result = await run_hook(docker, "app_x", script, log_path, _LOG, env={})
     assert result.returncode == -1
     assert log_path.exists()
     content = log_path.read_text()
@@ -1373,7 +1371,7 @@ async def test_run_hook_log_file_is_append_mode(tmp_path: Path) -> None:
     docker = MagicMock()
     docker.containers.get = AsyncMock(return_value=ctr)
 
-    await run_hook(docker, "addon_x", script, log_path, _LOG, env={})
+    await run_hook(docker, "app_x", script, log_path, _LOG, env={})
     content = log_path.read_text()
     assert content.startswith("[prior run] keep me\n")
     assert "second-run output" in content
@@ -1388,7 +1386,7 @@ async def test_run_hook_bails_when_chmod_fails(tmp_path: Path) -> None:
     docker = MagicMock()
     docker.containers.get = AsyncMock(return_value=ctr)
 
-    result = await run_hook(docker, "addon_x", script, log_path, _LOG, env={})
+    result = await run_hook(docker, "app_x", script, log_path, _LOG, env={})
     assert result.returncode == 1
     # Only the chmod exec ran — the script exec was skipped.
     cmds = [c["cmd"][:1] for c in captured["exec_calls"]]
@@ -1451,12 +1449,12 @@ def test_load_options_warns_on_unknown_override_key(tmp_path: Path, caplog) -> N
     path = _write_options(
         tmp_path,
         container_overrides=[
-            {"container": "addon_x", "future_field": "tbd"},
+            {"container": "app_x", "future_field": "tbd"},
         ],
     )
     with caplog.at_level(logging.WARNING, logger="container_hooks.config"):
         o = load_options(str(path))
-    assert o.container_overrides[0].container == "addon_x"
+    assert o.container_overrides[0].container == "app_x"
     assert any("future_field" in r.getMessage() for r in caplog.records)
 
 
@@ -1470,13 +1468,13 @@ async def test_dispatch_pre_start_runs_files_then_patches_then_scripts(
 ) -> None:
     """All three pre-start stages, single recorder, order: files → patches → scripts."""
     opts = _opts(tmp_path)
-    files = opts.base_dir / "addon_x" / "pre-start-files"
+    files = opts.base_dir / "app_x" / "pre-start-files"
     files.mkdir(parents=True)
     (files / "marker").write_text("payload")
-    patches_dir = _make_dir(opts, "addon_x", "pre-start-patches")
+    patches_dir = _make_dir(opts, "app_x", "pre-start-patches")
     for n in ("00-a.patch", "10-b.patch"):
         (patches_dir / n).write_text("--- a/x\n+++ b/x\n@@\n")
-    scripts_dir_ = _make_dir(opts, "addon_x", "pre-start")
+    scripts_dir_ = _make_dir(opts, "app_x", "pre-start")
     for n in ("00-init.sh", "10-late.sh"):
         (scripts_dir_ / n).write_text("#!/bin/sh\n")
 
@@ -1527,7 +1525,7 @@ async def test_dispatch_pre_start_runs_files_then_patches_then_scripts(
     monkeypatch.setattr(
         "container_hooks.app.run_pre_start_hook", AsyncMock(side_effect=_script)
     )
-    await _dispatch_pre_start(MagicMock(), "addon_x", opts, _LOG, event={})
+    await _dispatch_pre_start(MagicMock(), "app_x", opts, _LOG, event={})
 
     assert recorder == [
         "put_archive",
@@ -1558,9 +1556,9 @@ def test_max_debounce_picks_largest_override(tmp_path: Path) -> None:
         tmp_path,
         debounce_seconds=2,
         container_overrides=(
-            ContainerOverride(container="addon_a", debounce_seconds=5),
-            ContainerOverride(container="addon_b", debounce_seconds=20),
-            ContainerOverride(container="addon_c"),  # debounce_seconds=None
+            ContainerOverride(container="app_a", debounce_seconds=5),
+            ContainerOverride(container="app_b", debounce_seconds=20),
+            ContainerOverride(container="app_c"),  # debounce_seconds=None
         ),
     )
     assert _max_debounce(opts) == 20
@@ -1635,11 +1633,11 @@ async def test_docker_ps_running_returns_lstripped_first_name() -> None:
     fake_docker = MagicMock()
     fake_docker.containers.list = AsyncMock(
         return_value=[
-            _C({"Names": ["/addon_a"]}),
-            _C({"Names": ["/addon_b", "/aliased"]}),
+            _C({"Names": ["/app_a"]}),
+            _C({"Names": ["/app_b", "/aliased"]}),
         ]
     )
-    assert await docker_ps_running(fake_docker) == ["addon_a", "addon_b"]
+    assert await docker_ps_running(fake_docker) == ["app_a", "app_b"]
 
 
 async def test_docker_ps_running_skips_items_without_names() -> None:
@@ -1701,13 +1699,13 @@ async def test_run_pre_start_hook_writes_stdout_and_surfaces_rc(
     )
 
     result = await run_pre_start_hook(
-        "addon_x", script, log_path, _LOG, env={"K": "V", "ROCS_CONTAINER": "addon_x"}
+        "app_x", script, log_path, _LOG, env={"K": "V", "ROCS_CONTAINER": "app_x"}
     )
     assert result.returncode == 0
     assert "hello world" in log_path.read_text()
     # Merged env wins on collision: os.environ + user env
     assert captured["env"]["K"] == "V"
-    assert captured["env"]["ROCS_CONTAINER"] == "addon_x"
+    assert captured["env"]["ROCS_CONTAINER"] == "app_x"
 
 
 async def test_run_pre_start_hook_returncode_none_maps_to_minus_one(
@@ -1730,7 +1728,7 @@ async def test_run_pre_start_hook_returncode_none_maps_to_minus_one(
         "container_hooks.docker.asyncio.create_subprocess_exec",
         AsyncMock(return_value=_FakeProc()),
     )
-    result = await run_pre_start_hook("addon_x", script, log_path, _LOG, env={})
+    result = await run_pre_start_hook("app_x", script, log_path, _LOG, env={})
     assert result.returncode == -1
 
 
@@ -1747,7 +1745,7 @@ async def test_run_pre_start_hook_logs_oserror_with_script_name(
 
     monkeypatch.setattr("container_hooks.docker.asyncio.create_subprocess_exec", _boom)
 
-    result = await run_pre_start_hook("addon_x", script, log_path, _LOG, env={})
+    result = await run_pre_start_hook("app_x", script, log_path, _LOG, env={})
     assert result.returncode == -1
     content = log_path.read_text()
     assert "not_exec.sh" in content
@@ -1835,7 +1833,7 @@ async def test_run_hook_partial_output_preserved_on_docker_error(
     docker = MagicMock()
     docker.containers.get = AsyncMock(return_value=ctr)
 
-    result = await run_hook(docker, "addon_x", script, log_path, _LOG, env={})
+    result = await run_hook(docker, "app_x", script, log_path, _LOG, env={})
     assert result.returncode == -1
     content = log_path.read_text()
     assert "partial output before failure" in content
@@ -1876,7 +1874,7 @@ async def test_run_hook_chmod_failure_includes_captured_stderr(tmp_path: Path) -
     docker = MagicMock()
     docker.containers.get = AsyncMock(return_value=ctr)
 
-    result = await run_hook(docker, "addon_x", script, log_path, _LOG, env={})
+    result = await run_hook(docker, "app_x", script, log_path, _LOG, env={})
     assert result.returncode == 1
     assert "Read-only file system" in log_path.read_text()
 
@@ -2039,7 +2037,7 @@ async def test_put_archive_dir_logs_failed_on_docker_error(tmp_path: Path) -> No
     fake_docker.containers.get = AsyncMock(
         side_effect=DockerError(500, {"message": "daemon gone"})
     )
-    result = await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+    result = await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
     assert result.returncode == -1
     content = log_path.read_text()
     assert "put_archive FAILED" in content
@@ -2063,7 +2061,7 @@ async def test_put_archive_dir_logs_failed_on_os_error(
     fake_docker = MagicMock()
     fake_docker.containers.get = AsyncMock()  # never called: tar build fails first
 
-    result = await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+    result = await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
     assert result.returncode == -1
     content = log_path.read_text()
     assert "put_archive FAILED" in content
