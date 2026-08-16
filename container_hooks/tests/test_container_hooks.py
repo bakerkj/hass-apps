@@ -868,7 +868,7 @@ _FAKE_LAYER_ID = "b" * 64
 
 
 async def test_self_container_name_resolves_id_to_full_name(monkeypatch) -> None:
-    """The mountinfo-derived ID resolves to the full ``addon_<slug>_<name>``."""
+    """The mountinfo-derived ID resolves to the full ``app_<slug>_<name>``."""
     monkeypatch.setattr(
         "container_hooks.docker._own_container_id",
         lambda: _FAKE_CID,
@@ -1177,16 +1177,16 @@ async def test_self_container_name_returns_empty_when_no_mountinfo_id(
 def test_with_self_skip_adds_resolved_name_to_existing_set(tmp_path: Path) -> None:
     """Resolved own-name is unioned into ``skip_containers``."""
     opts = _opts(tmp_path, skip_containers=("app_other",))
-    merged = _with_self_skip(opts, "addon_xxxxxxxx_container_hooks")
+    merged = _with_self_skip(opts, "app_xxxxxxxx_container_hooks")
     assert "app_other" in merged.skip_containers
-    assert "addon_xxxxxxxx_container_hooks" in merged.skip_containers
+    assert "app_xxxxxxxx_container_hooks" in merged.skip_containers
 
 
 def test_with_self_skip_idempotent_when_already_listed(tmp_path: Path) -> None:
     """If the user already listed us, the set stays the same size (deduped)."""
-    opts = _opts(tmp_path, skip_containers=("addon_xxxxxxxx_container_hooks",))
-    merged = _with_self_skip(opts, "addon_xxxxxxxx_container_hooks")
-    assert set(merged.skip_containers) == {"addon_xxxxxxxx_container_hooks"}
+    opts = _opts(tmp_path, skip_containers=("app_xxxxxxxx_container_hooks",))
+    merged = _with_self_skip(opts, "app_xxxxxxxx_container_hooks")
+    assert set(merged.skip_containers) == {"app_xxxxxxxx_container_hooks"}
 
 
 def test_with_self_skip_no_op_on_empty_name(tmp_path: Path) -> None:
