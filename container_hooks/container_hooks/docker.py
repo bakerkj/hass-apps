@@ -537,7 +537,12 @@ async def put_archive_dir(
         # multiple of 10240 and Python's default PAX format adds an extended
         # header per member, so the stream length is roughly a record count:
         # one small file and nine members both logged "20480 bytes".
-        payload_size = sum(p.stat().st_size for p in files)
+        #
+        # lstat, not stat: _build_dir_tree_tar ships symlinks as symlinks
+        # (dereference=False), so a link's tar member carries no content.
+        # Following it here would bill the target's size against a hook that
+        # never sends those bytes -- the same lie in the other direction.
+        payload_size = sum(p.lstat().st_size for p in files)
         archive = _build_dir_tree_tar(src_dir)
         ctr = await docker.containers.get(container)
         await ctr.put_archive(path="/", data=archive)

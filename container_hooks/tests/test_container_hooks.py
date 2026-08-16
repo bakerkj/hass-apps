@@ -2120,3 +2120,44 @@ async def test_put_archive_dir_size_tracks_content(monkeypatch, tmp_path: Path) 
         sizes.append(log_path.read_text())
     assert "1 files, 10 bytes" in sizes[0]
     assert "1 files, 4000 bytes" in sizes[1]
+
+
+async def test_put_archive_dir_size_does_not_follow_symlinks(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A symlink is shipped as a symlink, so its target's bytes are not sent.
+
+    ``_build_dir_tree_tar`` uses ``dereference=False`` on purpose, to support
+    staging a symlink farm. Sizing with ``stat`` would bill the target's size
+    against a hook that never sends those bytes — the same misreport this
+    logging exists to avoid, pointing the other way.
+    """
+    big = tmp_path / "outside.bin"
+    big.write_bytes(b"0" * 100_000)
+
+    src = tmp_path / "tree"
+    src.mkdir()
+    (src / "real").write_text("abc")  # 3 bytes
+    (src / "link").symlink_to(big)
+
+    fake_container = AsyncMock()
+    fake_container.put_archive = AsyncMock(return_value=None)
+    fake_docker = MagicMock()
+    fake_docker.containers.get = AsyncMock(return_value=fake_container)
+
+    log_path = tmp_path / "logs" / "pre-start.log"
+    await rocs.put_archive_dir(fake_docker, "app_x", src, log_path, _LOG)
+
+    line = log_path.read_text()
+    # symlink contributes its own size (the stored target path), not 100_000
+    expected = 3 + (src / "link").lstat().st_size
+    assert f"{expected} bytes" in line
+    followed = 3 + big.stat().st_size
+    assert f"{followed} bytes" not in line
+
+    # and the tar really does carry the link as a link, with no content
+    data = fake_container.put_archive.call_args.kwargs["data"]
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        link = tf.getmember("link")
+        assert link.issym()
+        assert link.size == 0
