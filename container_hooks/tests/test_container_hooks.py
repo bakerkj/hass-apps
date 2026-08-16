@@ -2069,3 +2069,54 @@ async def test_put_archive_dir_logs_failed_on_os_error(
     assert "put_archive FAILED" in content
     assert "OS error" in content
     assert "Permission denied" in content
+
+
+async def test_put_archive_dir_logs_content_bytes_not_tar_length(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The logged size is the bytes shipped, not the tar stream length.
+
+    A tar stream is padded to a multiple of 10240 and Python's default PAX
+    format adds an extended header per member, so its length is effectively a
+    record count: a single 1 KiB file and a nine-member tree both reported
+    "20480 bytes". That made the field useless for spotting a hook that
+    shipped the wrong thing.
+    """
+    src = tmp_path / "tree"
+    (src / "usr" / "local" / "lib").mkdir(parents=True)
+    (src / "usr" / "local" / "lib" / "a.py").write_text("x" * 1000)
+    (src / "usr" / "local" / "lib" / "b.py").write_text("y" * 500)
+
+    fake_container = AsyncMock()
+    fake_container.put_archive = AsyncMock(return_value=None)
+    fake_docker = MagicMock()
+    fake_docker.containers.get = AsyncMock(return_value=fake_container)
+
+    log_path = tmp_path / "logs" / "pre-start.log"
+    await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+
+    line = log_path.read_text()
+    assert "2 files, 1500 bytes" in line
+    # the tar itself is padded well past the payload
+    tar_len = len(fake_container.put_archive.call_args.kwargs["data"])
+    assert tar_len % 10240 == 0
+    assert tar_len > 1500
+
+
+async def test_put_archive_dir_size_tracks_content(monkeypatch, tmp_path: Path) -> None:
+    """Two trees that differ only in content size must log different sizes —
+    the property the tar length did not have."""
+    sizes = []
+    for n, count in ((10, 0), (4000, 1)):
+        src = tmp_path / f"tree{count}"
+        src.mkdir()
+        (src / "f").write_text("z" * n)
+        fake_container = AsyncMock()
+        fake_container.put_archive = AsyncMock(return_value=None)
+        fake_docker = MagicMock()
+        fake_docker.containers.get = AsyncMock(return_value=fake_container)
+        log_path = tmp_path / f"log{count}.log"
+        await rocs.put_archive_dir(fake_docker, "addon_x", src, log_path, _LOG)
+        sizes.append(log_path.read_text())
+    assert "1 files, 10 bytes" in sizes[0]
+    assert "1 files, 4000 bytes" in sizes[1]

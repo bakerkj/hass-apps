@@ -527,13 +527,18 @@ async def put_archive_dir(
 
     started = time.monotonic()
     rc = 0
-    archive_size = 0
+    payload_size = 0
     file_count = 0
     error: str | None = None
     try:
-        file_count = sum(1 for p in src_dir.rglob("*") if p.is_file())
+        files = [p for p in src_dir.rglob("*") if p.is_file()]
+        file_count = len(files)
+        # Bytes of actual content, not len(tar). A tar stream is padded to a
+        # multiple of 10240 and Python's default PAX format adds an extended
+        # header per member, so the stream length is roughly a record count:
+        # one small file and nine members both logged "20480 bytes".
+        payload_size = sum(p.stat().st_size for p in files)
         archive = _build_dir_tree_tar(src_dir)
-        archive_size = len(archive)
         ctr = await docker.containers.get(container)
         await ctr.put_archive(path="/", data=archive)
     except DockerError as e:
@@ -548,7 +553,7 @@ async def put_archive_dir(
     if error is None:
         line = (
             f"[{ts}] put_archive ok: {file_count} files, "
-            f"{archive_size} bytes → {container} in {duration_ms}ms\n"
+            f"{payload_size} bytes → {container} in {duration_ms}ms\n"
         )
     else:
         line = f"[{ts}] put_archive FAILED ({error}) after {duration_ms}ms\n"
@@ -591,7 +596,7 @@ async def apply_patch(
     rc = 0
     error: str | None = None
     patched_count = 0
-    archive_size = 0
+    payload_size = 0
 
     try:
         patch_bytes = patch_file.read_bytes()
@@ -660,7 +665,8 @@ async def apply_patch(
                     if local_src.is_file():
                         tf.add(str(local_src), arcname=rel)
                         patched_count += 1
-            archive_size = len(buf.getvalue())
+                        # Content bytes, not len(tar) — see put_archive_dir.
+                        payload_size += local_src.stat().st_size
 
             if patched_count:
                 await ctr.put_archive(path="/", data=buf.getvalue())
@@ -673,7 +679,7 @@ async def apply_patch(
     if error is None:
         line = (
             f"[{ts}] apply_patch ok: {patched_count} files, "
-            f"{archive_size} bytes → {container} in {duration_ms}ms "
+            f"{payload_size} bytes → {container} in {duration_ms}ms "
             f"(patch={patch_file.name})\n"
         )
     else:
