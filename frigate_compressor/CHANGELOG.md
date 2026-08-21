@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.58](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.57...frigate_compressor-v0.0.58) (2026-08-21)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+* **deps:** update dependency sqlite to v3.53.4-r0 ([#477](https://github.com/bakerkj/hass-apps/issues/477)) ([dbb1806](https://github.com/bakerkj/hass-apps/commit/dbb180679dabca5ee3972884060f8223882f047b))
+
 ## [0.0.57](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.56...frigate_compressor-v0.0.57) (2026-08-08)
 
 
