@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.3](https://github.com/bakerkj/hass-apps/compare/signalk-v0.0.2...signalk-v0.0.3) (2026-08-21)
+
+
+### Miscellaneous Chores
+
+* **signalk:** ignore hadolint DL3066 on USER root ([#403](https://github.com/bakerkj/hass-apps/issues/403)) ([c11cdb8](https://github.com/bakerkj/hass-apps/commit/c11cdb841c08c737100c86d7cc524aff17c86e79))
+
 ## [0.0.2](https://github.com/bakerkj/hass-apps/compare/signalk-v0.0.1...signalk-v0.0.2) (2026-07-26)
 
 
