@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.5](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.4...dashboard_entity_proxy-v0.1.5) (2026-08-21)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+
+
+### Code Refactoring
+
+* **dashboard_entity_proxy:** drive e2e stack via docker compose ([#358](https://github.com/bakerkj/hass-apps/issues/358)) ([de90fb8](https://github.com/bakerkj/hass-apps/commit/de90fb82eab2b3c72729c4a3aaa9ce4af0d3869c))
+* **tests:** let Dockerfile BUILD_FROM default be the single base pin ([#355](https://github.com/bakerkj/hass-apps/issues/355)) ([55c1efd](https://github.com/bakerkj/hass-apps/commit/55c1efd30e1650e08d687d671260b171d359e6b5))
+
+
+### Tests
+
+* **dashboard_entity_proxy:** clean up hostname ([#366](https://github.com/bakerkj/hass-apps/issues/366)) ([016b6c6](https://github.com/bakerkj/hass-apps/commit/016b6c614329843dbc4b32cbebe8854975c0c4d8))
+* fix aiohttp and sqlite ResourceWarning in test suites ([#348](https://github.com/bakerkj/hass-apps/issues/348)) ([d1f9186](https://github.com/bakerkj/hass-apps/commit/d1f9186a4f8c1393e3ffc57b8910e0774fc3ff53))
+
+
+### Continuous Integration
+
+* **tests:** drop dep-proxy HA image cache; add fixture bring-up prints ([#353](https://github.com/bakerkj/hass-apps/issues/353)) ([2ab52ba](https://github.com/bakerkj/hass-apps/commit/2ab52baa00a38fe212905bc46e78761bfc0cebc9))
+
 ## [0.1.4](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.3...dashboard_entity_proxy-v0.1.4) (2026-07-24)
 
 
