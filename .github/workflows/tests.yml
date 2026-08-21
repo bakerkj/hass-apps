@@ -251,7 +251,7 @@ jobs:
       # tag. The base version comes from the Dockerfile's BUILD_FROM
       # default (renovate tracks it there) — no second copy here to
       # drift.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./dashboard_entity_proxy
@@ -309,7 +309,7 @@ jobs:
       # docker build. The base version comes from the Dockerfile's
       # BUILD_FROM default (renovate tracks it there) — no second copy
       # here to drift.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./container_hooks
@@ -365,7 +365,7 @@ jobs:
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
       # second copy here to drift. Surfaced to conftest via
       # ``SIGNALK_BRIDGE_IMAGE`` so the session fixture skips its own build.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./signalk_bridge
@@ -412,7 +412,7 @@ jobs:
       # The base version comes from the Dockerfile's BUILD_FROM default (the pin
       # renovate tracks) -- no second copy here to drift. Surfaced to the test via
       # ``SIGNALK_SERVER_IMAGE`` so it skips its own build.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./signalk
@@ -458,7 +458,7 @@ jobs:
       # so the apk layer is reused across runs. The base version comes from the
       # Dockerfile's BUILD_FROM default (renovate tracks it there). Surfaced to
       # the test via ``DASHBOARD_WEB_PROXY_IMAGE`` so it skips its own build.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./dashboard_web_proxy
@@ -514,7 +514,7 @@ jobs:
       # Surfaced to the e2e via ``HALPI2_POWER_IMAGE`` so it skips its own build.
       # halpid needs the RP2040 over I2C (absent here), so the e2e fakes it and
       # exercises the real s6 tree + publisher against the broker.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./halpi2_power
@@ -560,7 +560,7 @@ jobs:
       # so the apk layer is reused across runs. The base version comes from the
       # Dockerfile's BUILD_FROM default (renovate tracks it there). Surfaced to
       # the test via ``DIREWOLF_IGATE_IMAGE`` so it skips its own build.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./direwolf_igate
