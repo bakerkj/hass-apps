@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.27](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.26...container_info_mqtt-v0.1.27) (2026-08-24)
+
+
+### Bug Fixes
+
+* **container_info_mqtt:** clear discovery for containers removed between reconnects ([#479](https://github.com/bakerkj/hass-apps/issues/479)) ([d26ac56](https://github.com/bakerkj/hass-apps/commit/d26ac564e31ee8f5282bda3beaf426235d8cbd67))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+
 ## [0.1.26](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.25...container_info_mqtt-v0.1.26) (2026-08-08)
 
 
