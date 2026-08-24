@@ -27,7 +27,9 @@ from .metrics import (
 )
 from .mqtt import (
     MqttHealth,
+    clear_container_discovery,
     clear_discovery,
+    due_for_removal,
     prune_stale_discovery,
     publish_discovery,
     publish_summary_discovery,
@@ -139,6 +141,12 @@ def main() -> int:
     log.info("Container Info MQTT v%s starting", __version__)
     interval_seconds = max(1, args.interval_seconds)
     expire_after_s = max(60, int(interval_seconds) * args.expire_after_multiplier)
+    # How long a container must stay absent from the poll before we treat it as
+    # removed and clear its discovery. `docker ps` shows only running
+    # containers, so a restart makes one vanish briefly; the grace keeps a
+    # restart from churning the HA device. Floored at 5 minutes so it always
+    # comfortably exceeds a normal restart, even with a short interval.
+    removal_grace_seconds = max(300.0, float(expire_after_s))
     unknown_option_keys = sorted(key for key in opts if key not in OPTION_KEYS)
     if unknown_option_keys:
         log.warning("Unknown keys in options file: %s", ", ".join(unknown_option_keys))
@@ -306,6 +314,9 @@ def main() -> int:
     summary_discovered: set[str] = set()
     needs_rediscovery = {"v": False}
     last_totals_by_container: dict[str, dict[str, float]] = {}
+    # slug -> wall-clock time it first went absent from the poll; drives the
+    # grace before a removed container's discovery is cleared (see below).
+    absent_since: dict[str, float] = {}
 
     def on_message(_client, _userdata, msg):
         topic = msg.topic
@@ -556,6 +567,11 @@ def main() -> int:
 
         last_sample_time = now
 
+        # Containers we publish that are gone from this poll: mark them offline
+        # right away, but only *clear* their discovery once they have stayed
+        # gone past the grace, so a container restart (a brief disappearance
+        # from `docker ps`) does not churn its HA device. Guarded on a non-empty
+        # poll so a spurious empty (but successful) fetch cannot wipe everything.
         stale = set(discovered.keys()) - seen_slugs
         for stale_slug in stale:
             if container_online.get(stale_slug) is not False:
@@ -567,6 +583,24 @@ def main() -> int:
                 )
                 container_online[stale_slug] = False
             last_totals_by_container.pop(stale_slug, None)
+
+        if seen_slugs:
+            for removed_slug in due_for_removal(
+                tuple(discovered), seen_slugs, absent_since, now, removal_grace_seconds
+            ):
+                clear_container_discovery(
+                    client,
+                    args.mqtt_discovery_prefix,
+                    base_topic,
+                    args.client_id,
+                    removed_slug,
+                    discovered.pop(removed_slug, set()),
+                    clear_summary=removed_slug in summary_discovered,
+                    log=log,
+                )
+                summary_discovered.discard(removed_slug)
+                container_online.pop(removed_slug, None)
+                absent_since.pop(removed_slug, None)
 
         # One-shot prune of retained discovery for slugs that no longer exist
         # (e.g. removed containers, or containers now matching the exclude

@@ -48,7 +48,9 @@ from .metrics import (  # noqa: F401
 )
 from .mqtt import (  # noqa: F401
     MqttHealth,
+    clear_container_discovery,
     clear_discovery,
+    due_for_removal,
     prune_stale_discovery,
     publish_discovery,
     publish_summary_discovery,
