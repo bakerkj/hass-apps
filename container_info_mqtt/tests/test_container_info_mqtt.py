@@ -1629,3 +1629,107 @@ def test_fetch_ps_skips_missing_id():
     with patch("container_info_mqtt.docker.run_cmd", return_value=proc):
         result = cim.fetch_ps_containers(10, _LOG)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# clear_container_discovery
+# ---------------------------------------------------------------------------
+
+
+def test_clear_container_discovery_clears_metrics_summary_and_availability():
+    client = _RecordingClient()
+    cim.clear_container_discovery(
+        client,  # type: ignore[arg-type]
+        "homeassistant",
+        "container_info",
+        "container-info-mqtt",
+        "clever_buck",
+        {"cpu_percent", "memory_usage"},
+        clear_summary=True,
+        log=_LOG,
+    )
+    topics = {t for (t, _, _, _) in client.published}
+    assert (
+        "homeassistant/sensor/container-info-mqtt_clever_buck/cpu_percent/config"
+        in topics
+    )
+    assert (
+        "homeassistant/sensor/container-info-mqtt_clever_buck/memory_usage/config"
+        in topics
+    )
+    assert (
+        "homeassistant/sensor/container-info-mqtt_clever_buck/summary/config" in topics
+    )
+    assert "container_info/clever_buck/availability" in topics
+    # Everything cleared as empty + retained.
+    for _t, payload, qos, retain in client.published:
+        assert payload == ""
+        assert qos == 1
+        assert retain is True
+
+
+def test_clear_container_discovery_without_summary_skips_summary_config():
+    client = _RecordingClient()
+    cim.clear_container_discovery(
+        client,  # type: ignore[arg-type]
+        "homeassistant",
+        "container_info",
+        "container-info-mqtt",
+        "clever_buck",
+        {"cpu_percent"},
+        clear_summary=False,
+        log=_LOG,
+    )
+    topics = [t for (t, _, _, _) in client.published]
+    assert (
+        "homeassistant/sensor/container-info-mqtt_clever_buck/summary/config"
+        not in topics
+    )
+    assert "container_info/clever_buck/availability" in topics
+
+
+# ---------------------------------------------------------------------------
+# due_for_removal (debounced removal decision)
+# ---------------------------------------------------------------------------
+
+
+def test_due_for_removal_newly_absent_starts_clock_not_due():
+    absent: dict[str, float] = {}
+    due = cim.due_for_removal(["gone"], set(), absent, now=100.0, grace_seconds=300.0)
+    assert due == set()
+    assert absent == {"gone": 100.0}  # clock started, nothing cleared yet
+
+
+def test_due_for_removal_absent_within_grace_not_due():
+    absent = {"gone": 100.0}
+    due = cim.due_for_removal(["gone"], set(), absent, now=350.0, grace_seconds=300.0)
+    assert due == set()  # only 250s < 300s grace
+
+
+def test_due_for_removal_absent_past_grace_is_due():
+    absent = {"gone": 100.0}
+    due = cim.due_for_removal(["gone"], set(), absent, now=401.0, grace_seconds=300.0)
+    assert due == {"gone"}  # 301s >= grace
+
+
+def test_due_for_removal_present_slug_never_due_and_clock_cleared():
+    absent = {"running": 100.0}
+    due = cim.due_for_removal(
+        ["running"], {"running"}, absent, now=9999.0, grace_seconds=300.0
+    )
+    assert due == set()
+    assert absent == {}  # reappearing clears the clock
+
+
+def test_due_for_removal_restart_before_grace_resets_clock_no_churn():
+    # A container that vanishes briefly (restart) and returns before the grace
+    # must never be reported as removed, and its clock must reset.
+    absent: dict[str, float] = {}
+    # poll 1: absent
+    assert cim.due_for_removal(["c"], set(), absent, 100.0, 300.0) == set()
+    # poll 2: back (restart finished) -> clock cleared
+    assert cim.due_for_removal(["c"], {"c"}, absent, 160.0, 300.0) == set()
+    assert absent == {}
+    # poll 3: absent again -> a fresh clock, still not due despite >300s elapsed
+    assert cim.due_for_removal(["c"], set(), absent, 500.0, 300.0) == set()
+    assert absent == {"c": 500.0}

@@ -5,6 +5,7 @@
 
 import json
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -115,6 +116,63 @@ def clear_discovery(
     node_id = f"{device_id}_{container_slug}"
     config_topic = f"{discovery_prefix}/sensor/{node_id}/{metric_key}/config"
     client.publish(config_topic, "", qos=1, retain=True)
+
+
+def clear_container_discovery(
+    client: mqtt.Client,
+    discovery_prefix: str,
+    base_topic: str,
+    device_id: str,
+    container_slug: str,
+    metrics: Iterable[str],
+    *,
+    clear_summary: bool,
+    log: logging.Logger,
+) -> None:
+    """Clear all retained discovery + availability for one removed container.
+
+    The per-container counterpart to `clear_discovery`: it wipes every
+    per-metric discovery config, the summary config, and the retained
+    availability topic, so Home Assistant drops the device instead of leaving a
+    permanently-unavailable ghost behind when a container is gone for good.
+    """
+    for metric_key in metrics:
+        clear_discovery(client, discovery_prefix, device_id, container_slug, metric_key)
+    if clear_summary:
+        clear_discovery(client, discovery_prefix, device_id, container_slug, "summary")
+    client.publish(
+        f"{base_topic}/{container_slug}/availability", "", qos=1, retain=True
+    )
+    log.info("Cleared discovery for removed container slug=%s", container_slug)
+
+
+def due_for_removal(
+    discovered_slugs: Iterable[str],
+    seen_slugs: set[str],
+    absent_since: dict[str, float],
+    now: float,
+    grace_seconds: float,
+) -> set[str]:
+    """Which published slugs have been absent long enough to be real removals.
+
+    ``docker ps`` lists only *running* containers, so a restart makes a
+    container vanish briefly. To avoid churning its HA device on every restart,
+    a slug must be continuously absent for ``grace_seconds`` before it counts as
+    removed. ``absent_since`` is updated in place: a slug back in ``seen_slugs``
+    has its clock cleared, a newly-absent slug starts it, and every slug absent
+    at least ``grace_seconds`` is returned.
+    """
+    for slug in list(absent_since):
+        if slug in seen_slugs:
+            del absent_since[slug]
+    due: set[str] = set()
+    for slug in discovered_slugs:
+        if slug in seen_slugs:
+            continue
+        first_absent = absent_since.setdefault(slug, now)
+        if now - first_absent >= grace_seconds:
+            due.add(slug)
+    return due
 
 
 def prune_stale_discovery(
