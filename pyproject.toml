@@ -7,7 +7,7 @@ requires-python = ">=3.14"
 # Exact pin, not a glob: setup-uv resolves this against Astral's live
 # manifest at job start, so a glob lets two jobs in the same CI run install
 # different uv versions when a release lands mid-run (cf. #409).
-required-version = "==0.12.5"
+required-version = "==0.12.6"
 
 [dependency-groups]
 dev = [
