@@ -79,7 +79,7 @@ LABEL \
 RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.14.7-r1 \
       py3-paho-mqtt=1.6.1-r4 \
-      curl=8.21.0-r0
+      curl=8.22.0-r0
 
 # halpid resolves the group for its API socket via a hardcoded getgrnam("halpid")
 # in main.rs -- it is NOT the configurable `socket-group` (that one only covers
