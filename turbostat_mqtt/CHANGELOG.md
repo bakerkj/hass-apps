@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.42](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.41...turbostat_mqtt-v0.0.42) (2026-09-05)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+* **deps:** update dependency util-linux to v2.42.3-r1 ([#496](https://github.com/bakerkj/hass-apps/issues/496)) ([943d2e5](https://github.com/bakerkj/hass-apps/commit/943d2e5ae6b0f040a0d1e3c207ad08dde0ab69f9))
+
 ## [0.0.41](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.40...turbostat_mqtt-v0.0.41) (2026-08-08)
 
 
