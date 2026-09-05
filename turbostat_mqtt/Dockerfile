@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       cpupower=7.1.5-r0 \
       linux-tools=7.1.5-r0 \
       python3=3.14.7-r1 \
-      util-linux=2.42.1-r0 \
+      util-linux=2.42.3-r1 \
       uv=0.11.19-r0
 
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv. It needs
