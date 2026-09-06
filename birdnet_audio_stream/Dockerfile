@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/var/cache/apk set -eux; \
         alsa-plugins-pulse=1.2.12-r2 \
         alsa-utils=1.2.15.2-r1 \
         ffmpeg=8.1.2-r0 \
-        go2rtc=1.9.14-r4
+        go2rtc=1.9.14-r5
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
