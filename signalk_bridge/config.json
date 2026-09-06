@@ -3,7 +3,7 @@
   "slug": "signalk_bridge",
   "description": "Publishes Signal K marine data (navigation, wind, depth, engine, batteries, tanks, switches, alarms, position) and NMEA 2000 bus health as Home Assistant MQTT Discovery entities.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "arch": [
     "aarch64",
     "amd64"
