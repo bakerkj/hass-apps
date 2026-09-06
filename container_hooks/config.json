@@ -3,7 +3,7 @@
   "slug": "container_hooks",
   "description": "Per-container docker hooks: stage files, apply unified-diff patches, or run scripts at container create or start events — without forking the target image.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "image": "ghcr.io/bakerkj/{arch}-container_hooks",
   "arch": [
     "amd64",
