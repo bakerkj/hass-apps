@@ -8,7 +8,7 @@
   "ffmpeg_snapshotter": "0.8.16",
   "frigate_compressor": "0.0.58",
   "halpi2_power": "0.0.3",
-  "haos_configurator": "0.0.7",
+  "haos_configurator": "0.0.8",
   "intel_gpu_top_mqtt": "0.3.32",
   "signalk": "0.0.3",
   "signalk_bridge": "0.0.11",
