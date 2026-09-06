@@ -1,7 +1,7 @@
 {
   "birdnet_audio_stream": "0.1.18",
   "container_hooks": "0.1.2",
-  "container_info_mqtt": "0.1.27",
+  "container_info_mqtt": "0.1.28",
   "dashboard_entity_proxy": "0.1.5",
   "dashboard_web_proxy": "0.0.4",
   "direwolf_igate": "0.0.6",
