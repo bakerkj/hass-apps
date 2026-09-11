@@ -11,7 +11,7 @@
   "haos_configurator": "0.0.7",
   "intel_gpu_top_mqtt": "0.3.32",
   "signalk": "0.0.3",
-  "signalk_bridge": "0.0.11",
+  "signalk_bridge": "0.0.12",
   "system_resource_tuner": "0.0.33",
   "turbostat_mqtt": "0.0.42"
 }
