@@ -36,9 +36,43 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     # Note: intel_gpu_top JSON schema varies a bit by version.
     # On your system, power keys are capitalized: power.GPU and power.Package.
-    rc6 = safe_float(dig(raw, ["rc6", "value"])) or safe_float(raw.get("rc6"))
+    # Explicit None-check, not `or`: rc6 == 0.0 (GPU 100 % busy) is falsy,
+    # and the `or` fallback then reads raw["rc6"] as a dict on the nested
+    # schema, which safe_float rejects -> None. That would blank both
+    # rc6_percent and non_idle_percent at exactly the "GPU is pegged" moment.
+    rc6 = safe_float(dig(raw, ["rc6", "value"]))
+    if rc6 is None:
+        rc6 = safe_float(raw.get("rc6"))
     freq_actual = safe_float(dig(raw, ["frequency", "actual"]))
     freq_requested = safe_float(dig(raw, ["frequency", "requested"]))
+
+    render_busy = find_engine_field(raw, "Render/3D", "busy")
+    video_busy = find_engine_field(raw, "Video", "busy")
+    videoenhance_busy = find_engine_field(raw, "VideoEnhance", "busy")
+    blitter_busy = find_engine_field(raw, "Blitter", "busy")
+
+    # Non-idle: complement of the RC6 (render C6, deepest idle) residency.
+    # Hardware-authoritative, never exceeds 100 %, and is the closest thing
+    # intel_gpu_top publishes to "was the GPU out of its lowest power state?".
+    non_idle = 100.0 - rc6 if rc6 is not None else None
+
+    # Peak engine busy: max across the four engines intel_gpu_top reports.
+    # 100 % here means at least one engine is the bottleneck for a serialized
+    # workload, which is usually the useful "the GPU is full" signal.
+    engine_busy_values = [
+        v
+        for v in (render_busy, video_busy, videoenhance_busy, blitter_busy)
+        if v is not None
+    ]
+    peak_engine_busy = max(engine_busy_values) if engine_busy_values else None
+
+    # QSV-style: mean of the Render/3D and Video engine busy%, matching
+    # Frigate 0.17's get_intel_gpu_stats which averaged those two engines
+    # (used by QSV encode and decode) into a single gpu_load number.
+    if render_busy is not None and video_busy is not None:
+        qsv_style = (render_busy + video_busy) / 2.0
+    else:
+        qsv_style = None
 
     p_gpu = safe_float(dig(raw, ["power", "GPU"]))
     if p_gpu is None:
@@ -52,6 +86,28 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     metrics: dict[str, dict[str, Any]] = {
         "rc6_percent": metric("rc6_percent", "Intel GPU RC6", rc6, "%"),
+        # Aggregate "busy" proxies. Multiple, because there is no single true
+        # answer for a multi-engine iGPU:
+        #   non_idle_percent       -- hardware idle-residency complement (100 - RC6)
+        #   peak_engine_busy_percent -- max across engines, i.e. bottleneck engine
+        #   qsv_style_load_percent -- mean(Render/3D, Video) busy, matches the
+        #                             number Frigate 0.17 published as gpu_load
+        #                             for intel-qsv (dropped in Frigate 0.18)
+        "non_idle_percent": metric(
+            "non_idle_percent", "Intel GPU Non-Idle", non_idle, "%"
+        ),
+        "peak_engine_busy_percent": metric(
+            "peak_engine_busy_percent",
+            "Intel GPU Peak Engine Busy",
+            peak_engine_busy,
+            "%",
+        ),
+        "qsv_style_load_percent": metric(
+            "qsv_style_load_percent",
+            "Intel GPU QSV-Style Load",
+            qsv_style,
+            "%",
+        ),
         "freq_mhz": metric(
             "freq_mhz", "Intel GPU Frequency Actual", freq_actual, "MHz"
         ),
