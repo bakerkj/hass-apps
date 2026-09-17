@@ -126,7 +126,7 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "engine_render_3d_busy_percent": metric(
             "engine_render_3d_busy_percent",
             "Intel GPU Engine Render/3D Busy",
-            find_engine_field(raw, "Render/3D", "busy"),
+            render_busy,
             "%",
             {"engine": "Render/3D", "field": "busy"},
         ),
@@ -148,7 +148,7 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "engine_video_busy_percent": metric(
             "engine_video_busy_percent",
             "Intel GPU Engine Video Busy",
-            find_engine_field(raw, "Video", "busy"),
+            video_busy,
             "%",
             {"engine": "Video", "field": "busy"},
         ),
@@ -170,7 +170,7 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "engine_videoenhance_busy_percent": metric(
             "engine_videoenhance_busy_percent",
             "Intel GPU Engine VideoEnhance Busy",
-            find_engine_field(raw, "VideoEnhance", "busy"),
+            videoenhance_busy,
             "%",
             {"engine": "VideoEnhance", "field": "busy"},
         ),
@@ -192,7 +192,7 @@ def build_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "engine_blitter_busy_percent": metric(
             "engine_blitter_busy_percent",
             "Intel GPU Engine Blitter Busy",
-            find_engine_field(raw, "Blitter", "busy"),
+            blitter_busy,
             "%",
             {"engine": "Blitter", "field": "busy"},
         ),
