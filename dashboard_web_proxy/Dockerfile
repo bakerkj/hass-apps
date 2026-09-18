@@ -16,7 +16,7 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   nginx=1.30.4-r1 \
-  ca-certificates=20260611-r0
+  ca-certificates=20260909-r0
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
