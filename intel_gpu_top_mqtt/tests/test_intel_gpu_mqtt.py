@@ -202,6 +202,9 @@ def test_build_metrics_returns_expected_keys():
     metrics = igm.build_metrics(_sample_raw())
     expected_keys = {
         "rc6_percent",
+        "non_idle_percent",
+        "peak_engine_busy_percent",
+        "qsv_style_load_percent",
         "freq_mhz",
         "freq_requested_mhz",
         "interrupts_per_s",
@@ -221,6 +224,101 @@ def test_build_metrics_returns_expected_keys():
         "engine_blitter_wait_percent",
     }
     assert set(metrics.keys()) == expected_keys
+
+
+def test_build_metrics_non_idle_is_rc6_complement():
+    """Sample rc6=75 -> non_idle=25. If someone flips the subtraction the sign
+    error is silent in normal ranges, so pin the exact expected value."""
+    metrics = igm.build_metrics(_sample_raw())
+    assert metrics["non_idle_percent"]["value"] == pytest.approx(25.0)
+
+
+def test_build_metrics_non_idle_when_rc6_is_zero():
+    """rc6 == 0.0 means the GPU never entered its deepest idle state; the
+    expected non_idle is 100.0. A previous `rc6 = X or Y` extraction treated
+    0.0 as falsy and fell through to a dict-shaped fallback that safe_float
+    rejected, so the metric blanked at the exact moment it mattered most.
+    Pin the boundary so that regression can't come back silently."""
+    raw = {
+        "rc6": {"value": 0.0},
+        "engines": {},
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
+    metrics = igm.build_metrics(raw)
+    assert metrics["rc6_percent"]["value"] == pytest.approx(0.0)
+    assert metrics["non_idle_percent"]["value"] == pytest.approx(100.0)
+
+
+def test_build_metrics_non_idle_is_none_when_rc6_missing():
+    """No RC6 in the sample means the derived busy proxy is honestly unknown,
+    not silently reported as 100 %."""
+    raw: dict[str, dict[str, object]] = {
+        "engines": {},
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
+    metrics = igm.build_metrics(raw)
+    assert metrics["non_idle_percent"]["value"] is None
+
+
+def test_build_metrics_peak_engine_busy_picks_max():
+    """Sample engines: Render/3D=50, Video=20, VideoEnhance=0, Blitter=5.
+    The max (Render/3D=50) is the intended answer; a mean or sum would land at
+    18.75 or 75."""
+    metrics = igm.build_metrics(_sample_raw())
+    assert metrics["peak_engine_busy_percent"]["value"] == pytest.approx(50.0)
+
+
+def test_build_metrics_peak_engine_busy_ignores_missing_engines():
+    """A schema without VideoEnhance/Blitter must not drag the peak to None."""
+    raw = {
+        "engines": {
+            "Render/3D": {"busy": 40.0},
+            "Video": {"busy": 15.0},
+        },
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
+    metrics = igm.build_metrics(raw)
+    assert metrics["peak_engine_busy_percent"]["value"] == pytest.approx(40.0)
+
+
+def test_build_metrics_peak_engine_busy_none_when_no_engines():
+    raw: dict[str, dict[str, object]] = {
+        "engines": {},
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
+    metrics = igm.build_metrics(raw)
+    assert metrics["peak_engine_busy_percent"]["value"] is None
+
+
+def test_build_metrics_qsv_style_matches_frigate_017_formula():
+    """Reproduces (mean(Render/3D busy) + mean(Video busy)) / 2 from
+    frigate/util/services.py@v0.17.2 get_intel_gpu_stats -- the number Frigate
+    0.17 exposed as gpu_load for intel-qsv. Sample: Render/3D=50, Video=20 ->
+    35."""
+    metrics = igm.build_metrics(_sample_raw())
+    assert metrics["qsv_style_load_percent"]["value"] == pytest.approx(35.0)
+
+
+def test_build_metrics_qsv_style_needs_both_engines():
+    """Frigate 0.17 required both Render/3D and Video engines to be present
+    before publishing gpu_load; mirror that -- half the pair would be
+    misleading."""
+    raw = {
+        "engines": {"Render/3D": {"busy": 40.0}},
+        "power": {},
+        "frequency": {},
+        "interrupts": {},
+    }
+    metrics = igm.build_metrics(raw)
+    assert metrics["qsv_style_load_percent"]["value"] is None
 
 
 def test_build_metrics_rc6_value():
