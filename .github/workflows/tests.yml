@@ -349,6 +349,9 @@ jobs:
       # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       MOSQUITTO_APT_VERSION: "2.0.22-5build1"
+      # See the Install Mosquitto broker step: pytest's tmp roots must live
+      # under a path the mosquitto AppArmor profile permits reading.
+      PYTEST_ADDOPTS: "--basetemp=/etc/mosquitto/pytest-tmp"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -359,25 +362,16 @@ jobs:
       # so it publishes with its shipped apk paho. Install Mosquitto from apt for
       # the broker (Docker Hub is rate-limited from Actions; the other e2e jobs
       # pull ghcr images for the same reason). Fail loud if the binary is missing.
-      # Ubuntu 26.04's shipped AppArmor profile for `mosquitto` denies reads
-      # under `/tmp`, which is where pytest writes the fixture's mosquitto.conf
-      # — disable the profile so the binary can read the fixture-written config.
+      # Point pytest's basetemp at a subdirectory of /etc/mosquitto — Ubuntu
+      # 26.04's shipped AppArmor profile for `mosquitto` denies reads under
+      # `/tmp` but permits `/etc/mosquitto/**`, so the fixture-written
+      # mosquitto.conf lands somewhere the confined broker can read it.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
-          sudo apt-get install -y apparmor-utils
-          echo "--- aa-status before teardown ---"
-          sudo aa-status --profiled --enforced || true
-          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status"
-          # `aa-disable` / `apparmor_parser -R` produced no visible action on
-          # this runner. `aa-teardown` unloads every profile from the kernel
-          # unconditionally — a bigger hammer, but the runner is ephemeral and
-          # we only care about the mosquitto profile being gone.
-          sudo aa-teardown || true
-          echo "--- aa-status after teardown ---"
-          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status (good)"
+          sudo install -d -o "$USER" /etc/mosquitto/pytest-tmp
       # Build the add-on image with a GHA buildkit cache so the base-image pull
       # and apk-install layer are reused across runs. The base version comes from
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
@@ -516,6 +510,9 @@ jobs:
       # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
       MOSQUITTO_APT_VERSION: "2.0.22-5build1"
+      # See the Install Mosquitto broker step: pytest's tmp roots must live
+      # under a path the mosquitto AppArmor profile permits reading.
+      PYTEST_ADDOPTS: "--basetemp=/etc/mosquitto/pytest-tmp"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
