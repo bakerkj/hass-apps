@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.4...dashboard_web_proxy-v0.0.5) (2026-09-19)
+
+
+### Miscellaneous Chores
+
+* **deps:** update ca-certificates apk package to v20260909 ([#511](https://github.com/bakerkj/hass-apps/issues/511)) ([009b862](https://github.com/bakerkj/hass-apps/commit/009b86272c4a028f54337393b566b02b062afefe))
+
 ## [0.0.4](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.3...dashboard_web_proxy-v0.0.4) (2026-08-03)
 
 
