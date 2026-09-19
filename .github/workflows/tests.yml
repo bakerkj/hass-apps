@@ -367,7 +367,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
-          sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
+          if [ -f /etc/apparmor.d/usr.sbin.mosquitto ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mosquitto
+          fi
       # Build the add-on image with a GHA buildkit cache so the base-image pull
       # and apk-install layer are reused across runs. The base version comes from
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
@@ -523,7 +525,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
-          sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
+          if [ -f /etc/apparmor.d/usr.sbin.mosquitto ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mosquitto
+          fi
       # Build the real add-on image (cross-compiles halpid) with a GHA buildkit
       # cache so the Rust build is reused across runs. The base version comes
       # from the Dockerfile's BUILD_FROM default (renovate tracks it there).
