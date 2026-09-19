@@ -127,9 +127,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
-      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
-      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
+      FFMPEG_APT_VERSION: "7:8.0.1-3ubuntu2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -188,9 +188,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
-      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
-      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
+      FFMPEG_APT_VERSION: "7:8.0.1-3ubuntu2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -263,7 +263,7 @@ jobs:
           cache-to: type=gha,scope=dep-int,mode=max
       # Selenium auto-downloads the matching driver; we just need
       # ``google-chrome`` on PATH (already preinstalled on
-      # ubuntu-24.04 runner images).
+      # ubuntu-26.04 runner images).
       - name: Verify Chrome present
         run: google-chrome --version
       # ``-s`` disables pytest's default capture so the ``_phase()``

@@ -160,13 +160,13 @@
       "groupName": "alpine apk packages"
     },
     {
-      "description": "ffmpeg apt package resolves from the Ubuntu 24.04 (noble) universe archive, matching the GitHub runner's sources",
+      "description": "ffmpeg apt package resolves from the Ubuntu 26.04 (resolute) universe archive, matching the GitHub runner's sources. Must move in lockstep with the `runs-on:` runner OS — an exact-version pin only exists in the archives for the matching Ubuntu release.",
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["deb"],
       "registryUrls": [
-        "http://archive.ubuntu.com/ubuntu?suite=noble&components=universe&binaryArch=amd64",
-        "http://archive.ubuntu.com/ubuntu?suite=noble-updates&components=universe&binaryArch=amd64",
-        "http://security.ubuntu.com/ubuntu?suite=noble-security&components=universe&binaryArch=amd64"
+        "http://archive.ubuntu.com/ubuntu?suite=resolute&components=universe&binaryArch=amd64",
+        "http://archive.ubuntu.com/ubuntu?suite=resolute-updates&components=universe&binaryArch=amd64",
+        "http://security.ubuntu.com/ubuntu?suite=resolute-security&components=universe&binaryArch=amd64"
       ],
       "groupName": "apt packages"
     },
