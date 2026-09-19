@@ -9,7 +9,7 @@
     "amd64",
     "aarch64"
   ],
-  "startup": "services",
+  "startup": "system",
   "init": false,
   "docker_api": true,
   "hassio_role": "manager",
