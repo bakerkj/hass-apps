@@ -368,10 +368,16 @@ jobs:
           sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
           sudo apt-get install -y apparmor-utils
-          if [ -f /etc/apparmor.d/usr.sbin.mosquitto ]; then
-            sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto
-          fi
-          sudo aa-status | grep -c mosquitto || true
+          echo "--- aa-status before teardown ---"
+          sudo aa-status --profiled --enforced || true
+          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status"
+          # `aa-disable` / `apparmor_parser -R` produced no visible action on
+          # this runner. `aa-teardown` unloads every profile from the kernel
+          # unconditionally — a bigger hammer, but the runner is ephemeral and
+          # we only care about the mosquitto profile being gone.
+          sudo aa-teardown || true
+          echo "--- aa-status after teardown ---"
+          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status (good)"
       # Build the add-on image with a GHA buildkit cache so the base-image pull
       # and apk-install layer are reused across runs. The base version comes from
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
@@ -528,10 +534,16 @@ jobs:
           sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
           sudo apt-get install -y apparmor-utils
-          if [ -f /etc/apparmor.d/usr.sbin.mosquitto ]; then
-            sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto
-          fi
-          sudo aa-status | grep -c mosquitto || true
+          echo "--- aa-status before teardown ---"
+          sudo aa-status --profiled --enforced || true
+          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status"
+          # `aa-disable` / `apparmor_parser -R` produced no visible action on
+          # this runner. `aa-teardown` unloads every profile from the kernel
+          # unconditionally — a bigger hammer, but the runner is ephemeral and
+          # we only care about the mosquitto profile being gone.
+          sudo aa-teardown || true
+          echo "--- aa-status after teardown ---"
+          sudo aa-status | grep mosquitto || echo "no mosquitto in aa-status (good)"
       # Build the real add-on image (cross-compiles halpid) with a GHA buildkit
       # cache so the Rust build is reused across runs. The base version comes
       # from the Dockerfile's BUILD_FROM default (renovate tracks it there).
