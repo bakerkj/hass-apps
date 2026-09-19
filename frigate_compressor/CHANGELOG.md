@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.59](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.58...frigate_compressor-v0.0.59) (2026-09-19)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency onevpl-intel-gpu to v26 ([#519](https://github.com/bakerkj/hass-apps/issues/519)) ([9ea899a](https://github.com/bakerkj/hass-apps/commit/9ea899ad682e7149d3bf051419ecda2350273127))
+
 ## [0.0.58](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.57...frigate_compressor-v0.0.58) (2026-08-21)
 
 
