@@ -355,11 +355,15 @@ jobs:
       # so it publishes with its shipped apk paho. Install Mosquitto from apt for
       # the broker (Docker Hub is rate-limited from Actions; the other e2e jobs
       # pull ghcr images for the same reason). Fail loud if the binary is missing.
+      # Ubuntu 26.04's shipped AppArmor profile for `mosquitto` denies reads
+      # under `/tmp`, which is where pytest writes the fixture's mosquitto.conf
+      # — disable the profile so the binary can read the fixture-written config.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto
           command -v mosquitto || test -x /usr/sbin/mosquitto
+          sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
       # Build the add-on image with a GHA buildkit cache so the base-image pull
       # and apk-install layer are reused across runs. The base version comes from
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
@@ -503,11 +507,15 @@ jobs:
       # The publisher connects to a real broker over the wire. Docker Hub is
       # rate-limited from Actions, so install Mosquitto from apt (as the other
       # MQTT e2e jobs do). Fail loud if the binary is missing.
+      # Ubuntu 26.04's shipped AppArmor profile for `mosquitto` denies reads
+      # under `/tmp`, which is where pytest writes the fixture's mosquitto.conf
+      # — disable the profile so the binary can read the fixture-written config.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto
           command -v mosquitto || test -x /usr/sbin/mosquitto
+          sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
       # Build the real add-on image (cross-compiles halpid) with a GHA buildkit
       # cache so the Rust build is reused across runs. The base version comes
       # from the Dockerfile's BUILD_FROM default (renovate tracks it there).
