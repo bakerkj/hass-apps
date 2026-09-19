@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
-      onevpl-intel-gpu=25.4.6-r1
+      onevpl-intel-gpu=26.2.4-r0
 
 COPY LICENSE.md /LICENSE
 COPY run.sh /run.sh
