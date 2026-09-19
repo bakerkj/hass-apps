@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.3...container_hooks-v0.1.4) (2026-09-19)
+
+
+### Bug Fixes
+
+* **container_hooks:** move addon to system startup phase ([#530](https://github.com/bakerkj/hass-apps/issues/530)) ([ab37a45](https://github.com/bakerkj/hass-apps/commit/ab37a45c164bb399b3559f4663e92b8113f234a1))
+
 ## [0.1.3](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.2...container_hooks-v0.1.3) (2026-09-06)
 
 
