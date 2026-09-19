@@ -207,9 +207,20 @@ def mosquitto(tmp_path: Path) -> Iterator[tuple[str, int]]:
     else:
         pytest.skip("need a mosquitto binary or docker to run the broker")
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
-        _wait_port("127.0.0.1", port, 20)
+        try:
+            _wait_port("127.0.0.1", port, 20)
+        except RuntimeError as exc:
+            proc.terminate()
+            try:
+                _, err = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, err = proc.communicate()
+            raise RuntimeError(
+                f"{exc}; mosquitto stderr: {err.decode(errors='replace').strip() or '<empty>'}"
+            ) from None
         yield ("127.0.0.1", port)
     finally:
         proc.terminate()

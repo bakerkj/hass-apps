@@ -13,7 +13,7 @@ permissions:
 jobs:
   discover:
     name: Discover test scope
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       addons: ${{ steps.scope.outputs.addons }}
       mode: ${{ steps.scope.outputs.mode }}
@@ -93,7 +93,7 @@ jobs:
 
   unit-tests:
     name: Unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,12 +124,12 @@ jobs:
     name: Frigate Compressor e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'frigate_compressor')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
-      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
-      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
+      FFMPEG_APT_VERSION: "7:8.0.1-3ubuntu2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -185,12 +185,12 @@ jobs:
     name: FFmpeg Snapshotter e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'ffmpeg_snapshotter')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
-      # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
       # Renovate tracks this via the `deb` datasource (see renovate.json).
-      FFMPEG_APT_VERSION: "7:6.1.1-3ubuntu5"
+      FFMPEG_APT_VERSION: "7:8.0.1-3ubuntu2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -236,7 +236,7 @@ jobs:
     if:
       contains(fromJson(needs.discover.outputs.addons),
       'dashboard_entity_proxy')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -263,7 +263,7 @@ jobs:
           cache-to: type=gha,scope=dep-int,mode=max
       # Selenium auto-downloads the matching driver; we just need
       # ``google-chrome`` on PATH (already preinstalled on
-      # ubuntu-24.04 runner images).
+      # ubuntu-26.04 runner images).
       - name: Verify Chrome present
         run: google-chrome --version
       # ``-s`` disables pytest's default capture so the ``_phase()``
@@ -294,7 +294,7 @@ jobs:
     name: Container Hooks e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'container_hooks')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -343,8 +343,15 @@ jobs:
     name: Signal K Bridge e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
+    env:
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      MOSQUITTO_APT_VERSION: "2.0.22-5build1"
+      # See the Install Mosquitto broker step: pytest's tmp roots must live
+      # under a path the mosquitto AppArmor profile permits reading.
+      PYTEST_ADDOPTS: "--basetemp=/etc/mosquitto/conf.d/pytest-tmp"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -355,11 +362,16 @@ jobs:
       # so it publishes with its shipped apk paho. Install Mosquitto from apt for
       # the broker (Docker Hub is rate-limited from Actions; the other e2e jobs
       # pull ghcr images for the same reason). Fail loud if the binary is missing.
+      # Point pytest's basetemp at a subdirectory of /etc/mosquitto — Ubuntu
+      # 26.04's shipped AppArmor profile for `mosquitto` denies reads under
+      # `/tmp` but permits `/etc/mosquitto/**`, so the fixture-written
+      # mosquitto.conf lands somewhere the confined broker can read it.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
-          sudo apt-get install -y mosquitto
+          sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
+          sudo chown "$USER" /etc/mosquitto/conf.d
       # Build the add-on image with a GHA buildkit cache so the base-image pull
       # and apk-install layer are reused across runs. The base version comes from
       # the Dockerfile's BUILD_FROM default (renovate tracks it there) — no
@@ -399,7 +411,7 @@ jobs:
     name: Signal K e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -446,7 +458,7 @@ jobs:
     name: Dashboard Web Proxy e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'dashboard_web_proxy')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -492,8 +504,15 @@ jobs:
     name: HALPI2 Power e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'halpi2_power')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
+    env:
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      MOSQUITTO_APT_VERSION: "2.0.22-5build1"
+      # See the Install Mosquitto broker step: pytest's tmp roots must live
+      # under a path the mosquitto AppArmor profile permits reading.
+      PYTEST_ADDOPTS: "--basetemp=/etc/mosquitto/conf.d/pytest-tmp"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -503,11 +522,16 @@ jobs:
       # The publisher connects to a real broker over the wire. Docker Hub is
       # rate-limited from Actions, so install Mosquitto from apt (as the other
       # MQTT e2e jobs do). Fail loud if the binary is missing.
+      # Point pytest's basetemp at a subdirectory of /etc/mosquitto — Ubuntu
+      # 26.04's shipped AppArmor profile for `mosquitto` denies reads under
+      # `/tmp` but permits `/etc/mosquitto/**`, so the fixture-written
+      # mosquitto.conf lands somewhere the confined broker can read it.
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
-          sudo apt-get install -y mosquitto
+          sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
+          sudo chown "$USER" /etc/mosquitto/conf.d
       # Build the real add-on image (cross-compiles halpid) with a GHA buildkit
       # cache so the Rust build is reused across runs. The base version comes
       # from the Dockerfile's BUILD_FROM default (renovate tracks it there).
@@ -548,7 +572,7 @@ jobs:
     name: Direwolf IGate e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'direwolf_igate')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -619,7 +643,7 @@ jobs:
         direwolf-igate-e2e,
       ]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Check test job results
@@ -641,7 +665,7 @@ jobs:
 
   coverage:
     name: Combined coverage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     needs:
       [
