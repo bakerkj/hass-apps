@@ -13,7 +13,7 @@ permissions:
 jobs:
   discover:
     name: Discover test scope
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       addons: ${{ steps.scope.outputs.addons }}
       mode: ${{ steps.scope.outputs.mode }}
@@ -93,7 +93,7 @@ jobs:
 
   unit-tests:
     name: Unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,7 +124,7 @@ jobs:
     name: Frigate Compressor e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'frigate_compressor')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
@@ -185,7 +185,7 @@ jobs:
     name: FFmpeg Snapshotter e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'ffmpeg_snapshotter')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # Exact apt version pin (Ubuntu 24.04 noble/universe base pocket).
@@ -236,7 +236,7 @@ jobs:
     if:
       contains(fromJson(needs.discover.outputs.addons),
       'dashboard_entity_proxy')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -294,7 +294,7 @@ jobs:
     name: Container Hooks e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'container_hooks')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -343,7 +343,7 @@ jobs:
     name: Signal K Bridge e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -399,7 +399,7 @@ jobs:
     name: Signal K e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -446,7 +446,7 @@ jobs:
     name: Dashboard Web Proxy e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'dashboard_web_proxy')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -492,7 +492,7 @@ jobs:
     name: HALPI2 Power e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'halpi2_power')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -548,7 +548,7 @@ jobs:
     name: Direwolf IGate e2e
     needs: discover
     if: contains(fromJson(needs.discover.outputs.addons), 'direwolf_igate')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -619,7 +619,7 @@ jobs:
         direwolf-igate-e2e,
       ]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Check test job results
@@ -641,7 +641,7 @@ jobs:
 
   coverage:
     name: Combined coverage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     needs:
       [
