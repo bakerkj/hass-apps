@@ -345,6 +345,10 @@ jobs:
     if: contains(fromJson(needs.discover.outputs.addons), 'signalk_bridge')
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    env:
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      MOSQUITTO_APT_VERSION: "2.0.22-5build1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -361,7 +365,7 @@ jobs:
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
-          sudo apt-get install -y mosquitto
+          sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
           sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
       # Build the add-on image with a GHA buildkit cache so the base-image pull
@@ -498,6 +502,10 @@ jobs:
     if: contains(fromJson(needs.discover.outputs.addons), 'halpi2_power')
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    env:
+      # Exact apt version pin (Ubuntu 26.04 resolute/universe base pocket).
+      # Renovate tracks this via the `deb` datasource (see renovate.json).
+      MOSQUITTO_APT_VERSION: "2.0.22-5build1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -513,7 +521,7 @@ jobs:
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
-          sudo apt-get install -y mosquitto
+          sudo apt-get install -y mosquitto="$MOSQUITTO_APT_VERSION"
           command -v mosquitto || test -x /usr/sbin/mosquitto
           sudo aa-disable /etc/apparmor.d/usr.sbin.mosquitto || true
       # Build the real add-on image (cross-compiles halpid) with a GHA buildkit

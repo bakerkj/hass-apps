@@ -72,6 +72,15 @@
     },
     {
       "customType": "regex",
+      "description": "Pinned mosquitto apt package in the integration-test workflow (halpi2_power and signalk_bridge e2e brokers)",
+      "managerFilePatterns": ["/.github/workflows/tests\\.ya?ml$/"],
+      "matchStrings": ["MOSQUITTO_APT_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "mosquitto",
+      "datasourceTemplate": "deb",
+      "versioningTemplate": "deb"
+    },
+    {
+      "customType": "regex",
       "description": "APK packages pinned in Alpine 3.24 Dockerfiles. Version lookups go through a custom datasource that reads Alpine's own APKINDEX for the pinned suites and returns a Renovate-shaped release list. Replaces the previous Repology datasource (see #6).",
       "managerFilePatterns": ["/Dockerfile$/"],
       "matchStrings": [
