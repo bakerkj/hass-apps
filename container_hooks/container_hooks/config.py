@@ -177,12 +177,22 @@ def load_options(path: str) -> Options:
         )
         sentinel_raw = entry.get("success_sentinel")
         sentinel: str | None
-        if sentinel_raw is None or (
-            isinstance(sentinel_raw, str) and not sentinel_raw.strip()
-        ):
+        if sentinel_raw is None:
             sentinel = None
+        elif isinstance(sentinel_raw, str):
+            sentinel = sentinel_raw.strip() or None
         else:
-            sentinel = str(sentinel_raw).strip()
+            # Hand-edited options.json with a non-string sentinel
+            # (list, int, bool). Supervisor's schema layer should
+            # catch this, but defensive parsing prevents a bogus
+            # path from ever reaching docker exec.
+            _log.warning(
+                "options: container_overrides[%r].success_sentinel is not a "
+                "string (%r); ignoring",
+                name,
+                sentinel_raw,
+            )
+            sentinel = None
         overrides.append(
             ContainerOverride(
                 container=name,

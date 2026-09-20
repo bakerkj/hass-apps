@@ -107,6 +107,52 @@ def test_load_options_parses_container_overrides(tmp_path: Path) -> None:
     )
 
 
+def test_load_options_success_sentinel_string(tmp_path: Path) -> None:
+    path = _write_options(
+        tmp_path,
+        container_overrides=[
+            {"container": "app_x", "success_sentinel": " /dev/shm/marker "},
+        ],
+    )
+    o = load_options(str(path))
+    assert o.container_overrides == (
+        ContainerOverride(
+            container="app_x",
+            debounce_seconds=None,
+            success_sentinel="/dev/shm/marker",
+        ),
+    )
+
+
+def test_load_options_success_sentinel_empty_string_is_none(tmp_path: Path) -> None:
+    path = _write_options(
+        tmp_path,
+        container_overrides=[
+            {"container": "app_x", "success_sentinel": "   "},
+        ],
+    )
+    o = load_options(str(path))
+    assert o.container_overrides[0].success_sentinel is None
+
+
+def test_load_options_success_sentinel_non_string_ignored(
+    tmp_path: Path, caplog
+) -> None:
+    path = _write_options(
+        tmp_path,
+        container_overrides=[
+            {"container": "app_x", "success_sentinel": 42},
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        o = load_options(str(path))
+    assert o.container_overrides[0].success_sentinel is None
+    assert any(
+        "success_sentinel" in rec.message and "not a string" in rec.message
+        for rec in caplog.records
+    )
+
+
 def test_load_options_uppercases_log_level(tmp_path: Path) -> None:
     path = _write_options(tmp_path, log_level="debug")
     assert load_options(str(path)).log_level == "DEBUG"

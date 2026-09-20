@@ -15,8 +15,10 @@ from container_hooks.mqtt import (
     discovery_topic,
     keys_for,
     publish_discovery,
+    publish_slug_availability,
     publish_state,
     sentinel_discovery_payload,
+    slug_availability_topic,
     slugify,
     state_topic,
     summary_attributes,
@@ -74,6 +76,14 @@ class TestTopics:
     def test_availability(self):
         assert availability_topic("container_hooks") == "container_hooks/availability"
 
+    def test_slug_availability(self):
+        # Per-slug availability sits under the slug — HA marks the
+        # entity ``unavailable`` when this flips to ``offline``.
+        assert (
+            slug_availability_topic("container_hooks", "esphome")
+            == "container_hooks/esphome/availability"
+        )
+
     def test_state(self):
         assert (
             state_topic("container_hooks", "esphome", "applied")
@@ -113,7 +123,13 @@ class TestDiscoveryPayloads:
         )
         assert p["unique_id"] == "container-hooks_esphome_applied"
         assert p["state_topic"] == "container_hooks/esphome/applied/state"
-        assert p["availability_topic"] == "container_hooks/availability"
+        # Multi-availability list: addon-scoped + per-slug, gated on ALL.
+        avail_topics = {a["topic"] for a in p["availability"]}
+        assert avail_topics == {
+            "container_hooks/availability",
+            "container_hooks/esphome/availability",
+        }
+        assert p["availability_mode"] == "all"
         assert p["payload_on"] == "ON"
         assert p["payload_off"] == "OFF"
         assert p["expire_after"] == 120
@@ -202,7 +218,7 @@ class TestPublish:
         ]
 
     @pytest.mark.asyncio
-    async def test_publish_state_retains_both_state_and_attributes(self):
+    async def test_publish_state_is_non_retained(self):
         client = _RecordingClient()
         await publish_state(
             client,
@@ -216,7 +232,9 @@ class TestPublish:
             "container_hooks/esphome/applied/state",
             "container_hooks/esphome/applied/attributes",
         ]
-        assert all(c["retain"] for c in client.calls)
+        # Non-retained matches sibling MQTT addons; expire_after + per-slug
+        # availability drive freshness instead of retained-state ghosting.
+        assert all(not c["retain"] for c in client.calls)
 
     @pytest.mark.asyncio
     async def test_publish_state_without_attributes_skips_second_publish(self):
@@ -254,6 +272,54 @@ class TestPublish:
         assert all(c["payload"] == "" for c in client.calls)
         # base_topic omitted -> only discovery configs cleared, no state topics.
         assert all("/state" not in c["topic"] for c in client.calls)
+
+    @pytest.mark.asyncio
+    async def test_publish_slug_availability_retained(self):
+        client = _RecordingClient()
+        await publish_slug_availability(
+            client, base_topic="container_hooks", slug="esphome", online=True
+        )
+        assert client.calls == [
+            {
+                "topic": "container_hooks/esphome/availability",
+                "payload": "online",
+                "qos": 1,
+                "retain": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_publish_slug_availability_offline(self):
+        client = _RecordingClient()
+        await publish_slug_availability(
+            client, base_topic="container_hooks", slug="esphome", online=False
+        )
+        assert client.calls[0]["payload"] == "offline"
+        assert client.calls[0]["retain"] is True
+
+    @pytest.mark.asyncio
+    async def test_clear_container_entities_with_base_topic_also_clears_slug_availability(
+        self,
+    ):
+        client = _RecordingClient()
+        await clear_container_entities(
+            client,
+            discovery_prefix="homeassistant",
+            device_id="container-hooks",
+            slug="esphome",
+            keys=("applied",),
+            base_topic="container_hooks",
+        )
+        topics = [c["topic"] for c in client.calls]
+        assert "container_hooks/esphome/availability" in topics
+        # And it's cleared with an empty retained.
+        avail_clear = next(
+            c
+            for c in client.calls
+            if c["topic"] == "container_hooks/esphome/availability"
+        )
+        assert avail_clear["payload"] == ""
+        assert avail_clear["retain"] is True
 
     @pytest.mark.asyncio
     async def test_clear_container_entities_with_base_topic_also_clears_state(self):

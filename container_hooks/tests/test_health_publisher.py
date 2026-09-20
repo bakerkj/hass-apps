@@ -272,6 +272,55 @@ class TestPollOnce:
         assert summary["payload"] == "payload_no_effect"
 
     @pytest.mark.asyncio
+    async def test_publishes_online_slug_availability_when_check_returns(
+        self, publisher: HealthPublisher
+    ):
+        publisher._rebuild_slug_map()
+        client = _RecordingClient()
+        with (
+            patch(
+                "container_hooks.health_publisher.check_applied",
+                new=AsyncMock(return_value=HealthResult(True, "fresh")),
+            ),
+            patch(
+                "container_hooks.health_publisher.check_sentinel",
+                new=AsyncMock(return_value=HealthResult(True, "sentinel")),
+            ),
+        ):
+            await publisher._poll_once(client)  # type: ignore[arg-type]
+        online_calls = [
+            c
+            for c in client.calls
+            if c["topic"].endswith("/availability") and c["payload"] == "online"
+        ]
+        assert len(online_calls) == 2  # one per slug
+
+    @pytest.mark.asyncio
+    async def test_publishes_offline_slug_availability_when_target_unreachable(
+        self, publisher: HealthPublisher
+    ):
+        publisher._rebuild_slug_map()
+        client = _RecordingClient()
+        # Both checks return None → target unreachable → per-slug availability flips offline.
+        with (
+            patch(
+                "container_hooks.health_publisher.check_applied",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "container_hooks.health_publisher.check_sentinel",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            await publisher._poll_once(client)  # type: ignore[arg-type]
+        offline_avail = [
+            c
+            for c in client.calls
+            if c["topic"].endswith("/availability") and c["payload"] == "offline"
+        ]
+        assert offline_avail
+
+    @pytest.mark.asyncio
     async def test_stop_bails_between_containers(self, publisher: HealthPublisher):
         publisher._rebuild_slug_map()
         # Set stop BEFORE any publish; _poll_once should return immediately

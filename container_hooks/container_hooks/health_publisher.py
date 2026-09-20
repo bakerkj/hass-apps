@@ -44,6 +44,7 @@ from .mqtt import (
     clear_container_entities,
     keys_for,
     publish_discovery,
+    publish_slug_availability,
     publish_state,
     sentinel_discovery_payload,
     slugify,
@@ -144,6 +145,11 @@ class HealthPublisher:
         # each session so a recipe removed while the addon was stopped
         # gets cleared, not left as a ghost sensor in HA forever.
         self._retained_slugs_at_start: set[str] = set()
+        # Signalled by the birth-message listener to wake the poll
+        # sleep so HA rediscovery doesn't wait a full
+        # ``health_interval_seconds`` after a HA restart. Cleared each
+        # time the poll acts on it.
+        self._republish_needed: asyncio.Event = asyncio.Event()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -184,9 +190,14 @@ class HealthPublisher:
                         self.options.mqtt_host,
                         self.options.mqtt_port,
                     )
+                    await mq.publish(avail, "online", qos=1, retain=True)
+                    # Watchdog clock reset AFTER a successful publish
+                    # — an aiomqtt.Client that TCP+MQTT-connects but
+                    # reliably fails publishes would otherwise reset
+                    # every retry and never trip the outage-timeout
+                    # exit.
                     backoff = _BACKOFF_MIN
                     first_disconnect_at = None
-                    await mq.publish(avail, "online", qos=1, retain=True)
                     # Retained-scan MUST happen before we subscribe to
                     # the birth topic — during the scan we consume from
                     # ``mq.messages`` with a timeout, and a birth
@@ -360,12 +371,12 @@ class HealthPublisher:
         The prev-slug set unions the in-memory ``_slugs`` (dropped
         during this session) with ``_retained_slugs_at_start`` (dropped
         while the addon was stopped, discovered by the retained-scan
-        phase). ``_retained_slugs_at_start`` is consumed on the first
-        call in each session so a subsequent HA-birth republish uses
-        only the in-memory diff.
+        phase). ``_retained_slugs_at_start`` is consumed AFTER the
+        diff-and-clear completes, so a raise from ``_rebuild_slug_map``
+        (transient disk error) leaves it intact for the retry rather
+        than silently ghosting cross-restart deletions forever.
         """
         prev_slugs = set(self._slugs) | self._retained_slugs_at_start
-        self._retained_slugs_at_start = set()
         prev_container_for_slug = dict(self._container_for_slug)
         self._rebuild_slug_map()
         for dropped_slug in prev_slugs - set(self._slugs):
@@ -387,6 +398,9 @@ class HealthPublisher:
                 dropped_slug,
                 prev_container or "?",
             )
+        # Consume the retained set only after the clears have all
+        # completed; a raise mid-loop leaves it intact for the retry.
+        self._retained_slugs_at_start = set()
         expire = max(60, self.options.health_interval_seconds * 4)
         for slug, friendly in self._slugs.items():
             container = self._container_for_slug[slug]
@@ -462,17 +476,38 @@ class HealthPublisher:
     # -- poll --------------------------------------------------------------
 
     async def _poll_forever(self, mq: aiomqtt.Client) -> None:
-        """Publish health state for every tracked container on an interval."""
+        """Publish health state for every tracked container on an interval.
+
+        The inter-poll sleep races ``stop.wait()`` against
+        ``_republish_needed.wait()`` so a HA birth arriving mid-sleep
+        wakes the poll immediately instead of the entity going stale
+        for up to ``health_interval_seconds``.
+        """
         interval = max(5, self.options.health_interval_seconds)
         while not self.stop.is_set():
             if not self._discovered:
                 await self._publish_discovery(mq)
+                self._republish_needed.clear()
             await self._poll_once(mq)
+            stop_task = asyncio.create_task(self.stop.wait())
+            republish_task = asyncio.create_task(self._republish_needed.wait())
             try:
-                await asyncio.wait_for(self.stop.wait(), timeout=interval)
-                return
-            except TimeoutError:
-                pass
+                done, _pending = await asyncio.wait(
+                    {stop_task, republish_task},
+                    timeout=interval,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_task in done:
+                    return
+                # Either the republish event fired (HA birth) or the
+                # timeout hit; both fall through to the next iteration.
+            finally:
+                for t in (stop_task, republish_task):
+                    if not t.done():
+                        t.cancel()
+                for t in (stop_task, republish_task):
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await t
 
     async def _poll_once(self, mq: aiomqtt.Client) -> None:
         for slug, _friendly in list(self._slugs.items()):
@@ -488,6 +523,20 @@ class HealthPublisher:
             sentinel_res: HealthResult | None = None
             if sentinel is not None:
                 sentinel_res = await check_sentinel(self.docker, container, sentinel)
+            # Per-slug availability: if BOTH checks returned None the
+            # target is unreachable via the docker API (typically
+            # deleted). Flip the per-slug availability topic to
+            # ``offline`` so HA surfaces the sensor as ``unavailable``
+            # instead of holding at ``unknown``. Any check returning a
+            # real HealthResult keeps the target ``online`` — even a
+            # False result is "reachable, and here's the diagnosis."
+            target_reachable = applied is not None or sentinel_res is not None
+            await publish_slug_availability(
+                mq,
+                base_topic=self.options.mqtt_base_topic,
+                slug=slug,
+                online=target_reachable,
+            )
             await self._publish_snapshot(
                 mq,
                 slug,
@@ -546,7 +595,13 @@ class HealthPublisher:
     # -- listen -----------------------------------------------------------
 
     async def _listen_forever(self, mq: aiomqtt.Client) -> None:
-        """Watch HA birth messages so a restarted HA picks the entities up."""
+        """Watch HA birth messages so a restarted HA picks the entities up.
+
+        Sets ``_republish_needed`` in addition to flipping
+        ``_discovered`` — the poll loop's sleep races on the event so
+        the rediscovery happens on the next event-loop tick rather
+        than waiting up to a full ``health_interval_seconds``.
+        """
         birth_topic = f"{self.options.mqtt_discovery_prefix}/status"
         async for msg in mq.messages:
             if str(msg.topic) != birth_topic:
@@ -557,6 +612,7 @@ class HealthPublisher:
                     "HA birth message received; scheduling discovery republish"
                 )
                 self._discovered = False
+                self._republish_needed.set()
 
 
 async def run_publisher(

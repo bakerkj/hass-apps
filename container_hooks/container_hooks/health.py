@@ -23,6 +23,7 @@ Both checks return ``None`` when the underlying data isn't available
 can decide whether to report ``unknown``, hold state, or skip publish.
 """
 
+import asyncio
 import datetime
 import re
 import shlex
@@ -42,12 +43,29 @@ _LAST_LINE_SCAN_BYTES = 1_048_576
 _STARTED_AT_KEYS = ("StartedAt", "started_at")
 # Wall-clock slack absorbing the gap between when container_hooks logs
 # a successful put_archive and when the Docker daemon stamps the
-# container's StartedAt. For a large ``pre-start-files/`` tree or a
-# busy daemon these can differ by several seconds — being too strict
-# reports real applies as stale. 30s is well beyond any observed real
-# gap without so large that a genuinely-stale hook slips through.
-_APPLIED_SLACK_SECONDS = 30.0
+# container's StartedAt. Two cases feed this:
+#
+# 1. Supervisor-shaped ``docker create → docker start`` fires the events
+#    within milliseconds; put_archive completes shortly after create,
+#    and StartedAt lands within a couple of seconds.
+# 2. Third-party ``docker create X; sleep N; docker start X`` splits
+#    create and start by an arbitrary interval — the pre-start hook
+#    legitimately fired for the current lifecycle but the log entry
+#    predates StartedAt by that whole interval.
+#
+# 300s is generous enough to cover case 2 for almost anything realistic
+# (nobody delay-starts a container more than 5 minutes after creating
+# it) without so large that a genuinely-stale hook from a prior
+# lifecycle sneaks through. Documented in the README under health.
+_APPLIED_SLACK_SECONDS = 300.0
 _SENTINEL_SLACK_SECONDS = 30.0
+# Ceiling on a single docker-API call (containers.get / show / exec).
+# Without this, a hung daemon or a target stuck in D-state can freeze
+# the whole health poll cycle for aiodocker's ~60s default, blocking
+# every subsequent container's poll. 10s is well past the realistic
+# path but bounded enough that a stuck container turns into
+# ``unknown`` in the next poll instead of stalling the addon.
+_DOCKER_CHECK_TIMEOUT = 10.0
 
 
 @dataclass(frozen=True)
@@ -69,17 +87,23 @@ async def container_started_at(
 ) -> float | None:
     """Return the target container's ``StartedAt`` as a unix timestamp.
 
-    ``None`` if the container is missing, not started yet, or the daemon
-    returns a value we cannot parse. The caller treats ``None`` as
-    "cannot evaluate this check right now" and leaves the sensor at its
+    ``None`` if the container is missing, not started yet, the daemon
+    returns a value we cannot parse, or the call takes longer than
+    ``_DOCKER_CHECK_TIMEOUT``. The caller treats ``None`` as "cannot
+    evaluate this check right now" and leaves the sensor at its
     previous value rather than churning it.
     """
     try:
-        c = await docker.containers.get(container)
-        info = await c.show()
+        info = await asyncio.wait_for(
+            _fetch_show(docker, container), timeout=_DOCKER_CHECK_TIMEOUT
+        )
+    except TimeoutError:
+        return None
     except aiodocker.exceptions.DockerError:
         return None
     except Exception:  # noqa: BLE001 -- daemon returned nonsense; bail
+        return None
+    if info is None:
         return None
     state = info.get("State") or {}
     for key in _STARTED_AT_KEYS:
@@ -89,6 +113,13 @@ async def container_started_at(
             if parsed is not None:
                 return parsed
     return None
+
+
+async def _fetch_show(
+    docker: aiodocker.Docker, container: str
+) -> dict[str, Any] | None:
+    c = await docker.containers.get(container)
+    return await c.show()
 
 
 def _parse_docker_ts(raw: str) -> float | None:
@@ -141,10 +172,21 @@ def last_put_archive_ts(log_path: Path) -> float | None:
         return None
     except OSError:
         return None
+    seeked = False
     with log_path.open("rb") as f:
         if st.st_size > _LAST_LINE_SCAN_BYTES:
             f.seek(st.st_size - _LAST_LINE_SCAN_BYTES)
+            seeked = True
         data = f.read()
+    # If we seeked, the first line in the buffer is likely a partial
+    # (we landed mid-line). Drop everything up to the first newline
+    # so a straddling put_archive line doesn't get regex-rejected as
+    # a fragment; the newest complete put_archive entry within the
+    # scan window is what we're after.
+    if seeked:
+        nl = data.find(b"\n")
+        if nl >= 0:
+            data = data[nl + 1 :]
     text = data.decode("utf-8", errors="replace")
     # Iterate lines in reverse so the first match is the newest.
     best: float | None = None
@@ -193,7 +235,27 @@ async def _exec_output(
     container: str,
     cmd: list[str],
 ) -> tuple[int, str]:
-    """Run one short command in the target and return (rc, stdout+stderr)."""
+    """Run one short command in the target and return (rc, stdout+stderr).
+
+    Bounded by ``_DOCKER_CHECK_TIMEOUT`` so a stuck target can't stall
+    the whole health poll cycle. Timeout returns rc=127 with a "timeout"
+    diagnostic, treated by callers as "check unavailable" (health
+    sensor goes ``unknown``).
+    """
+    try:
+        return await asyncio.wait_for(
+            _exec_output_impl(docker, container, cmd),
+            timeout=_DOCKER_CHECK_TIMEOUT,
+        )
+    except TimeoutError:
+        return 127, f"exec timeout after {_DOCKER_CHECK_TIMEOUT:.0f}s"
+
+
+async def _exec_output_impl(
+    docker: aiodocker.Docker,
+    container: str,
+    cmd: list[str],
+) -> tuple[int, str]:
     try:
         c = await docker.containers.get(container)
         # aiodocker's exec API: create + start with a fresh Stream.

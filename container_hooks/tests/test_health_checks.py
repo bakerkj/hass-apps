@@ -81,6 +81,36 @@ class TestLastPutArchiveTs:
         ).timestamp()
         assert ts == pytest.approx(expected)
 
+    def test_large_log_seeks_and_drops_partial_leading_line(self, tmp_path: Path):
+        # Write a >1 MiB log with a bunch of chatty pre-start-script noise
+        # followed by exactly one put_archive line at the tail. The seek
+        # window lands inside the noise, so the first line in the buffer
+        # is a partial ("straddling") one that must be discarded before
+        # regex matching.
+        p = tmp_path / "pre-start.log"
+        # 2 MiB of noise, then the put_archive line.
+        noise_line = "[2026-09-01T00:00:00.000-04:00] some random noise line\n"
+        with p.open("w") as f:
+            while p.stat().st_size < 2 * 1024 * 1024:
+                f.write(noise_line)
+            f.write(
+                "[2026-09-19T18:48:23.038-04:00] put_archive ok: 2 files, 3901 bytes\n"
+            )
+        ts = last_put_archive_ts(p)
+        assert ts is not None
+        # Confirm we got the newest entry, not a spurious hit.
+        expected = datetime.datetime(
+            2026,
+            9,
+            19,
+            18,
+            48,
+            23,
+            38000,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=-4)),
+        ).timestamp()
+        assert ts == pytest.approx(expected)
+
     def test_ignores_non_matching_lines(self, tmp_path: Path):
         p = tmp_path / "pre-start.log"
         p.write_text("[2026-09-19T18:48:23.038-04:00] running pre-start hook for foo\n")

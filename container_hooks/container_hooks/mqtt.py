@@ -68,7 +68,26 @@ def slugify(name: str) -> str:
 
 
 def availability_topic(base_topic: str) -> str:
+    """Addon-scoped availability. Set to ``offline`` via LWT.
+
+    Reported alongside per-slug availability as a list; HA treats an
+    entity as available iff every listed availability topic reports
+    ``online``. So this addon-level topic gates every entity: if the
+    addon crashes, LWT flips this to ``offline`` and every sensor
+    goes ``unavailable`` regardless of retained per-slug state.
+    """
     return f"{base_topic}/availability"
+
+
+def slug_availability_topic(base_topic: str, slug: str) -> str:
+    """Per-target availability topic.
+
+    Flipped to ``offline`` when the target container is unreachable
+    (both health checks return None). The pair-with-addon-availability
+    scheme means a target deleted from docker shows as ``unavailable``
+    in HA instead of sitting on a stale last-known state indefinitely.
+    """
+    return f"{base_topic}/{slug}/availability"
 
 
 def state_topic(base_topic: str, slug: str, key: str) -> str:
@@ -97,6 +116,34 @@ def _device_block(device_id: str, slug: str, friendly: str) -> dict[str, Any]:
     }
 
 
+def _availability_block(base_topic: str, slug: str) -> dict[str, Any]:
+    """HA MQTT-Discovery ``availability`` list + ``availability_mode: all``.
+
+    Every entity is gated on BOTH: the addon-scoped availability (LWT
+    flips to offline if the addon crashes) AND the per-slug
+    availability (flipped to offline when the target container is
+    unreachable). ``all`` means HA marks the entity ``unavailable``
+    when either is offline. A target deleted from docker therefore
+    surfaces as ``unavailable`` in HA rather than sitting on a stale
+    last-known state.
+    """
+    return {
+        "availability": [
+            {
+                "topic": availability_topic(base_topic),
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+            {
+                "topic": slug_availability_topic(base_topic, slug),
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+        ],
+        "availability_mode": "all",
+    }
+
+
 def applied_discovery_payload(
     *,
     device_id: str,
@@ -113,9 +160,7 @@ def applied_discovery_payload(
         "default_entity_id": f"binary_sensor.container_hooks_{slug}_applied",
         "state_topic": state_topic(base_topic, slug, "applied"),
         "json_attributes_topic": attributes_topic(base_topic, slug, "applied"),
-        "availability_topic": availability_topic(base_topic),
-        "payload_available": "online",
-        "payload_not_available": "offline",
+        **_availability_block(base_topic, slug),
         "payload_on": "ON",
         "payload_off": "OFF",
         "device_class": "running",
@@ -141,9 +186,7 @@ def sentinel_discovery_payload(
         "default_entity_id": f"binary_sensor.container_hooks_{slug}_sentinel",
         "state_topic": state_topic(base_topic, slug, "sentinel"),
         "json_attributes_topic": attributes_topic(base_topic, slug, "sentinel"),
-        "availability_topic": availability_topic(base_topic),
-        "payload_available": "online",
-        "payload_not_available": "offline",
+        **_availability_block(base_topic, slug),
         "payload_on": "ON",
         "payload_off": "OFF",
         "device_class": "running",
@@ -169,9 +212,7 @@ def summary_discovery_payload(
         "default_entity_id": f"sensor.container_hooks_{slug}_health",
         "state_topic": state_topic(base_topic, slug, "summary"),
         "json_attributes_topic": attributes_topic(base_topic, slug, "summary"),
-        "availability_topic": availability_topic(base_topic),
-        "payload_available": "online",
-        "payload_not_available": "offline",
+        **_availability_block(base_topic, slug),
         "expire_after": max(60, int(expire_after_s)),
         "icon": "mdi:heart-pulse",
         "device": _device_block(device_id, slug, friendly),
@@ -211,6 +252,24 @@ async def clear_discovery(
     await client.publish(topic, payload="", qos=1, retain=True)
 
 
+async def publish_slug_availability(
+    client: _Publisher, *, base_topic: str, slug: str, online: bool
+) -> None:
+    """Retained ``online``/``offline`` on the per-slug availability topic.
+
+    Retained so a HA subscriber joining mid-cycle sees the last known
+    availability. The addon-scoped availability topic (via LWT) is the
+    only line of defense against the addon crashing; per-slug topics
+    only reflect target-container reachability.
+    """
+    await client.publish(
+        slug_availability_topic(base_topic, slug),
+        "online" if online else "offline",
+        qos=1,
+        retain=True,
+    )
+
+
 async def publish_state(
     client: _Publisher,
     *,
@@ -220,19 +279,24 @@ async def publish_state(
     state: str,
     attributes: dict[str, Any] | None,
 ) -> None:
-    """Publish one entity's state (retained) and, optionally, its attributes.
+    """Publish one entity's state (non-retained) and, optionally, its attributes.
 
-    Retained is deliberate: HA's expire_after covers staleness, and a
-    retained state means a subscriber joining after publish still sees
-    the last known health without waiting for the next poll.
+    Non-retained matches the sibling MQTT addons (``turbostat_mqtt``,
+    ``intel_gpu_top_mqtt``): the discovery config's ``expire_after``
+    drives freshness — HA marks the entity ``unavailable`` if no fresh
+    state arrives within the window — and per-slug availability marks
+    it unavailable when the target container is gone. A subscriber
+    joining mid-cycle waits at most one ``health_interval_seconds`` for
+    the next poll rather than seeing a stale ghost value from a prior
+    lifecycle.
     """
-    await client.publish(state_topic(base_topic, slug, key), state, qos=1, retain=True)
+    await client.publish(state_topic(base_topic, slug, key), state, qos=1, retain=False)
     if attributes is not None:
         await client.publish(
             attributes_topic(base_topic, slug, key),
             json.dumps(attributes, sort_keys=True),
             qos=1,
-            retain=True,
+            retain=False,
         )
 
 
@@ -321,9 +385,21 @@ async def clear_container_entities(
             key=key,
         )
         if base_topic is not None:
+            # Empty-retained on state + attributes clears any leftover
+            # retained payload from previous versions (which retained
+            # state) or from other clients. New publishes are
+            # non-retained, so on a fresh install these are no-ops on
+            # the broker — kept for upgrade correctness.
             await client.publish(
                 state_topic(base_topic, slug, key), "", qos=1, retain=True
             )
             await client.publish(
                 attributes_topic(base_topic, slug, key), "", qos=1, retain=True
             )
+    # Also drop the per-slug availability topic so a removed target
+    # doesn't leave a ghost ``online``/``offline`` retained value that
+    # would confuse a later re-added container of the same name.
+    if base_topic is not None:
+        await client.publish(
+            slug_availability_topic(base_topic, slug), "", qos=1, retain=True
+        )
