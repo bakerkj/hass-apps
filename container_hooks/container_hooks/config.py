@@ -34,7 +34,6 @@ _KNOWN_OPTION_KEYS = frozenset(
         "mqtt_base_topic",
         "client_id",
         "health_interval_seconds",
-        "sentinel_settle_seconds",
         "mqtt_disconnect_timeout_seconds",
     }
 )
@@ -76,7 +75,6 @@ class Options:
     mqtt_base_topic: str = "container_hooks"
     client_id: str = "container-hooks"
     health_interval_seconds: int = 30
-    sentinel_settle_seconds: int = 15
     mqtt_disconnect_timeout_seconds: int = 300
 
 
@@ -215,9 +213,6 @@ def load_options(path: str) -> Options:
             _coerce_int(
                 raw.get("health_interval_seconds", 30), 30, "health_interval_seconds"
             ),
-        ),
-        sentinel_settle_seconds=_coerce_int(
-            raw.get("sentinel_settle_seconds", 15), 15, "sentinel_settle_seconds"
         ),
         mqtt_disconnect_timeout_seconds=max(
             5,

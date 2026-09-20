@@ -187,7 +187,6 @@ esac
 | `mqtt_base_topic`                 | `container_hooks`                | Base topic for availability and per-container state topics.                                                                                                                                                                    |
 | `client_id`                       | `container-hooks`                | MQTT client id and discovery device-id prefix. Must be unique on the broker.                                                                                                                                                   |
 | `health_interval_seconds`         | `30`                             | How often to re-evaluate + publish per-container health (5-600 s).                                                                                                                                                             |
-| `sentinel_settle_seconds`         | `15`                             | Grace after our own `put_archive` before the target's Python is expected to have touched the sentinel file. Only affects the initial post-dispatch publish; the periodic poll ignores this.                                    |
 | `mqtt_disconnect_timeout_seconds` | `300`                            | Max broker downtime before container_hooks exits so Supervisor restarts it.                                                                                                                                                    |
 
 ### Per-Container Overrides

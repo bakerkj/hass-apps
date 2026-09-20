@@ -242,7 +242,17 @@ def summary_state(applied: str, sentinel: str | None) -> str:
     Values here are used both as the ``sensor.container_hooks_<x>_health``
     state and as a stable key an automation can match against. Keep the
     set small; expand only when a new failure mode has its own fix.
+
+    ``applied``/``sentinel`` come from ``render_binary_state`` and can be
+    ``"unknown"`` when the underlying check returned ``None`` (target
+    container transiently unreachable, StartedAt unparsable, etc.). An
+    unknown must NOT be collapsed to a concrete failure verdict — a
+    transient docker-API hiccup would otherwise fire ``not_applied`` on
+    every container without a sentinel and drown the automation in
+    false alarms.
     """
+    if applied == "unknown" or sentinel == "unknown":
+        return "unknown"
     if sentinel is None:
         return "ok" if applied == "ON" else "not_applied"
     if applied == "ON" and sentinel == "ON":

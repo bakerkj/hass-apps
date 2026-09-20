@@ -31,7 +31,6 @@
     "mqtt_base_topic": "container_hooks",
     "client_id": "container-hooks",
     "health_interval_seconds": 30,
-    "sentinel_settle_seconds": 15,
     "mqtt_disconnect_timeout_seconds": 300
   },
   "schema": {
@@ -57,7 +56,6 @@
     "mqtt_base_topic": "str",
     "client_id": "str",
     "health_interval_seconds": "int(5,600)",
-    "sentinel_settle_seconds": "int(0,120)",
     "mqtt_disconnect_timeout_seconds": "int(5,600)"
   }
 }

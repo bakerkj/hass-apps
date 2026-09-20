@@ -276,8 +276,18 @@ class TestSummaryState:
     def test_sentinel_stuck_on_without_applied(self):
         assert summary_state("OFF", "ON") == "stale_or_orphan"
 
-    def test_unknown_pass_through(self):
+    def test_unknown_applied_without_sentinel(self):
+        # No sentinel + unknown applied MUST NOT collapse to not_applied —
+        # that would false-alarm on any transient Docker-API hiccup.
+        assert summary_state("unknown", None) == "unknown"
+
+    def test_unknown_applied_with_sentinel(self):
         assert summary_state("unknown", "ON") == "unknown"
+        assert summary_state("unknown", "OFF") == "unknown"
+
+    def test_unknown_sentinel(self):
+        assert summary_state("ON", "unknown") == "unknown"
+        assert summary_state("OFF", "unknown") == "unknown"
 
 
 class TestSummaryAttributes:
