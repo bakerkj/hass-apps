@@ -26,9 +26,19 @@ _KNOWN_OPTION_KEYS = frozenset(
         "debounce_seconds",
         "skip_containers",
         "container_overrides",
+        "mqtt_host",
+        "mqtt_port",
+        "mqtt_username",
+        "mqtt_password",
+        "mqtt_discovery_prefix",
+        "mqtt_base_topic",
+        "client_id",
+        "health_interval_seconds",
+        "sentinel_settle_seconds",
+        "mqtt_disconnect_timeout_seconds",
     }
 )
-_KNOWN_OVERRIDE_KEYS = frozenset({"container", "debounce_seconds"})
+_KNOWN_OVERRIDE_KEYS = frozenset({"container", "debounce_seconds", "success_sentinel"})
 
 
 @dataclass(frozen=True)
@@ -36,12 +46,15 @@ class ContainerOverride:
     """Per-container overrides for global options.
 
     Only ``container`` is required. ``debounce_seconds`` (when set)
-    replaces the global default just for matching events. More override
-    fields can be added here without breaking existing config.
+    replaces the global default just for matching events.
+    ``success_sentinel`` (when set) is a path inside the target
+    container whose presence (tmpfs) or fresh mtime (overlay) proves
+    the pre-start payload actually ran on this container lifecycle.
     """
 
     container: str
     debounce_seconds: int | None = None
+    success_sentinel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +65,19 @@ class Options:
     debounce_seconds: int = 2
     skip_containers: tuple[str, ...] = field(default_factory=tuple)
     container_overrides: tuple[ContainerOverride, ...] = field(default_factory=tuple)
+    # MQTT is opt-in: unset ``mqtt_host`` disables the health publisher entirely
+    # so an upgrade of an existing install does not open broker connections or
+    # publish sensors nobody asked for.
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_discovery_prefix: str = "homeassistant"
+    mqtt_base_topic: str = "container_hooks"
+    client_id: str = "container-hooks"
+    health_interval_seconds: int = 30
+    sentinel_settle_seconds: int = 15
+    mqtt_disconnect_timeout_seconds: int = 300
 
 
 # --- per-container path helpers ---------------------------------------------
@@ -151,7 +177,21 @@ def load_options(path: str) -> Options:
             if debounce_raw is not None
             else None
         )
-        overrides.append(ContainerOverride(container=name, debounce_seconds=debounce))
+        sentinel_raw = entry.get("success_sentinel")
+        sentinel: str | None
+        if sentinel_raw is None or (
+            isinstance(sentinel_raw, str) and not sentinel_raw.strip()
+        ):
+            sentinel = None
+        else:
+            sentinel = str(sentinel_raw).strip()
+        overrides.append(
+            ContainerOverride(
+                container=name,
+                debounce_seconds=debounce,
+                success_sentinel=sentinel,
+            )
+        )
     return Options(
         log_level=str(raw.get("log_level", "INFO")).upper(),
         base_dir=Path(str(raw.get("base_dir", "/homeassistant/container_hooks"))),
@@ -161,4 +201,30 @@ def load_options(path: str) -> Options:
         ),
         skip_containers=skip,
         container_overrides=tuple(overrides),
+        mqtt_host=str(raw.get("mqtt_host") or "").strip(),
+        mqtt_port=_coerce_int(raw.get("mqtt_port", 1883), 1883, "mqtt_port"),
+        mqtt_username=str(raw.get("mqtt_username") or ""),
+        mqtt_password=str(raw.get("mqtt_password") or ""),
+        mqtt_discovery_prefix=str(
+            raw.get("mqtt_discovery_prefix") or "homeassistant"
+        ).strip(),
+        mqtt_base_topic=str(raw.get("mqtt_base_topic") or "container_hooks").strip(),
+        client_id=str(raw.get("client_id") or "container-hooks").strip(),
+        health_interval_seconds=max(
+            5,
+            _coerce_int(
+                raw.get("health_interval_seconds", 30), 30, "health_interval_seconds"
+            ),
+        ),
+        sentinel_settle_seconds=_coerce_int(
+            raw.get("sentinel_settle_seconds", 15), 15, "sentinel_settle_seconds"
+        ),
+        mqtt_disconnect_timeout_seconds=max(
+            5,
+            _coerce_int(
+                raw.get("mqtt_disconnect_timeout_seconds", 300),
+                300,
+                "mqtt_disconnect_timeout_seconds",
+            ),
+        ),
     )

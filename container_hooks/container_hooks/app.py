@@ -60,6 +60,7 @@ from .docker import (
     run_pre_start_hook,
     self_container_name,
 )
+from .health_publisher import run_publisher
 
 
 def _lex_sorted_files(dir_path: Path, suffix: str) -> list[Path]:
@@ -472,6 +473,23 @@ async def main_async() -> int:
         task.add_done_callback(in_flight.discard)
         return task
 
+    # MQTT health publisher is opt-in via ``mqtt_host``; when empty this
+    # branch is skipped. Tracked separately from ``in_flight`` because
+    # ``spawn()`` gates every task through ``dispatch_sem`` -- a
+    # long-lived task would permanently hold one of the 10 dispatch
+    # slots and starve concurrent hook fan-out. The publisher runs its
+    # own reconnect + poll loop, cancels on ``stop``, and is awaited
+    # explicitly during shutdown so its offline availability publish
+    # still reaches the broker.
+    health_task: asyncio.Task | None = None
+    if options.mqtt_host:
+        log.info(
+            "Starting MQTT health publisher against %s:%d",
+            options.mqtt_host,
+            options.mqtt_port,
+        )
+        health_task = asyncio.create_task(run_publisher(options, docker, stop))
+
     events_iter: Any = None
     stop_task: asyncio.Task | None = None
     next_task: asyncio.Task | None = None
@@ -639,6 +657,19 @@ async def main_async() -> int:
                     cancelled,
                     len(results),
                 )
+        # The health publisher lives outside ``in_flight`` (see spawn
+        # above) but still needs to finish before ``docker.close()`` so
+        # its final offline availability publish reaches the broker.
+        # ``run_publisher`` respects ``stop`` and returns cleanly; a
+        # short timeout guards against a wedged broker session.
+        if health_task is not None and not health_task.done():
+            try:
+                await asyncio.wait_for(health_task, timeout=5.0)
+            except TimeoutError:
+                log.warning("health publisher didn't exit within 5s; cancelling")
+                health_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await health_task
         await docker.close()
 
     log.info("Container Hooks exiting")
