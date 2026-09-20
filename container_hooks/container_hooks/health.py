@@ -42,10 +42,17 @@ class HealthResult:
 async def _fetch_show(
     docker: aiodocker.Docker, container: str
 ) -> dict[str, Any] | None:
-    """Bounded ``docker inspect``; ``None`` on missing/timeout/daemon error."""
-    try:
+    """Bounded ``docker inspect``; ``None`` on missing/timeout/daemon error.
+
+    ``wait_for`` covers both ``containers.get`` and ``.show`` — both round-trip
+    to the daemon, and a hung daemon can stall either half."""
+
+    async def _run() -> dict[str, Any]:
         c = await docker.containers.get(container)
-        return await asyncio.wait_for(c.show(), timeout=_DOCKER_CHECK_TIMEOUT)
+        return await c.show()
+
+    try:
+        return await asyncio.wait_for(_run(), timeout=_DOCKER_CHECK_TIMEOUT)
     except TimeoutError:
         return None
     except aiodocker.exceptions.DockerError:

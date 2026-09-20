@@ -3,6 +3,7 @@
 
 """Unit tests for the pure health-check helpers."""
 
+import asyncio
 import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -17,6 +18,8 @@ from container_hooks.health import (
     last_put_archive_ts,
     render_binary_state,
 )
+
+from container_hooks import health
 
 # --- _parse_docker_ts ------------------------------------------------------
 
@@ -351,4 +354,20 @@ class TestStartedAt:
     @pytest.mark.asyncio
     async def test_never_started_returns_none(self):
         docker = _mock_docker_started_at("0001-01-01T00:00:00Z")
+        assert await container_started_at(docker, "x") is None
+
+    @pytest.mark.asyncio
+    async def test_hung_containers_get_times_out(self, monkeypatch: pytest.MonkeyPatch):
+        # containers.get() itself round-trips to the daemon; wait_for must
+        # cover it, not just c.show().
+        monkeypatch.setattr(health, "_DOCKER_CHECK_TIMEOUT", 0.05)
+
+        async def _hang(_name: str):
+            # Keep this short so a regression fails in ~0.5s, not 10s.
+            await asyncio.sleep(0.5)
+            raise AssertionError("should have been cancelled")
+
+        docker = MagicMock()
+        docker.containers = MagicMock()
+        docker.containers.get = _hang
         assert await container_started_at(docker, "x") is None
