@@ -150,6 +150,16 @@ class HealthPublisher:
         # ``health_interval_seconds`` after a HA restart. Cleared each
         # time the poll acts on it.
         self._republish_needed: asyncio.Event = asyncio.Event()
+        # One-shot guard for the retained-scan phase. The scan catches
+        # recipes removed while the addon *process* was stopped — a
+        # concern that's only ever true on the very first connection
+        # after process start. Within a single process ``self._slugs``
+        # persists across reconnects, so the in-session diff in
+        # ``_publish_discovery`` already covers any removal. Skipping
+        # the scan on mid-session reconnects (network blip, broker
+        # restart) avoids a redundant ~5s stall + broker-wide
+        # discovery-config subscribe on every hiccup.
+        self._did_retained_scan: bool = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -205,7 +215,16 @@ class HealthPublisher:
                     # We subscribe to birth only after the scan
                     # completes, so the listener sees every future
                     # birth cleanly.
-                    self._retained_slugs_at_start = await self._scan_retained_slugs(mq)
+                    # One-shot per process: only run on the first
+                    # successful connect. A reconnect within the same
+                    # process gets its removal-tracking from the
+                    # in-memory ``self._slugs`` diff in
+                    # ``_publish_discovery`` instead.
+                    if not self._did_retained_scan:
+                        self._retained_slugs_at_start = await self._scan_retained_slugs(
+                            mq
+                        )
+                        self._did_retained_scan = True
                     await mq.subscribe(
                         f"{self.options.mqtt_discovery_prefix}/status", qos=1
                     )
@@ -297,9 +316,14 @@ class HealthPublisher:
         can't see cross-restart deletions on its own.
         """
         device_prefix = f"{self.options.client_id}_"
-        discovery_filter = (
-            f"{self.options.mqtt_discovery_prefix}/+/{device_prefix}+/+/config"
-        )
+        # MQTT-4.7.1.3-1: the single-level ``+`` wildcard must occupy
+        # an entire topic level. ``{device_prefix}+`` mixes a literal
+        # prefix with a wildcard, which mosquitto rejects at SUBACK
+        # without raising a client-side error — the scan silently
+        # returns empty. Broaden the filter to fully-wildcarded and do
+        # the device_prefix match in code on each message below (same
+        # pattern as ``container_info_mqtt/app.py``).
+        discovery_filter = f"{self.options.mqtt_discovery_prefix}/+/+/+/config"
         await mq.subscribe(discovery_filter, qos=0)
         collected: set[str] = set()
         try:

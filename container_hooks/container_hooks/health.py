@@ -41,23 +41,15 @@ import aiodocker
 # reversing over the whole file.
 _LAST_LINE_SCAN_BYTES = 1_048_576
 _STARTED_AT_KEYS = ("StartedAt", "started_at")
-# Wall-clock slack absorbing the gap between when container_hooks logs
-# a successful put_archive and when the Docker daemon stamps the
-# container's StartedAt. Two cases feed this:
-#
-# 1. Supervisor-shaped ``docker create → docker start`` fires the events
-#    within milliseconds; put_archive completes shortly after create,
-#    and StartedAt lands within a couple of seconds.
-# 2. Third-party ``docker create X; sleep N; docker start X`` splits
-#    create and start by an arbitrary interval — the pre-start hook
-#    legitimately fired for the current lifecycle but the log entry
-#    predates StartedAt by that whole interval.
-#
-# 300s is generous enough to cover case 2 for almost anything realistic
-# (nobody delay-starts a container more than 5 minutes after creating
-# it) without so large that a genuinely-stale hook from a prior
-# lifecycle sneaks through. Documented in the README under health.
-_APPLIED_SLACK_SECONDS = 300.0
+# Wall-clock slack for the ``applied`` comparison against Container.Created.
+# put_archive fires on the docker ``create`` event; the log entry it writes
+# is bounded by ``create`` handling latency (aiodocker exec plus tar upload,
+# typically ~10-100ms) and by whatever clock skew exists between the addon
+# and the Docker daemon. 30s is well past realistic values without so large
+# that a stale entry from a prior container lifecycle sneaks through — since
+# recreating a container gives it a fresh Created timestamp, a stale entry
+# is >>30s in the past.
+_APPLIED_SLACK_SECONDS = 30.0
 _SENTINEL_SLACK_SECONDS = 30.0
 # Ceiling on a single docker-API call (containers.get / show / exec).
 # Without this, a hung daemon or a target stuck in D-state can freeze
@@ -82,6 +74,28 @@ class HealthResult:
     reason: str
 
 
+async def _fetch_show(
+    docker: aiodocker.Docker, container: str
+) -> dict[str, Any] | None:
+    c = await docker.containers.get(container)
+    return await c.show()
+
+
+async def _fetch_show_bounded(
+    docker: aiodocker.Docker, container: str
+) -> dict[str, Any] | None:
+    try:
+        return await asyncio.wait_for(
+            _fetch_show(docker, container), timeout=_DOCKER_CHECK_TIMEOUT
+        )
+    except TimeoutError:
+        return None
+    except aiodocker.exceptions.DockerError:
+        return None
+    except Exception:  # noqa: BLE001 -- daemon returned nonsense; bail
+        return None
+
+
 async def container_started_at(
     docker: aiodocker.Docker, container: str
 ) -> float | None:
@@ -92,17 +106,14 @@ async def container_started_at(
     ``_DOCKER_CHECK_TIMEOUT``. The caller treats ``None`` as "cannot
     evaluate this check right now" and leaves the sensor at its
     previous value rather than churning it.
+
+    Used only by the sentinel check — the sentinel is touched during
+    the target's own startup so ``StartedAt`` is the right anchor.
+    ``check_applied`` compares against ``container_created_at`` instead
+    because ``put_archive`` fires on the ``create`` event, not on
+    ``start``.
     """
-    try:
-        info = await asyncio.wait_for(
-            _fetch_show(docker, container), timeout=_DOCKER_CHECK_TIMEOUT
-        )
-    except TimeoutError:
-        return None
-    except aiodocker.exceptions.DockerError:
-        return None
-    except Exception:  # noqa: BLE001 -- daemon returned nonsense; bail
-        return None
+    info = await _fetch_show_bounded(docker, container)
     if info is None:
         return None
     state = info.get("State") or {}
@@ -115,11 +126,30 @@ async def container_started_at(
     return None
 
 
-async def _fetch_show(
+async def container_created_at(
     docker: aiodocker.Docker, container: str
-) -> dict[str, Any] | None:
-    c = await docker.containers.get(container)
-    return await c.show()
+) -> float | None:
+    """Return the target container's top-level ``Created`` as a unix timestamp.
+
+    ``put_archive`` fires on the docker ``create`` event, so the log
+    entry it writes is co-located in time with ``Created`` — usually
+    within tens of milliseconds. Comparing against ``Created`` (instead
+    of ``StartedAt``) makes ``check_applied`` immune to the
+    delayed-start case (``docker create; sleep N; docker start``) AND
+    to a container that restarted within the applied-slack window of
+    its prior lifecycle. The tradeoff is that a ``docker restart`` of
+    the same container-instance keeps its Created value (correct — the
+    put_archive from that create is still in the writable layer, no
+    new hook needed) so the sensor stays green through in-place
+    restarts.
+    """
+    info = await _fetch_show_bounded(docker, container)
+    if info is None:
+        return None
+    raw = info.get("Created")
+    if not raw:
+        return None
+    return _parse_docker_ts(raw)
 
 
 def _parse_docker_ts(raw: str) -> float | None:
@@ -206,28 +236,37 @@ async def check_applied(
     container: str,
     pre_start_log_path: Path,
 ) -> HealthResult | None:
-    """Compare ``pre-start.log``'s newest entry to the container's start.
+    """Compare ``pre-start.log``'s newest entry to the container's Created.
+
+    Anchors the "for this lifecycle" freshness on ``Created`` rather
+    than ``StartedAt``: put_archive fires on the docker ``create``
+    event, and ``Created`` is stable across ``docker restart`` of the
+    same instance but fresh on ``rm+create``. That correctly handles
+    both the boot-race case (missed create → log predates Created →
+    off) and the third-party delayed-start case (create; sleep; start
+    → log matches Created regardless of start delay → on).
 
     * ``value=True`` when the log's newest entry is at or after
-      ``StartedAt``: container_hooks ran the hook for this lifecycle.
-    * ``value=False`` when the newest entry predates ``StartedAt`` (the
-      lifecycle Supervisor scheduled did not run through us) or there
-      is no entry at all but the recipe directory exists on disk.
-    * ``None`` when the container is missing or its start time is
+      ``Created`` (minus a small slack for clock drift +
+      put_archive-write latency).
+    * ``value=False`` when the newest entry predates ``Created``
+      (stale entry from a prior lifecycle), or there is no entry at
+      all but the recipe directory exists on disk.
+    * ``None`` when the container is missing or its Created is
       unreadable — caller holds state.
     """
-    started = await container_started_at(docker, container)
-    if started is None:
+    created = await container_created_at(docker, container)
+    if created is None:
         return None
     last = last_put_archive_ts(pre_start_log_path)
     if last is None:
         return HealthResult(False, "no successful put_archive in pre-start.log")
-    if last + _APPLIED_SLACK_SECONDS < started:
+    if last + _APPLIED_SLACK_SECONDS < created:
         return HealthResult(
             False,
-            f"last put_archive {started - last:.1f}s before container start",
+            f"last put_archive {created - last:.1f}s before container create",
         )
-    return HealthResult(True, "put_archive newer than StartedAt")
+    return HealthResult(True, "put_archive newer than Created")
 
 
 async def _exec_output(

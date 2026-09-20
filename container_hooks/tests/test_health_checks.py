@@ -133,6 +133,19 @@ def _mock_docker_started_at(iso: str | None) -> MagicMock:
     return docker
 
 
+def _mock_docker_created_at(iso: str | None) -> MagicMock:
+    """Build a MagicMock docker client whose containers.get().show() returns
+    a docker-inspect payload with ``Created`` at the top level."""
+    show = AsyncMock(return_value={"Created": iso, "State": {}})
+    container = MagicMock()
+    container.show = show
+    get = AsyncMock(return_value=container)
+    docker = MagicMock()
+    docker.containers = MagicMock()
+    docker.containers.get = get
+    return docker
+
+
 class TestCheckApplied:
     @pytest.mark.asyncio
     async def test_missing_container_returns_none(self, tmp_path: Path):
@@ -146,8 +159,8 @@ class TestCheckApplied:
 
     @pytest.mark.asyncio
     async def test_never_ran_returns_off(self, tmp_path: Path):
-        # StartedAt is real, log doesn't exist -> off with reason.
-        docker = _mock_docker_started_at("2026-09-19T22:47:38.14Z")
+        # Created is real, log doesn't exist -> off with reason.
+        docker = _mock_docker_created_at("2026-09-19T22:47:38.14Z")
         p = tmp_path / "pre-start.log"
         result = await check_applied(docker, "x", p)
         assert result is not None
@@ -156,20 +169,26 @@ class TestCheckApplied:
 
     @pytest.mark.asyncio
     async def test_stale_log_returns_off(self, tmp_path: Path):
-        docker = _mock_docker_started_at("2026-09-19T22:47:38.14Z")
+        # Log entry from a week before the container was Created — a stale
+        # entry from a prior lifecycle. Since ``check_applied`` now anchors
+        # on Created (not StartedAt), a container that got recreated has
+        # a fresh Created and any prior-lifecycle log entry is >> slack in
+        # the past.
+        docker = _mock_docker_created_at("2026-09-19T22:47:38.14Z")
         p = tmp_path / "pre-start.log"
-        # Log entry from a week before StartedAt: off.
         p.write_text(
             "[2026-09-12T10:00:00.000-04:00] put_archive ok: 2 files, 100 bytes\n"
         )
         result = await check_applied(docker, "x", p)
         assert result is not None
         assert result.value is False
-        assert "before container start" in result.reason
+        assert "before container create" in result.reason
 
     @pytest.mark.asyncio
     async def test_fresh_log_returns_on(self, tmp_path: Path):
-        docker = _mock_docker_started_at("2026-09-19T22:47:38.14Z")
+        # put_archive fires on the create event; the log entry timestamp
+        # is essentially co-located with Created (usually within tens of ms).
+        docker = _mock_docker_created_at("2026-09-19T22:47:38.14Z")
         p = tmp_path / "pre-start.log"
         p.write_text(
             "[2026-09-19T22:47:39.500-00:00] put_archive ok: 2 files, 3901 bytes\n"
@@ -177,6 +196,36 @@ class TestCheckApplied:
         result = await check_applied(docker, "x", p)
         assert result is not None
         assert result.value is True
+
+    @pytest.mark.asyncio
+    async def test_delayed_start_still_on(self, tmp_path: Path):
+        # Third-party flow: docker create; sleep N; docker start. Log entry
+        # is at Created; StartedAt is minutes later. Because we anchor on
+        # Created, no widened slack is needed to keep applied=True here.
+        docker = _mock_docker_created_at("2026-09-19T22:47:38.14Z")
+        p = tmp_path / "pre-start.log"
+        p.write_text(
+            "[2026-09-19T22:47:38.20-00:00] put_archive ok: 2 files, 3901 bytes\n"
+        )
+        result = await check_applied(docker, "x", p)
+        assert result is not None
+        assert result.value is True
+
+    @pytest.mark.asyncio
+    async def test_missed_recreate_within_5min_returns_off(self, tmp_path: Path):
+        # Instance-1 succeeded at T. Instance-2 was recreated at T+60s
+        # (well within the OLD 300s widened slack) but the create event
+        # was missed. Since Created for instance-2 is fresh, the T-stamped
+        # log entry (from instance-1) is > slack in the past relative to
+        # instance-2's Created → correctly OFF.
+        docker = _mock_docker_created_at("2026-09-19T22:48:38.14Z")  # T+60s
+        p = tmp_path / "pre-start.log"
+        p.write_text(
+            "[2026-09-19T22:47:38.20-00:00] put_archive ok: 2 files, 3901 bytes\n"
+        )
+        result = await check_applied(docker, "x", p)
+        assert result is not None
+        assert result.value is False
 
 
 # --- check_sentinel --------------------------------------------------------

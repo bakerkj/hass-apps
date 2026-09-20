@@ -337,7 +337,63 @@ class TestPollOnce:
         assert client.calls == []
 
 
+def _mqtt_topic_filter_valid(topic_filter: str) -> bool:
+    """Validate an MQTT topic filter against MQTT-4.7.1.2 / 4.7.1.3.
+
+    ``+`` must occupy an entire level (no ``foo+`` or ``+bar``). ``#``
+    must be the last level. Empty levels not allowed except a single
+    empty first level (``/foo``). Kept tight so a regression to the
+    old ``{client_id}_+`` shape (which mosquitto silently refuses) is
+    caught locally.
+    """
+    if not topic_filter:
+        return False
+    levels = topic_filter.split("/")
+    for i, level in enumerate(levels):
+        if level == "":
+            # Allow only leading empty (``/foo``), reject internal empty.
+            if i != 0:
+                return False
+            continue
+        if "+" in level and level != "+":
+            return False
+        if "#" in level and (level != "#" or i != len(levels) - 1):
+            return False
+    return True
+
+
 class TestScanRetainedSlugs:
+    @pytest.mark.asyncio
+    async def test_subscribe_filter_is_valid_mqtt_wildcard(
+        self, publisher: HealthPublisher, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Regression: the retained-scan filter used to be
+        ``{prefix}/+/{client_id}_+/+/config``, which mixes a literal
+        prefix with a `+` in the same topic level. Mosquitto rejects
+        that at SUBACK without raising a client-side exception, so the
+        scan silently returned an empty set against every real broker.
+        This test would have caught it."""
+        monkeypatch.setattr(
+            "container_hooks.health_publisher._RETAINED_SCAN_TIMEOUT", 0.05
+        )
+        client = _FakeMqttClient([])
+        await publisher._scan_retained_slugs(client)  # type: ignore[arg-type]
+        assert client.subscribed, "scan should have subscribed to a filter"
+        for topic in client.subscribed:
+            assert _mqtt_topic_filter_valid(topic), (
+                f"MQTT topic filter {topic!r} violates spec "
+                "(a `+` wildcard must occupy an entire level)"
+            )
+
+    def test_one_shot_flag_defaults_false(self, publisher: HealthPublisher):
+        # Regression: retained-scan is a cross-process-restart concern.
+        # A fresh HealthPublisher must NOT have run it yet; the outer
+        # reconnect loop gates on ``self._did_retained_scan``, and a
+        # mid-session MQTT reconnect within the same process should
+        # skip the scan entirely (5s stall + broker-wide discovery
+        # subscribe otherwise happens on every network blip).
+        assert publisher._did_retained_scan is False
+
     @pytest.mark.asyncio
     async def test_extracts_slug_from_discovery_topics(
         self, publisher: HealthPublisher, monkeypatch: pytest.MonkeyPatch
