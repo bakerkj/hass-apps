@@ -42,14 +42,7 @@ _KNOWN_OVERRIDE_KEYS = frozenset({"container", "debounce_seconds", "success_sent
 
 @dataclass(frozen=True)
 class ContainerOverride:
-    """Per-container overrides for global options.
-
-    Only ``container`` is required. ``debounce_seconds`` (when set)
-    replaces the global default just for matching events.
-    ``success_sentinel`` (when set) is a path inside the target
-    container whose presence (tmpfs) or fresh mtime (overlay) proves
-    the pre-start payload actually ran on this container lifecycle.
-    """
+    """Per-container overrides. Only ``container`` is required."""
 
     container: str
     debounce_seconds: int | None = None
@@ -64,10 +57,7 @@ class Options:
     debounce_seconds: int = 2
     skip_containers: tuple[str, ...] = field(default_factory=tuple)
     container_overrides: tuple[ContainerOverride, ...] = field(default_factory=tuple)
-    # MQTT is opt-in: unset ``mqtt_host`` disables the health publisher entirely
-    # so an upgrade of an existing install does not open broker connections or
-    # publish sensors nobody asked for.
-    mqtt_host: str = ""
+    mqtt_host: str = ""  # empty disables the health publisher
     mqtt_port: int = 1883
     mqtt_username: str = ""
     mqtt_password: str = ""

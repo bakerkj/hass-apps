@@ -662,18 +662,23 @@ async def main_async() -> int:
         # its final offline availability publish reaches the broker.
         # ``run_publisher`` respects ``stop`` and returns cleanly; a
         # short timeout guards against a wedged broker session.
-        if health_task is not None and not health_task.done():
-            try:
-                await asyncio.wait_for(health_task, timeout=5.0)
-            except TimeoutError:
-                log.warning("health publisher didn't exit within 5s; cancelling")
-                health_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await health_task
+        publisher_rc = 0
+        if health_task is not None:
+            if not health_task.done():
+                try:
+                    publisher_rc = await asyncio.wait_for(health_task, timeout=5.0)
+                except TimeoutError:
+                    log.warning("health publisher didn't exit within 5s; cancelling")
+                    health_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await health_task
+            else:
+                with contextlib.suppress(Exception):
+                    publisher_rc = health_task.result()
         await docker.close()
 
-    log.info("Container Hooks exiting")
-    return 0
+    log.info("Container Hooks exiting (rc=%d)", publisher_rc)
+    return publisher_rc
 
 
 def main() -> int:

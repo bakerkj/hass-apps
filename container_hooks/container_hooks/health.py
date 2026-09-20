@@ -1,26 +1,15 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""Health checks: did our pre-start work actually land on this instance?
+"""Two per-lifecycle health checks. Both return ``None`` on unreadable state.
 
-Two independent signals per target container, evaluated by
-``check_applied`` and ``check_sentinel``:
-
-* ``applied`` — the addon's own record. True iff ``pre-start.log`` for
-  the container has a successful ``put_archive`` entry whose timestamp
-  is at or after the container's current ``StartedAt``. Answers
-  "did container_hooks fire the pre-start hook for this lifecycle."
-
-* ``sentinel`` — an in-target sanity check. Requires ``success_sentinel``
-  in the container_overrides entry. The sentinel path is either on
-  tmpfs (freshness by existence: tmpfs is remounted at every start) or
-  on the writable overlay (freshness by mtime >= StartedAt). The tmpfs
-  case is auto-detected via ``findmnt``. Answers "did the payload we
-  staged actually execute in the target on this lifecycle."
-
-Both checks return ``None`` when the underlying data isn't available
-(container gone, log unreadable, docker exec failing) so the caller
-can decide whether to report ``unknown``, hold state, or skip publish.
+* ``check_applied`` — did container_hooks fire the pre-start hook for the
+  current container lifecycle? Compares pre-start.log's newest put_archive
+  entry to Container.Created (put_archive fires on the create event).
+* ``check_sentinel`` — did the staged payload actually run inside the target
+  on the current lifecycle? Checks a path the payload is expected to touch;
+  tmpfs paths are freshness-by-existence, overlay paths compare mtime to
+  StartedAt (sentinel is touched during target startup).
 """
 
 import asyncio
@@ -33,42 +22,18 @@ from typing import Any
 
 import aiodocker
 
-# Tail window for scanning ``pre-start.log`` for the newest successful
-# put_archive line. Sized to absorb an unusually chatty single lifecycle
-# — apply_patch and pre-start ``*.sh`` scripts also append here, and a
-# 64 KiB window can miss the put_archive line if a script writes a lot
-# of output. 1 MiB is a generous ceiling before we consider it worth
-# reversing over the whole file.
+# Tail window when scanning ``pre-start.log`` for the newest put_archive line.
 _LAST_LINE_SCAN_BYTES = 1_048_576
-_STARTED_AT_KEYS = ("StartedAt", "started_at")
-# Wall-clock slack for the ``applied`` comparison against Container.Created.
-# put_archive fires on the docker ``create`` event; the log entry it writes
-# is bounded by ``create`` handling latency (aiodocker exec plus tar upload,
-# typically ~10-100ms) and by whatever clock skew exists between the addon
-# and the Docker daemon. 30s is well past realistic values without so large
-# that a stale entry from a prior container lifecycle sneaks through — since
-# recreating a container gives it a fresh Created timestamp, a stale entry
-# is >>30s in the past.
+# Clock-skew slack when comparing put_archive log entry to Container.Created.
 _APPLIED_SLACK_SECONDS = 30.0
 _SENTINEL_SLACK_SECONDS = 30.0
-# Ceiling on a single docker-API call (containers.get / show / exec).
-# Without this, a hung daemon or a target stuck in D-state can freeze
-# the whole health poll cycle for aiodocker's ~60s default, blocking
-# every subsequent container's poll. 10s is well past the realistic
-# path but bounded enough that a stuck container turns into
-# ``unknown`` in the next poll instead of stalling the addon.
+# Ceiling on a single docker-API call so a hung daemon can't stall polling.
 _DOCKER_CHECK_TIMEOUT = 10.0
 
 
 @dataclass(frozen=True)
 class HealthResult:
-    """Outcome of one health check.
-
-    ``value`` is the boolean state (True = healthy). ``reason`` is a
-    short human-readable diagnosis suitable for a log line or an MQTT
-    JSON attribute — populated for both outcomes so a red sensor
-    always carries a "why".
-    """
+    """One check's outcome: bool + short "why" for the sensor's ``reason`` attr."""
 
     value: bool
     reason: str
@@ -77,17 +42,10 @@ class HealthResult:
 async def _fetch_show(
     docker: aiodocker.Docker, container: str
 ) -> dict[str, Any] | None:
-    c = await docker.containers.get(container)
-    return await c.show()
-
-
-async def _fetch_show_bounded(
-    docker: aiodocker.Docker, container: str
-) -> dict[str, Any] | None:
+    """Bounded ``docker inspect``; ``None`` on missing/timeout/daemon error."""
     try:
-        return await asyncio.wait_for(
-            _fetch_show(docker, container), timeout=_DOCKER_CHECK_TIMEOUT
-        )
+        c = await docker.containers.get(container)
+        return await asyncio.wait_for(c.show(), timeout=_DOCKER_CHECK_TIMEOUT)
     except TimeoutError:
         return None
     except aiodocker.exceptions.DockerError:
@@ -99,51 +57,22 @@ async def _fetch_show_bounded(
 async def container_started_at(
     docker: aiodocker.Docker, container: str
 ) -> float | None:
-    """Return the target container's ``StartedAt`` as a unix timestamp.
-
-    ``None`` if the container is missing, not started yet, the daemon
-    returns a value we cannot parse, or the call takes longer than
-    ``_DOCKER_CHECK_TIMEOUT``. The caller treats ``None`` as "cannot
-    evaluate this check right now" and leaves the sensor at its
-    previous value rather than churning it.
-
-    Used only by the sentinel check — the sentinel is touched during
-    the target's own startup so ``StartedAt`` is the right anchor.
-    ``check_applied`` compares against ``container_created_at`` instead
-    because ``put_archive`` fires on the ``create`` event, not on
-    ``start``.
-    """
-    info = await _fetch_show_bounded(docker, container)
+    """``StartedAt`` (used by the sentinel check, which anchors on start time)."""
+    info = await _fetch_show(docker, container)
     if info is None:
         return None
-    state = info.get("State") or {}
-    for key in _STARTED_AT_KEYS:
-        raw = state.get(key)
-        if raw:
-            parsed = _parse_docker_ts(raw)
-            if parsed is not None:
-                return parsed
-    return None
+    raw = (info.get("State") or {}).get("StartedAt")
+    if not raw:
+        return None
+    return _parse_docker_ts(raw)
 
 
 async def container_created_at(
     docker: aiodocker.Docker, container: str
 ) -> float | None:
-    """Return the target container's top-level ``Created`` as a unix timestamp.
-
-    ``put_archive`` fires on the docker ``create`` event, so the log
-    entry it writes is co-located in time with ``Created`` — usually
-    within tens of milliseconds. Comparing against ``Created`` (instead
-    of ``StartedAt``) makes ``check_applied`` immune to the
-    delayed-start case (``docker create; sleep N; docker start``) AND
-    to a container that restarted within the applied-slack window of
-    its prior lifecycle. The tradeoff is that a ``docker restart`` of
-    the same container-instance keeps its Created value (correct — the
-    put_archive from that create is still in the writable layer, no
-    new hook needed) so the sensor stays green through in-place
-    restarts.
-    """
-    info = await _fetch_show_bounded(docker, container)
+    """``Created`` (used by check_applied — put_archive fires on the create event,
+    so this anchors freshness on container-instance identity, not start time)."""
+    info = await _fetch_show(docker, container)
     if info is None:
         return None
     raw = info.get("Created")
@@ -153,33 +82,30 @@ async def container_created_at(
 
 
 def _parse_docker_ts(raw: str) -> float | None:
-    """Parse an ISO-8601 Docker timestamp to a unix float.
-
-    Docker emits ``2026-09-19T22:47:38.140882144Z`` (nanosecond precision,
-    trailing ``Z``). ``datetime.fromisoformat`` on 3.11+ accepts ``Z``
-    but chokes on the sub-microsecond digits; trim to microseconds first.
-    An unparsable value (e.g. the zero-time ``0001-01-01T00:00:00Z``
-    Docker uses for a never-started container) returns ``None``.
-    """
+    """Parse Docker's ISO-8601 timestamp (nanosecond precision, trailing Z) to a
+    unix float. Returns None for unparsable input, the zero-time, or any
+    timezone-naive value (comparisons against timezone-aware Created/StartedAt
+    would silently become wall-clock-local otherwise)."""
     s = raw.strip()
     if not s or s.startswith("0001-"):
         return None
-    # Truncate to microseconds: Docker uses nanoseconds; Python parses microseconds.
+    # Truncate ns precision to μs since fromisoformat only handles μs.
     if "." in s:
         head, _, tail = s.partition(".")
-        # tail like "140882144Z" or "140882144+00:00"
         m = re.match(r"(\d+)(.*)$", tail)
         if m:
             frac, rest = m.group(1), m.group(2)
             frac = (frac + "000000")[:6]
             s = f"{head}.{frac}{rest}"
-    # Normalize Z -> +00:00 for fromisoformat compatibility on older stdlibs.
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:
-        return datetime.datetime.fromisoformat(s).timestamp()
+        parsed = datetime.datetime.fromisoformat(s)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
 
 
 _PUT_ARCHIVE_LOG_RE = re.compile(
@@ -188,14 +114,8 @@ _PUT_ARCHIVE_LOG_RE = re.compile(
 
 
 def last_put_archive_ts(log_path: Path) -> float | None:
-    """Scan ``pre-start.log`` for the most recent successful put_archive.
-
-    Reads only the tail of the file (last ~64 KiB) — the log grows
-    monotonically per container, so the last entry is always what we
-    want and rewinding from the end costs one small read. Returns
-    ``None`` if the file does not exist, is empty, or contains no
-    successful entry yet.
-    """
+    """Newest ``put_archive ok`` timestamp in the log's tail
+    (``_LAST_LINE_SCAN_BYTES``); None on missing/empty/no-match."""
     try:
         st = log_path.stat()
     except FileNotFoundError:
@@ -236,24 +156,11 @@ async def check_applied(
     container: str,
     pre_start_log_path: Path,
 ) -> HealthResult | None:
-    """Compare ``pre-start.log``'s newest entry to the container's Created.
+    """Compare pre-start.log's newest entry to Container.Created (symmetric slack).
 
-    Anchors the "for this lifecycle" freshness on ``Created`` rather
-    than ``StartedAt``: put_archive fires on the docker ``create``
-    event, and ``Created`` is stable across ``docker restart`` of the
-    same instance but fresh on ``rm+create``. That correctly handles
-    both the boot-race case (missed create → log predates Created →
-    off) and the third-party delayed-start case (create; sleep; start
-    → log matches Created regardless of start delay → on).
-
-    * ``value=True`` when the log's newest entry is at or after
-      ``Created`` (minus a small slack for clock drift +
-      put_archive-write latency).
-    * ``value=False`` when the newest entry predates ``Created``
-      (stale entry from a prior lifecycle), or there is no entry at
-      all but the recipe directory exists on disk.
-    * ``None`` when the container is missing or its Created is
-      unreadable — caller holds state.
+    Returns None on missing container. False on stale/missing log entry (log
+    predates Created by more than slack, or log entry is > slack in the future
+    — clock-skew corruption). True otherwise.
     """
     created = await container_created_at(docker, container)
     if created is None:
@@ -261,12 +168,14 @@ async def check_applied(
     last = last_put_archive_ts(pre_start_log_path)
     if last is None:
         return HealthResult(False, "no successful put_archive in pre-start.log")
-    if last + _APPLIED_SLACK_SECONDS < created:
+    delta = last - created
+    if abs(delta) > _APPLIED_SLACK_SECONDS:
+        side = "before" if delta < 0 else "after"
         return HealthResult(
             False,
-            f"last put_archive {created - last:.1f}s before container create",
+            f"last put_archive {abs(delta):.1f}s {side} container create",
         )
-    return HealthResult(True, "put_archive newer than Created")
+    return HealthResult(True, "put_archive within slack of Created")
 
 
 async def _exec_output(
@@ -274,30 +183,13 @@ async def _exec_output(
     container: str,
     cmd: list[str],
 ) -> tuple[int, str]:
-    """Run one short command in the target and return (rc, stdout+stderr).
+    """Run one short command in the target, bounded by _DOCKER_CHECK_TIMEOUT.
 
-    Bounded by ``_DOCKER_CHECK_TIMEOUT`` so a stuck target can't stall
-    the whole health poll cycle. Timeout returns rc=127 with a "timeout"
-    diagnostic, treated by callers as "check unavailable" (health
-    sensor goes ``unknown``).
-    """
-    try:
-        return await asyncio.wait_for(
-            _exec_output_impl(docker, container, cmd),
-            timeout=_DOCKER_CHECK_TIMEOUT,
-        )
-    except TimeoutError:
-        return 127, f"exec timeout after {_DOCKER_CHECK_TIMEOUT:.0f}s"
+    Returns (rc, stdout+stderr); rc=127 for any timeout/docker/exec failure
+    (callers treat non-zero as "check unavailable")."""
 
-
-async def _exec_output_impl(
-    docker: aiodocker.Docker,
-    container: str,
-    cmd: list[str],
-) -> tuple[int, str]:
-    try:
+    async def _run() -> tuple[int, str]:
         c = await docker.containers.get(container)
-        # aiodocker's exec API: create + start with a fresh Stream.
         exe = await c.exec(cmd=cmd, stdout=True, stderr=True)
         async with exe.start(detach=False) as stream:
             chunks: list[bytes] = []
@@ -309,6 +201,11 @@ async def _exec_output_impl(
         inspect = await exe.inspect()
         rc = int(inspect.get("ExitCode") or 0)
         return rc, b"".join(chunks).decode("utf-8", errors="replace").strip()
+
+    try:
+        return await asyncio.wait_for(_run(), timeout=_DOCKER_CHECK_TIMEOUT)
+    except TimeoutError:
+        return 127, f"exec timeout after {_DOCKER_CHECK_TIMEOUT:.0f}s"
     except aiodocker.exceptions.DockerError as e:
         return 127, f"docker error: {e}"
     except Exception as e:  # noqa: BLE001 -- diagnostic passthrough
@@ -344,13 +241,9 @@ async def check_sentinel(
 ) -> HealthResult | None:
     """Verify the sentinel file confirms the payload ran on this lifecycle.
 
-    Behavior:
-
-    * tmpfs sentinel path: exists (rc=0 to ``test -e``) ⇒ True.
-    * overlay sentinel path: mtime ≥ StartedAt - 1s ⇒ True (small
-      slack absorbs clock skew between the addon and the container).
-    * missing / stat failure: False with a diagnostic reason.
-    * container missing or StartedAt unreadable: ``None``.
+    tmpfs paths: presence alone ⇒ True (tmpfs remounts on every start).
+    overlay paths: mtime within ``_SENTINEL_SLACK_SECONDS`` of StartedAt ⇒ True.
+    ``None`` when the container is missing or StartedAt is unreadable.
     """
     started = await container_started_at(docker, container)
     if started is None:
@@ -386,10 +279,3 @@ def render_binary_state(result: HealthResult | None) -> str:
     if result is None:
         return "unknown"
     return "ON" if result.value else "OFF"
-
-
-def render_reason(result: HealthResult | None) -> dict[str, Any]:
-    """Attributes block published alongside a state — the "why" for the UI."""
-    if result is None:
-        return {"reason": "no data"}
-    return {"reason": result.reason}

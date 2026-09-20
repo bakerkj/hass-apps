@@ -16,7 +16,6 @@ from container_hooks.health import (
     container_started_at,
     last_put_archive_ts,
     render_binary_state,
-    render_reason,
 )
 
 # --- _parse_docker_ts ------------------------------------------------------
@@ -121,29 +120,22 @@ class TestLastPutArchiveTs:
 # --- check_applied ---------------------------------------------------------
 
 
-def _mock_docker_started_at(iso: str | None) -> MagicMock:
-    """Build a MagicMock docker client whose containers.get().show() returns iso."""
-    show = AsyncMock(return_value={"State": {"StartedAt": iso}})
+def _mock_docker_show(payload: dict) -> MagicMock:
+    """MagicMock docker client whose containers.get().show() returns ``payload``."""
     container = MagicMock()
-    container.show = show
-    get = AsyncMock(return_value=container)
+    container.show = AsyncMock(return_value=payload)
     docker = MagicMock()
     docker.containers = MagicMock()
-    docker.containers.get = get
+    docker.containers.get = AsyncMock(return_value=container)
     return docker
+
+
+def _mock_docker_started_at(iso: str | None) -> MagicMock:
+    return _mock_docker_show({"State": {"StartedAt": iso}})
 
 
 def _mock_docker_created_at(iso: str | None) -> MagicMock:
-    """Build a MagicMock docker client whose containers.get().show() returns
-    a docker-inspect payload with ``Created`` at the top level."""
-    show = AsyncMock(return_value={"Created": iso, "State": {}})
-    container = MagicMock()
-    container.show = show
-    get = AsyncMock(return_value=container)
-    docker = MagicMock()
-    docker.containers = MagicMock()
-    docker.containers.get = get
-    return docker
+    return _mock_docker_show({"Created": iso, "State": {}})
 
 
 class TestCheckApplied:
@@ -341,12 +333,6 @@ class TestRendering:
         assert render_binary_state(None) == "unknown"
         assert render_binary_state(HealthResult(True, "ok")) == "ON"
         assert render_binary_state(HealthResult(False, "nope")) == "OFF"
-
-    def test_reason_attrs(self):
-        from container_hooks.health import HealthResult
-
-        assert render_reason(None) == {"reason": "no data"}
-        assert render_reason(HealthResult(True, "why yes")) == {"reason": "why yes"}
 
 
 # --- container_started_at + sentinel_is_tmpfs edge cases -------------------

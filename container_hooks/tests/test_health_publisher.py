@@ -172,26 +172,47 @@ def publisher(tmp_path: Path) -> HealthPublisher:
 
 class TestPollOnce:
     @pytest.mark.asyncio
-    async def test_publishes_applied_only_when_no_sentinel(
-        self, publisher: HealthPublisher
-    ):
-        # Enumerate slugs before poll so _publish_discovery isn't required.
+    async def _run_poll(
+        self,
+        publisher: HealthPublisher,
+        applied: HealthResult | None,
+        sentinel: HealthResult | None,
+    ) -> _RecordingClient:
+        """Run one poll cycle with check_applied/check_sentinel patched."""
         publisher._rebuild_slug_map()
         client = _RecordingClient()
         with (
             patch(
                 "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(True, "fresh")),
+                new=AsyncMock(return_value=applied),
             ),
             patch(
                 "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=HealthResult(True, "sentinel present")),
+                new=AsyncMock(return_value=sentinel),
             ),
         ):
             await publisher._poll_once(client)  # type: ignore[arg-type]
+        return client
 
+    @staticmethod
+    def _summary_payload(client: _RecordingClient, slug: str) -> str:
+        return next(
+            c["payload"]
+            for c in client.calls
+            if c["topic"] == f"container_hooks/{slug}/summary/state"
+        )
+
+    @pytest.mark.asyncio
+    async def test_publishes_applied_only_when_no_sentinel(
+        self, publisher: HealthPublisher
+    ):
+        client = await self._run_poll(
+            publisher,
+            HealthResult(True, "fresh"),
+            HealthResult(True, "sentinel present"),
+        )
         topics = {c["topic"] for c in client.calls}
-        # app_other has no sentinel: applied + summary states + attrs only.
+        # app_other has no sentinel: applied + summary only.
         assert "container_hooks/app_other/applied/state" in topics
         assert "container_hooks/app_other/summary/state" in topics
         assert "container_hooks/app_other/sentinel/state" not in topics
@@ -202,92 +223,36 @@ class TestPollOnce:
 
     @pytest.mark.asyncio
     async def test_summary_state_when_both_pass(self, publisher: HealthPublisher):
-        publisher._rebuild_slug_map()
-        client = _RecordingClient()
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(True, "fresh")),
-            ),
-            patch(
-                "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=HealthResult(True, "sentinel present")),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
-
-        summary = next(
-            c
-            for c in client.calls
-            if c["topic"] == "container_hooks/app_esphome/summary/state"
+        client = await self._run_poll(
+            publisher,
+            HealthResult(True, "fresh"),
+            HealthResult(True, "sentinel present"),
         )
-        assert summary["payload"] == "ok"
+        assert self._summary_payload(client, "app_esphome") == "ok"
 
     @pytest.mark.asyncio
     async def test_summary_state_flags_boot_race(self, publisher: HealthPublisher):
-        publisher._rebuild_slug_map()
-        client = _RecordingClient()
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(False, "stale")),
-            ),
-            patch(
-                "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=HealthResult(False, "missing")),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
-
-        summary = next(
-            c
-            for c in client.calls
-            if c["topic"] == "container_hooks/app_esphome/summary/state"
+        client = await self._run_poll(
+            publisher, HealthResult(False, "stale"), HealthResult(False, "missing")
         )
-        assert summary["payload"] == "boot_race"
+        assert self._summary_payload(client, "app_esphome") == "boot_race"
 
     @pytest.mark.asyncio
     async def test_summary_state_flags_payload_no_effect(
         self, publisher: HealthPublisher
     ):
-        publisher._rebuild_slug_map()
-        client = _RecordingClient()
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(True, "fresh")),
-            ),
-            patch(
-                "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=HealthResult(False, "missing")),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
-
-        summary = next(
-            c
-            for c in client.calls
-            if c["topic"] == "container_hooks/app_esphome/summary/state"
+        client = await self._run_poll(
+            publisher, HealthResult(True, "fresh"), HealthResult(False, "missing")
         )
-        assert summary["payload"] == "payload_no_effect"
+        assert self._summary_payload(client, "app_esphome") == "payload_no_effect"
 
     @pytest.mark.asyncio
     async def test_publishes_online_slug_availability_when_check_returns(
         self, publisher: HealthPublisher
     ):
-        publisher._rebuild_slug_map()
-        client = _RecordingClient()
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(True, "fresh")),
-            ),
-            patch(
-                "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=HealthResult(True, "sentinel")),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
+        client = await self._run_poll(
+            publisher, HealthResult(True, "fresh"), HealthResult(True, "sentinel")
+        )
         online_calls = [
             c
             for c in client.calls
@@ -299,20 +264,8 @@ class TestPollOnce:
     async def test_publishes_offline_slug_availability_when_target_unreachable(
         self, publisher: HealthPublisher
     ):
-        publisher._rebuild_slug_map()
-        client = _RecordingClient()
-        # Both checks return None → target unreachable → per-slug availability flips offline.
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "container_hooks.health_publisher.check_sentinel",
-                new=AsyncMock(return_value=None),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
+        # Both checks None → target unreachable → per-slug availability offline.
+        client = await self._run_poll(publisher, None, None)
         offline_avail = [
             c
             for c in client.calls
@@ -322,18 +275,9 @@ class TestPollOnce:
 
     @pytest.mark.asyncio
     async def test_stop_bails_between_containers(self, publisher: HealthPublisher):
-        publisher._rebuild_slug_map()
-        # Set stop BEFORE any publish; _poll_once should return immediately
-        # because the first container check happens after the stop check.
+        # stop.set() BEFORE any publish; the per-container guard short-circuits.
         publisher.stop.set()
-        client = _RecordingClient()
-        with (
-            patch(
-                "container_hooks.health_publisher.check_applied",
-                new=AsyncMock(return_value=HealthResult(True, "fresh")),
-            ),
-        ):
-            await publisher._poll_once(client)  # type: ignore[arg-type]
+        client = await self._run_poll(publisher, HealthResult(True, "fresh"), None)
         assert client.calls == []
 
 
@@ -528,6 +472,3 @@ class TestPublishDiscovery:
             in topics
         )
         assert "homeassistant/sensor/container-hooks_app_other/summary/config" in topics
-        # Clear-any-old-sentinel: an empty retained publish for a slug without
-        # a sentinel is fine (idempotent), so it may be present.
-        assert publisher._discovered is True

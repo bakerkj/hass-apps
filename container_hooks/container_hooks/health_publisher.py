@@ -1,32 +1,15 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
 
-"""MQTT health publisher: the whole aiomqtt session, running as one task.
-
-Owns:
-
-* Broker session lifecycle (connect with backoff, LWT, availability
-  publish, disconnect + best-effort offline publish on shutdown).
-* HA MQTT Discovery: publish configs for every container the addon
-  has a recipe for, retained. Republish on the HA birth message
-  (``homeassistant/status = online``) so a restarted HA picks the
-  entities up.
-* Periodic health polling: for each container with a recipe, evaluate
-  ``check_applied`` and — if the recipe declares ``success_sentinel``
-  — ``check_sentinel``. Publish per-check binary states, a summary
-  state, and a per-entity ``reason`` attribute. All state is retained
-  so a late subscriber sees the last known value without waiting for
-  the next poll.
-
-Split from ``app.py`` so the Docker events loop stays focused and this
-module can be unit-tested against a recording stub without needing an
-aiomqtt client.
-"""
+"""MQTT health publisher: aiomqtt session (connect + reconnect + LWT), one-shot
+retained-scan reconciliation, HA MQTT-Discovery publish, and the periodic
+health poll that emits state/attributes/summary per tracked container. Split
+from ``app.py`` so the docker events loop stays focused and this module can
+be unit-tested against a recording stub."""
 
 import asyncio
 import contextlib
 import logging
-import os
 import time
 
 import aiodocker
@@ -39,27 +22,22 @@ except ImportError:  # pragma: no cover
 from .config import Options, pre_start_files_dir, pre_start_log
 from .health import HealthResult, check_applied, check_sentinel, render_binary_state
 from .mqtt import (
-    applied_discovery_payload,
     availability_topic,
     clear_container_entities,
+    component_for,
+    discovery_payload,
     keys_for,
     publish_discovery,
     publish_slug_availability,
     publish_state,
-    sentinel_discovery_payload,
     slugify,
     summary_attributes,
-    summary_discovery_payload,
     summary_state,
 )
 
 _BACKOFF_MIN = 2
 _BACKOFF_MAX = 60
-# How long we listen for retained discovery-config messages on connect
-# before assuming the broker has flushed everything. mosquitto typically
-# emits retained messages in a handful of ms; 5s is generous headroom
-# without noticeably delaying the addon's first publish. Time comes out
-# of the same connect budget that already tolerates ``keepalive=60``.
+# Idle-window budget for the one-shot retained-scan on first connect.
 _RETAINED_SCAN_TIMEOUT = 5.0
 
 
@@ -68,14 +46,7 @@ def _log() -> logging.Logger:
 
 
 def _friendly_name(container: str) -> str:
-    """Derive a short human name from the docker container name.
-
-    Supervisor addon containers are ``app_<slug>_<name>`` (or the
-    legacy ``addon_<slug>_<name>``); everything else keeps its full
-    docker name. The result is only used as the HA device's friendly
-    name, so being a lossy prettifier is fine — the slug (a separate
-    field) is the stable identifier.
-    """
+    """Strip Supervisor's ``app_<slug>_`` / ``addon_<slug>_`` prefix; titlecase."""
     for prefix in ("app_", "addon_"):
         if container.startswith(prefix):
             _, _, rest = container.partition("_")
@@ -86,20 +57,12 @@ def _friendly_name(container: str) -> str:
 
 
 def _list_recipe_containers(options: Options) -> list[str]:
-    """Every directory under ``base_dir`` that has a ``pre-start-files/``.
-
-    That's the shape of a recipe we care about publishing health for —
-    the ``applied`` check is meaningful only when there is a pre-start
-    payload to apply. Post-start-only recipes (just ``scripts/``) are
-    outside this signal's scope.
-    """
+    """Container names under base_dir that carry a ``pre-start-files/`` recipe."""
     if not options.base_dir.is_dir():
         return []
     out: list[str] = []
     for entry in sorted(options.base_dir.iterdir()):
-        if not entry.is_dir():
-            continue
-        if entry.name in options.skip_containers:
+        if not entry.is_dir() or entry.name in options.skip_containers:
             continue
         if pre_start_files_dir(options, entry.name).is_dir():
             out.append(entry.name)
@@ -114,12 +77,7 @@ def _sentinel_for(options: Options, container: str) -> str | None:
 
 
 class HealthPublisher:
-    """Encapsulates the MQTT health-publisher state.
-
-    Held on the instance so the reconnect loop can restore state
-    (discovered slugs, last published states) without re-scanning
-    disk on every reconnect.
-    """
+    """Owns the aiomqtt session and the per-container health poll."""
 
     def __init__(
         self,
@@ -131,34 +89,24 @@ class HealthPublisher:
         self.docker = docker
         self.stop = stop
         self.log = _log()
+        # Non-zero when the disconnect watchdog trips; ``main_async``
+        # returns this as the process rc so Supervisor restarts the addon.
+        self.exit_code: int = 0
         # slug -> friendly name; rebuilt from disk on each connection so
         # a new recipe added while the addon runs shows up next connect.
         self._slugs: dict[str, str] = {}
         # slug -> container name, for the reverse lookup during polling
         self._container_for_slug: dict[str, str] = {}
-        # Track whether we published discovery this session; on birth
-        # message we clear it so the next poll republishes.
-        self._discovered = False
-        # Slugs the broker already had retained discovery configs for
-        # when we connected. Populated once by the retained-scan phase
-        # of ``run()``; consumed on the FIRST ``_publish_discovery`` in
-        # each session so a recipe removed while the addon was stopped
-        # gets cleared, not left as a ghost sensor in HA forever.
+        # Cross-restart-removal slugs from the one-shot retained-scan.
+        # Consumed on the first _publish_discovery of each session.
         self._retained_slugs_at_start: set[str] = set()
-        # Signalled by the birth-message listener to wake the poll
-        # sleep so HA rediscovery doesn't wait a full
-        # ``health_interval_seconds`` after a HA restart. Cleared each
-        # time the poll acts on it.
+        # Single source of truth for "publish discovery next iteration."
+        # Set on session start and by the birth-message listener; cleared
+        # by the poll loop before it calls _publish_discovery. If a birth
+        # races into the middle of a publish, the listener re-sets it
+        # and the next iteration republishes.
         self._republish_needed: asyncio.Event = asyncio.Event()
-        # One-shot guard for the retained-scan phase. The scan catches
-        # recipes removed while the addon *process* was stopped — a
-        # concern that's only ever true on the very first connection
-        # after process start. Within a single process ``self._slugs``
-        # persists across reconnects, so the in-session diff in
-        # ``_publish_discovery`` already covers any removal. Skipping
-        # the scan on mid-session reconnects (network blip, broker
-        # restart) avoids a redundant ~5s stall + broker-wide
-        # discovery-config subscribe on every hiccup.
+        # One-shot per process: scan only runs on the first connect.
         self._did_retained_scan: bool = False
 
     # -- lifecycle ---------------------------------------------------------
@@ -176,12 +124,8 @@ class HealthPublisher:
         base_topic = self.options.mqtt_base_topic
         avail = availability_topic(base_topic)
         backoff = _BACKOFF_MIN
-        # Wall-clock stamp of the first disconnect in the current outage.
-        # Cleared whenever a session reaches "connected" (a successful publish
-        # of availability=online). If the outage exceeds
-        # ``mqtt_disconnect_timeout_seconds`` we exit non-zero so Supervisor
-        # restarts the addon — the same pattern the sibling MQTT addons use to
-        # avoid a silently-stuck broker session.
+        # Broker-downtime watchdog: on trip we set stop + exit_code=11 so
+        # main_async can drain in-flight docker work before returning.
         first_disconnect_at: float | None = None
         disconnect_timeout = max(5, self.options.mqtt_disconnect_timeout_seconds)
         while not self.stop.is_set():
@@ -201,25 +145,13 @@ class HealthPublisher:
                         self.options.mqtt_port,
                     )
                     await mq.publish(avail, "online", qos=1, retain=True)
-                    # Watchdog clock reset AFTER a successful publish
-                    # — an aiomqtt.Client that TCP+MQTT-connects but
-                    # reliably fails publishes would otherwise reset
-                    # every retry and never trip the outage-timeout
-                    # exit.
+                    # Reset only after a successful publish so a
+                    # publish-rejecting broker still trips the watchdog.
                     backoff = _BACKOFF_MIN
                     first_disconnect_at = None
-                    # Retained-scan MUST happen before we subscribe to
-                    # the birth topic — during the scan we consume from
-                    # ``mq.messages`` with a timeout, and a birth
-                    # message arriving in that window would be dropped.
-                    # We subscribe to birth only after the scan
-                    # completes, so the listener sees every future
-                    # birth cleanly.
-                    # One-shot per process: only run on the first
-                    # successful connect. A reconnect within the same
-                    # process gets its removal-tracking from the
-                    # in-memory ``self._slugs`` diff in
-                    # ``_publish_discovery`` instead.
+                    # Retained-scan is one-shot per process and must run
+                    # before birth-topic subscribe (it consumes from
+                    # mq.messages with a timeout).
                     if not self._did_retained_scan:
                         self._retained_slugs_at_start = await self._scan_retained_slugs(
                             mq
@@ -228,7 +160,7 @@ class HealthPublisher:
                     await mq.subscribe(
                         f"{self.options.mqtt_discovery_prefix}/status", qos=1
                     )
-                    self._discovered = False
+                    self._republish_needed.set()
                     await self._session_body(mq)
                     # Session ended cleanly (stop set): best-effort offline.
                     with contextlib.suppress(aiomqtt.MqttError):
@@ -262,7 +194,9 @@ class HealthPublisher:
                         downtime,
                         disconnect_timeout,
                     )
-                    os._exit(11)
+                    self.exit_code = 11
+                    self.stop.set()
+                    return
                 try:
                     await asyncio.wait_for(self.stop.wait(), timeout=backoff)
                     return
@@ -299,30 +233,14 @@ class HealthPublisher:
     # -- retained scan -----------------------------------------------------
 
     async def _scan_retained_slugs(self, mq: aiomqtt.Client) -> set[str]:
-        """Subscribe briefly to the discovery wildcard and collect every
-        slug the broker already had retained configs for.
+        """Collect slugs the broker has retained discovery configs for.
 
-        Runs once per session, right after we publish availability=online
-        but *before* subscribing to the birth topic (so a birth message
-        arriving during the scan isn't dropped by our timeout consume).
-        The mosquitto broker emits retained matches immediately on
-        subscribe; ``_RETAINED_SCAN_TIMEOUT`` bounds how long we wait
-        for the flush to quiesce.
-
-        The result is the ``prev_slugs`` complement for the very first
-        ``_publish_discovery`` call in this session — the missing piece
-        that catches a recipe removed while the addon was stopped, since
-        the in-memory ``_slugs`` starts empty on every process start and
-        can't see cross-restart deletions on its own.
-        """
+        Subscribes to the fully-wildcarded discovery topic (per MQTT-4.7.1.3
+        `+` must occupy an entire level, so a `{client_id}_+` filter would be
+        rejected by mosquitto), drains retained deliveries under the timeout,
+        then filters to our device_id prefix in code. Result feeds the
+        first _publish_discovery so cross-restart removals get cleared."""
         device_prefix = f"{self.options.client_id}_"
-        # MQTT-4.7.1.3-1: the single-level ``+`` wildcard must occupy
-        # an entire topic level. ``{device_prefix}+`` mixes a literal
-        # prefix with a wildcard, which mosquitto rejects at SUBACK
-        # without raising a client-side error — the scan silently
-        # returns empty. Broaden the filter to fully-wildcarded and do
-        # the device_prefix match in code on each message below (same
-        # pattern as ``container_info_mqtt/app.py``).
         discovery_filter = f"{self.options.mqtt_discovery_prefix}/+/+/+/config"
         await mq.subscribe(discovery_filter, qos=0)
         collected: set[str] = set()
@@ -335,8 +253,7 @@ class HealthPublisher:
                 except TimeoutError, StopAsyncIteration:
                     break
                 topic = str(msg.topic)
-                # Empty payload = tombstone (already cleared), skip.
-                if not msg.payload:
+                if not msg.payload:  # tombstone
                     continue
                 parts = topic.split("/")
                 # {prefix}/{component}/{device_id}_{slug}/{key}/config
@@ -344,9 +261,6 @@ class HealthPublisher:
                     continue
                 collected.add(parts[2][len(device_prefix) :])
         finally:
-            # Stop future retained deliveries; the listener_forever task
-            # doesn't want a barrage of discovery configs at every
-            # session, only the birth topic.
             with contextlib.suppress(Exception):
                 await mq.unsubscribe(discovery_filter)
         if collected:
@@ -380,35 +294,19 @@ class HealthPublisher:
             self._container_for_slug[slug] = container
 
     async def _publish_discovery(self, mq: aiomqtt.Client) -> None:
-        """Publish (or republish) HA MQTT Discovery configs.
+        """Publish HA MQTT-Discovery for each tracked slug; clear dropped ones.
 
-        Called on initial connect and again when we see HA's birth
-        message. Retained on the broker, so republishing is idempotent.
-        expire_after is set generously (max(60, 4× poll interval)) so a
-        broker or addon hiccup doesn't churn every sensor to unknown.
-
-        Before rescanning, snapshots the previous slug set so we can
-        clear discovery + retained state for slugs that dropped out
-        since last discovery — otherwise a removed recipe's entities
-        linger in HA forever because retained MQTT keeps them alive.
-
-        The prev-slug set unions the in-memory ``_slugs`` (dropped
-        during this session) with ``_retained_slugs_at_start`` (dropped
-        while the addon was stopped, discovered by the retained-scan
-        phase). ``_retained_slugs_at_start`` is consumed AFTER the
-        diff-and-clear completes, so a raise from ``_rebuild_slug_map``
-        (transient disk error) leaves it intact for the retry rather
-        than silently ghosting cross-restart deletions forever.
-        """
+        Dropped-slug detection unions in-memory _slugs (within-session removals)
+        with _retained_slugs_at_start (cross-restart removals from the scan).
+        Consumes the retained set AFTER the clear loop so a mid-loop raise
+        leaves it intact for the retry."""
         prev_slugs = set(self._slugs) | self._retained_slugs_at_start
         prev_container_for_slug = dict(self._container_for_slug)
         self._rebuild_slug_map()
         for dropped_slug in prev_slugs - set(self._slugs):
             prev_container = prev_container_for_slug.get(dropped_slug, "")
-            # Cover both possible past shapes (with or without sentinel).
-            # ``keys_for(True)`` returns every key we could have published;
-            # clear_discovery is idempotent, so clearing a key that was
-            # never published costs one no-op retained empty on the broker.
+            # keys_for(True) covers both possible past shapes; clear on a
+            # key never published is a broker-side no-op.
             await clear_container_entities(
                 mq,
                 discovery_prefix=self.options.mqtt_discovery_prefix,
@@ -422,51 +320,15 @@ class HealthPublisher:
                 dropped_slug,
                 prev_container or "?",
             )
-        # Consume the retained set only after the clears have all
-        # completed; a raise mid-loop leaves it intact for the retry.
-        self._retained_slugs_at_start = set()
+        self._retained_slugs_at_start = set()  # consumed after clear loop
         expire = max(60, self.options.health_interval_seconds * 4)
         for slug, friendly in self._slugs.items():
             container = self._container_for_slug[slug]
             sentinel = _sentinel_for(self.options, container)
-
-            await publish_discovery(
-                mq,
-                applied_discovery_payload(
-                    device_id=self.options.client_id,
-                    slug=slug,
-                    friendly=friendly,
-                    base_topic=self.options.mqtt_base_topic,
-                    expire_after_s=expire,
-                ),
-                discovery_prefix=self.options.mqtt_discovery_prefix,
-                component="binary_sensor",
-                device_id=self.options.client_id,
-                slug=slug,
-                key="applied",
-            )
-            if sentinel is not None:
-                await publish_discovery(
-                    mq,
-                    sentinel_discovery_payload(
-                        device_id=self.options.client_id,
-                        slug=slug,
-                        friendly=friendly,
-                        base_topic=self.options.mqtt_base_topic,
-                        expire_after_s=expire,
-                    ),
-                    discovery_prefix=self.options.mqtt_discovery_prefix,
-                    component="binary_sensor",
-                    device_id=self.options.client_id,
-                    slug=slug,
-                    key="sentinel",
-                )
-            else:
-                # No sentinel configured now — drop any retained config
-                # and state/attributes topics from a previous run where
-                # it may have been set. base_topic passed so the
-                # retained state/attributes don't ghost-linger past a
-                # sensor.
+            active_keys = keys_for(sentinel_configured=sentinel is not None)
+            if sentinel is None:
+                # sentinel dropped for this container — clear any retained
+                # discovery/state from a prior run where it was set.
                 await clear_container_entities(
                     mq,
                     discovery_prefix=self.options.mqtt_discovery_prefix,
@@ -475,22 +337,23 @@ class HealthPublisher:
                     keys=("sentinel",),
                     base_topic=self.options.mqtt_base_topic,
                 )
-            await publish_discovery(
-                mq,
-                summary_discovery_payload(
+            for key in active_keys:
+                await publish_discovery(
+                    mq,
+                    discovery_payload(
+                        key,
+                        device_id=self.options.client_id,
+                        slug=slug,
+                        friendly=friendly,
+                        base_topic=self.options.mqtt_base_topic,
+                        expire_after_s=expire,
+                    ),
+                    discovery_prefix=self.options.mqtt_discovery_prefix,
+                    component=component_for(key),
                     device_id=self.options.client_id,
                     slug=slug,
-                    friendly=friendly,
-                    base_topic=self.options.mqtt_base_topic,
-                    expire_after_s=expire,
-                ),
-                discovery_prefix=self.options.mqtt_discovery_prefix,
-                component="sensor",
-                device_id=self.options.client_id,
-                slug=slug,
-                key="summary",
-            )
-        self._discovered = True
+                    key=key,
+                )
         self.log.info(
             "Published discovery for %d container(s): %s",
             len(self._slugs),
@@ -500,18 +363,15 @@ class HealthPublisher:
     # -- poll --------------------------------------------------------------
 
     async def _poll_forever(self, mq: aiomqtt.Client) -> None:
-        """Publish health state for every tracked container on an interval.
-
-        The inter-poll sleep races ``stop.wait()`` against
-        ``_republish_needed.wait()`` so a HA birth arriving mid-sleep
-        wakes the poll immediately instead of the entity going stale
-        for up to ``health_interval_seconds``.
-        """
+        """Emit health state on an interval; inter-poll sleep races stop.wait()
+        against _republish_needed.wait() so HA birth wakes the poll instantly."""
         interval = max(5, self.options.health_interval_seconds)
         while not self.stop.is_set():
-            if not self._discovered:
-                await self._publish_discovery(mq)
+            if self._republish_needed.is_set():
+                # Clear before publish so a birth arriving mid-republish
+                # re-sets the event and the next iteration republishes.
                 self._republish_needed.clear()
+                await self._publish_discovery(mq)
             await self._poll_once(mq)
             stop_task = asyncio.create_task(self.stop.wait())
             republish_task = asyncio.create_task(self._republish_needed.wait())
@@ -523,8 +383,6 @@ class HealthPublisher:
                 )
                 if stop_task in done:
                     return
-                # Either the republish event fired (HA birth) or the
-                # timeout hit; both fall through to the next iteration.
             finally:
                 for t in (stop_task, republish_task):
                     if not t.done():
@@ -536,8 +394,6 @@ class HealthPublisher:
     async def _poll_once(self, mq: aiomqtt.Client) -> None:
         for slug, _friendly in list(self._slugs.items()):
             if self.stop.is_set():
-                # Bail early so a large poll set doesn't emit CancelledError
-                # noise from mid-container docker exec calls at shutdown.
                 return
             container = self._container_for_slug[slug]
             sentinel = _sentinel_for(self.options, container)
@@ -547,10 +403,7 @@ class HealthPublisher:
             sentinel_res: HealthResult | None = None
             if sentinel is not None:
                 sentinel_res = await check_sentinel(self.docker, container, sentinel)
-            # Per-slug availability: if BOTH checks returned None the
-            # target is unreachable via the docker API (typically
-            # deleted). Flip the per-slug availability topic to
-            # ``offline`` so HA surfaces the sensor as ``unavailable``
+            # Both checks None → target unreachable → per-slug availability offline
             # instead of holding at ``unknown``. Any check returning a
             # real HealthResult keeps the target ``online`` — even a
             # False result is "reachable, and here's the diagnosis."
@@ -619,13 +472,7 @@ class HealthPublisher:
     # -- listen -----------------------------------------------------------
 
     async def _listen_forever(self, mq: aiomqtt.Client) -> None:
-        """Watch HA birth messages so a restarted HA picks the entities up.
-
-        Sets ``_republish_needed`` in addition to flipping
-        ``_discovered`` — the poll loop's sleep races on the event so
-        the rediscovery happens on the next event-loop tick rather
-        than waiting up to a full ``health_interval_seconds``.
-        """
+        """Wake the poll on HA birth so entities re-appear after a HA restart."""
         birth_topic = f"{self.options.mqtt_discovery_prefix}/status"
         async for msg in mq.messages:
             if str(msg.topic) != birth_topic:
@@ -635,7 +482,6 @@ class HealthPublisher:
                 self.log.info(
                     "HA birth message received; scheduling discovery republish"
                 )
-                self._discovered = False
                 self._republish_needed.set()
 
 
@@ -643,6 +489,12 @@ async def run_publisher(
     options: Options,
     docker: aiodocker.Docker,
     stop: asyncio.Event,
-) -> None:
-    """Entrypoint used by ``app.py`` — a task-shaped coroutine."""
-    await HealthPublisher(options, docker, stop).run()
+) -> int:
+    """Entrypoint used by ``app.py`` — a task-shaped coroutine.
+
+    Returns the publisher's ``exit_code`` (0 on clean shutdown; 11 when
+    the disconnect watchdog trips so Supervisor restarts the addon).
+    """
+    publisher = HealthPublisher(options, docker, stop)
+    await publisher.run()
+    return publisher.exit_code

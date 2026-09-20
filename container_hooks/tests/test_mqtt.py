@@ -7,22 +7,21 @@ import json
 
 import pytest
 from container_hooks.mqtt import (
-    applied_discovery_payload,
     attributes_topic,
     availability_topic,
     clear_container_entities,
     clear_discovery,
+    component_for,
+    discovery_payload,
     discovery_topic,
     keys_for,
     publish_discovery,
     publish_slug_availability,
     publish_state,
-    sentinel_discovery_payload,
     slug_availability_topic,
     slugify,
     state_topic,
     summary_attributes,
-    summary_discovery_payload,
     summary_state,
 )
 
@@ -112,18 +111,22 @@ class TestTopics:
 # --- discovery payload shapes --------------------------------------------
 
 
+def _payload(key: str, **overrides) -> dict:
+    defaults = {
+        "device_id": "container-hooks",
+        "slug": "esphome",
+        "friendly": "ESPHome",
+        "base_topic": "container_hooks",
+        "expire_after_s": 120,
+    }
+    return discovery_payload(key, **{**defaults, **overrides})
+
+
 class TestDiscoveryPayloads:
     def test_applied_payload_shape(self):
-        p = applied_discovery_payload(
-            device_id="container-hooks",
-            slug="esphome",
-            friendly="ESPHome",
-            base_topic="container_hooks",
-            expire_after_s=120,
-        )
+        p = _payload("applied")
         assert p["unique_id"] == "container-hooks_esphome_applied"
         assert p["state_topic"] == "container_hooks/esphome/applied/state"
-        # Multi-availability list: addon-scoped + per-slug, gated on ALL.
         avail_topics = {a["topic"] for a in p["availability"]}
         assert avail_topics == {
             "container_hooks/availability",
@@ -137,37 +140,24 @@ class TestDiscoveryPayloads:
 
     def test_expire_after_floor(self):
         # 60s floor: too-small values get widened rather than allowed to churn.
-        p = applied_discovery_payload(
-            device_id="container-hooks",
-            slug="x",
-            friendly="X",
-            base_topic="t",
-            expire_after_s=1,
+        p = _payload(
+            "applied", slug="x", friendly="X", base_topic="t", expire_after_s=1
         )
         assert p["expire_after"] == 60
 
     def test_sentinel_payload_shape(self):
-        p = sentinel_discovery_payload(
-            device_id="container-hooks",
-            slug="esphome",
-            friendly="ESPHome",
-            base_topic="container_hooks",
-            expire_after_s=120,
-        )
+        p = _payload("sentinel")
         assert p["unique_id"] == "container-hooks_esphome_sentinel"
+        assert component_for("sentinel") == "binary_sensor"
 
     def test_summary_payload_shape(self):
-        p = summary_discovery_payload(
-            device_id="container-hooks",
-            slug="esphome",
-            friendly="ESPHome",
-            base_topic="container_hooks",
-            expire_after_s=120,
-        )
+        p = _payload("summary")
         assert p["unique_id"] == "container-hooks_esphome_summary"
-        # summary is a plain sensor, not a binary — no payload_on/off.
+        # summary is a plain sensor — no payload_on/off/device_class.
         assert "payload_on" not in p
+        assert "device_class" not in p
         assert p["state_topic"] == "container_hooks/esphome/summary/state"
+        assert component_for("summary") == "sensor"
 
 
 # --- publish helpers ----------------------------------------------------
