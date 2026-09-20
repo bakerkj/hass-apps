@@ -43,6 +43,46 @@ class _RecordingClient:
         )
 
 
+class _FakeMessage:
+    def __init__(self, topic: str, payload: bytes) -> None:
+        self.topic = topic
+        self.payload = payload
+
+
+class _FakeMqttClient:
+    """Minimal aiomqtt.Client stub for _scan_retained_slugs.
+
+    ``messages`` is a single stable async iterator (as with real
+    aiomqtt — backed by an internal queue, not a fresh generator per
+    access). It yields the pre-loaded retained messages, then hangs
+    forever so ``asyncio.wait_for`` in the scan hits its timeout the
+    same way it would against a live broker after the retained flush.
+    """
+
+    def __init__(self, retained: list[tuple[str, bytes]]) -> None:
+        self._retained = list(retained)
+        self._msg_iter = self._iter_impl()
+        self.subscribed: list[str] = []
+        self.unsubscribed: list[str] = []
+
+    async def subscribe(self, topic: str, qos: int = 0) -> None:
+        self.subscribed.append(topic)
+
+    async def unsubscribe(self, topic: str) -> None:
+        self.unsubscribed.append(topic)
+
+    @property
+    def messages(self):
+        return self._msg_iter
+
+    async def _iter_impl(self):
+        for topic, payload in self._retained:
+            yield _FakeMessage(topic, payload)
+        # After the retained backlog, hang forever so the scan hits its
+        # timeout the same way it would against a live broker.
+        await asyncio.Event().wait()
+
+
 # --- pure helpers ----------------------------------------------------------
 
 
@@ -248,6 +288,57 @@ class TestPollOnce:
         assert client.calls == []
 
 
+class TestScanRetainedSlugs:
+    @pytest.mark.asyncio
+    async def test_extracts_slug_from_discovery_topics(
+        self, publisher: HealthPublisher, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Shorten the timeout so the test doesn't hang for 5s.
+        monkeypatch.setattr(
+            "container_hooks.health_publisher._RETAINED_SCAN_TIMEOUT", 0.1
+        )
+        client = _FakeMqttClient(
+            [
+                (
+                    "homeassistant/binary_sensor/container-hooks_alpha/applied/config",
+                    b'{"unique_id":"...}"',
+                ),
+                (
+                    "homeassistant/binary_sensor/container-hooks_alpha/sentinel/config",
+                    b'{"unique_id":"...}"',
+                ),
+                (
+                    "homeassistant/sensor/container-hooks_alpha/summary/config",
+                    b'{"unique_id":"...}"',
+                ),
+                (
+                    "homeassistant/binary_sensor/container-hooks_beta/applied/config",
+                    b'{"unique_id":"...}"',
+                ),
+                # Tombstone (empty payload) — should NOT count.
+                (
+                    "homeassistant/binary_sensor/container-hooks_dead/applied/config",
+                    b"",
+                ),
+                # Foreign device_id (someone else's client) — should NOT count.
+                (
+                    "homeassistant/binary_sensor/other-client_zeta/applied/config",
+                    b'{"unique_id":"...}"',
+                ),
+                # Malformed topic (wrong number of segments) — ignore.
+                (
+                    "homeassistant/binary_sensor/container-hooks_x/applied/config/extra",
+                    b'{"unique_id":"...}"',
+                ),
+            ]
+        )
+        result = await publisher._scan_retained_slugs(client)  # type: ignore[arg-type]
+        assert result == {"alpha", "beta"}
+        # Confirm we subscribed to the wildcard and unsubscribed after.
+        assert any("+/config" in t for t in client.subscribed)
+        assert client.unsubscribed == client.subscribed
+
+
 class TestPublishDiscovery:
     @pytest.mark.asyncio
     async def test_clears_dropped_slugs_on_republish(
@@ -285,6 +376,29 @@ class TestPublishDiscovery:
         ]
         assert cleared_state
         assert all(c["payload"] == "" and c["retain"] for c in cleared_state)
+
+    @pytest.mark.asyncio
+    async def test_clears_slugs_only_present_on_broker_at_startup(
+        self, publisher: HealthPublisher
+    ):
+        # Simulate the retained-scan finding a slug the addon has no
+        # in-memory record of (recipe was removed while addon was down).
+        publisher._retained_slugs_at_start = {"ghost_slug"}
+        client = _RecordingClient()
+        await publisher._publish_discovery(client)  # type: ignore[arg-type]
+        topics = [c["topic"] for c in client.calls]
+        # The ghost slug's discovery + retained state topics get cleared
+        # even though it was never in self._slugs during this process.
+        assert (
+            "homeassistant/binary_sensor/container-hooks_ghost_slug/applied/config"
+            in topics
+        )
+        assert "container_hooks/ghost_slug/applied/state" in topics
+        assert "container_hooks/ghost_slug/summary/state" in topics
+        # And the set is consumed — a subsequent republish shouldn't
+        # re-clear it (would be idempotent anyway, but the state is
+        # gone from the publisher).
+        assert publisher._retained_slugs_at_start == set()
 
     @pytest.mark.asyncio
     async def test_publishes_expected_component_set(self, publisher: HealthPublisher):

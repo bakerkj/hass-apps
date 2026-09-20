@@ -54,6 +54,12 @@ from .mqtt import (
 
 _BACKOFF_MIN = 2
 _BACKOFF_MAX = 60
+# How long we listen for retained discovery-config messages on connect
+# before assuming the broker has flushed everything. mosquitto typically
+# emits retained messages in a handful of ms; 5s is generous headroom
+# without noticeably delaying the addon's first publish. Time comes out
+# of the same connect budget that already tolerates ``keepalive=60``.
+_RETAINED_SCAN_TIMEOUT = 5.0
 
 
 def _log() -> logging.Logger:
@@ -132,6 +138,12 @@ class HealthPublisher:
         # Track whether we published discovery this session; on birth
         # message we clear it so the next poll republishes.
         self._discovered = False
+        # Slugs the broker already had retained discovery configs for
+        # when we connected. Populated once by the retained-scan phase
+        # of ``run()``; consumed on the FIRST ``_publish_discovery`` in
+        # each session so a recipe removed while the addon was stopped
+        # gets cleared, not left as a ghost sensor in HA forever.
+        self._retained_slugs_at_start: set[str] = set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -175,6 +187,14 @@ class HealthPublisher:
                     backoff = _BACKOFF_MIN
                     first_disconnect_at = None
                     await mq.publish(avail, "online", qos=1, retain=True)
+                    # Retained-scan MUST happen before we subscribe to
+                    # the birth topic — during the scan we consume from
+                    # ``mq.messages`` with a timeout, and a birth
+                    # message arriving in that window would be dropped.
+                    # We subscribe to birth only after the scan
+                    # completes, so the listener sees every future
+                    # birth cleanly.
+                    self._retained_slugs_at_start = await self._scan_retained_slugs(mq)
                     await mq.subscribe(
                         f"{self.options.mqtt_discovery_prefix}/status", qos=1
                     )
@@ -246,6 +266,62 @@ class HealthPublisher:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
 
+    # -- retained scan -----------------------------------------------------
+
+    async def _scan_retained_slugs(self, mq: aiomqtt.Client) -> set[str]:
+        """Subscribe briefly to the discovery wildcard and collect every
+        slug the broker already had retained configs for.
+
+        Runs once per session, right after we publish availability=online
+        but *before* subscribing to the birth topic (so a birth message
+        arriving during the scan isn't dropped by our timeout consume).
+        The mosquitto broker emits retained matches immediately on
+        subscribe; ``_RETAINED_SCAN_TIMEOUT`` bounds how long we wait
+        for the flush to quiesce.
+
+        The result is the ``prev_slugs`` complement for the very first
+        ``_publish_discovery`` call in this session — the missing piece
+        that catches a recipe removed while the addon was stopped, since
+        the in-memory ``_slugs`` starts empty on every process start and
+        can't see cross-restart deletions on its own.
+        """
+        device_prefix = f"{self.options.client_id}_"
+        discovery_filter = (
+            f"{self.options.mqtt_discovery_prefix}/+/{device_prefix}+/+/config"
+        )
+        await mq.subscribe(discovery_filter, qos=0)
+        collected: set[str] = set()
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(
+                        mq.messages.__anext__(), timeout=_RETAINED_SCAN_TIMEOUT
+                    )
+                except TimeoutError, StopAsyncIteration:
+                    break
+                topic = str(msg.topic)
+                # Empty payload = tombstone (already cleared), skip.
+                if not msg.payload:
+                    continue
+                parts = topic.split("/")
+                # {prefix}/{component}/{device_id}_{slug}/{key}/config
+                if len(parts) != 5 or not parts[2].startswith(device_prefix):
+                    continue
+                collected.add(parts[2][len(device_prefix) :])
+        finally:
+            # Stop future retained deliveries; the listener_forever task
+            # doesn't want a barrage of discovery configs at every
+            # session, only the birth topic.
+            with contextlib.suppress(Exception):
+                await mq.unsubscribe(discovery_filter)
+        if collected:
+            self.log.info(
+                "retained-scan found %d slug(s) with pre-existing discovery: %s",
+                len(collected),
+                ", ".join(sorted(collected)),
+            )
+        return collected
+
     # -- discovery ---------------------------------------------------------
 
     def _rebuild_slug_map(self) -> None:
@@ -280,8 +356,16 @@ class HealthPublisher:
         clear discovery + retained state for slugs that dropped out
         since last discovery — otherwise a removed recipe's entities
         linger in HA forever because retained MQTT keeps them alive.
+
+        The prev-slug set unions the in-memory ``_slugs`` (dropped
+        during this session) with ``_retained_slugs_at_start`` (dropped
+        while the addon was stopped, discovered by the retained-scan
+        phase). ``_retained_slugs_at_start`` is consumed on the first
+        call in each session so a subsequent HA-birth republish uses
+        only the in-memory diff.
         """
-        prev_slugs = set(self._slugs)
+        prev_slugs = set(self._slugs) | self._retained_slugs_at_start
+        self._retained_slugs_at_start = set()
         prev_container_for_slug = dict(self._container_for_slug)
         self._rebuild_slug_map()
         for dropped_slug in prev_slugs - set(self._slugs):
@@ -341,13 +425,17 @@ class HealthPublisher:
                 )
             else:
                 # No sentinel configured now — drop any retained config
-                # from a previous run where it may have been set.
+                # and state/attributes topics from a previous run where
+                # it may have been set. base_topic passed so the
+                # retained state/attributes don't ghost-linger past a
+                # sensor.
                 await clear_container_entities(
                     mq,
                     discovery_prefix=self.options.mqtt_discovery_prefix,
                     device_id=self.options.client_id,
                     slug=slug,
                     keys=("sentinel",),
+                    base_topic=self.options.mqtt_base_topic,
                 )
             await publish_discovery(
                 mq,
