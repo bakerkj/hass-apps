@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.4...container_hooks-v0.1.5) (2026-09-20)
+
+
+### Features
+
+* **container_hooks:** publish per-target health via MQTT with two-signal detection ([#532](https://github.com/bakerkj/hass-apps/issues/532)) ([bfd1da0](https://github.com/bakerkj/hass-apps/commit/bfd1da0b6eb9fa58c1196cb1f29ba30d62aa7822))
+
 ## [0.1.4](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.3...container_hooks-v0.1.4) (2026-09-19)
 
 
