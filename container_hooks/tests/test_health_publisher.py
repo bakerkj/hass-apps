@@ -250,6 +250,43 @@ class TestPollOnce:
 
 class TestPublishDiscovery:
     @pytest.mark.asyncio
+    async def test_clears_dropped_slugs_on_republish(
+        self, publisher: HealthPublisher, tmp_path: Path
+    ):
+        # First discovery pass sees both recipes.
+        await publisher._publish_discovery(_RecordingClient())  # type: ignore[arg-type]
+        assert "app_esphome" in publisher._slugs
+        assert "app_other" in publisher._slugs
+        # Simulate the user deleting the app_other recipe on disk.
+        import shutil
+
+        shutil.rmtree(tmp_path / "app_other")
+        client = _RecordingClient()
+        await publisher._publish_discovery(client)  # type: ignore[arg-type]
+        topics = [c["topic"] for c in client.calls]
+        # Discovery configs for the removed slug get cleared (empty retained).
+        cleared_config_topics = [
+            t
+            for t in topics
+            if t.startswith("homeassistant/")
+            and "container-hooks_app_other" in t
+            and t.endswith("/config")
+        ]
+        assert cleared_config_topics, (
+            f"expected empty-retained clears for app_other discovery, got {topics!r}"
+        )
+        # Retained state + attributes topics also cleared.
+        assert "container_hooks/app_other/applied/state" in topics
+        assert "container_hooks/app_other/summary/state" in topics
+        cleared_state = [
+            c
+            for c in client.calls
+            if c["topic"].startswith("container_hooks/app_other/")
+        ]
+        assert cleared_state
+        assert all(c["payload"] == "" and c["retain"] for c in cleared_state)
+
+    @pytest.mark.asyncio
     async def test_publishes_expected_component_set(self, publisher: HealthPublisher):
         client = _RecordingClient()
         await publisher._publish_discovery(client)  # type: ignore[arg-type]

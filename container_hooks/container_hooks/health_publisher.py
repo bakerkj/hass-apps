@@ -42,6 +42,7 @@ from .mqtt import (
     applied_discovery_payload,
     availability_topic,
     clear_container_entities,
+    keys_for,
     publish_discovery,
     publish_state,
     sentinel_discovery_payload,
@@ -274,8 +275,34 @@ class HealthPublisher:
         message. Retained on the broker, so republishing is idempotent.
         expire_after is set generously (max(60, 4× poll interval)) so a
         broker or addon hiccup doesn't churn every sensor to unknown.
+
+        Before rescanning, snapshots the previous slug set so we can
+        clear discovery + retained state for slugs that dropped out
+        since last discovery — otherwise a removed recipe's entities
+        linger in HA forever because retained MQTT keeps them alive.
         """
+        prev_slugs = set(self._slugs)
+        prev_container_for_slug = dict(self._container_for_slug)
         self._rebuild_slug_map()
+        for dropped_slug in prev_slugs - set(self._slugs):
+            prev_container = prev_container_for_slug.get(dropped_slug, "")
+            # Cover both possible past shapes (with or without sentinel).
+            # ``keys_for(True)`` returns every key we could have published;
+            # clear_discovery is idempotent, so clearing a key that was
+            # never published costs one no-op retained empty on the broker.
+            await clear_container_entities(
+                mq,
+                discovery_prefix=self.options.mqtt_discovery_prefix,
+                device_id=self.options.client_id,
+                slug=dropped_slug,
+                keys=keys_for(sentinel_configured=True),
+                base_topic=self.options.mqtt_base_topic,
+            )
+            self.log.info(
+                "cleared discovery + retained state for removed slug=%s (was %s)",
+                dropped_slug,
+                prev_container or "?",
+            )
         expire = max(60, self.options.health_interval_seconds * 4)
         for slug, friendly in self._slugs.items():
             container = self._container_for_slug[slug]

@@ -298,13 +298,17 @@ async def clear_container_entities(
     device_id: str,
     slug: str,
     keys: Iterable[str],
+    base_topic: str | None = None,
 ) -> None:
     """Drop every discovery config we might have published for a slug.
 
-    Used when the container's recipe directory is removed on disk (the
-    user is done tracking that container). Runs once at startup as
-    reconciliation; the sensors would otherwise linger in HA forever
-    since retained MQTT keeps them alive.
+    Called from ``_publish_discovery`` when a slug present on the last
+    scan is no longer on disk (recipe removed). Clearing the discovery
+    config alone makes HA drop the entity, but its retained state and
+    attributes topics on the broker survive — a later re-add of the
+    same recipe would republish discovery and pick up the stale state
+    on subscribe. When ``base_topic`` is supplied we also empty those
+    retained state and attributes topics so a re-add starts clean.
     """
     for key in keys:
         component = "sensor" if key == "summary" else "binary_sensor"
@@ -316,3 +320,10 @@ async def clear_container_entities(
             slug=slug,
             key=key,
         )
+        if base_topic is not None:
+            await client.publish(
+                state_topic(base_topic, slug, key), "", qos=1, retain=True
+            )
+            await client.publish(
+                attributes_topic(base_topic, slug, key), "", qos=1, retain=True
+            )

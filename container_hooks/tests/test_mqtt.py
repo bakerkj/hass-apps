@@ -252,6 +252,32 @@ class TestPublish:
         )
         assert "homeassistant/sensor/container-hooks_esphome/summary/config" in topics
         assert all(c["payload"] == "" for c in client.calls)
+        # base_topic omitted -> only discovery configs cleared, no state topics.
+        assert all("/state" not in c["topic"] for c in client.calls)
+
+    @pytest.mark.asyncio
+    async def test_clear_container_entities_with_base_topic_also_clears_state(self):
+        client = _RecordingClient()
+        await clear_container_entities(
+            client,
+            discovery_prefix="homeassistant",
+            device_id="container-hooks",
+            slug="esphome",
+            keys=("applied", "summary"),
+            base_topic="container_hooks",
+        )
+        topics = [c["topic"] for c in client.calls]
+        assert (
+            "homeassistant/binary_sensor/container-hooks_esphome/applied/config"
+            in topics
+        )
+        assert "homeassistant/sensor/container-hooks_esphome/summary/config" in topics
+        # Retained state + attributes topics for each key are also cleared.
+        assert "container_hooks/esphome/applied/state" in topics
+        assert "container_hooks/esphome/applied/attributes" in topics
+        assert "container_hooks/esphome/summary/state" in topics
+        assert "container_hooks/esphome/summary/attributes" in topics
+        assert all(c["payload"] == "" and c["retain"] for c in client.calls)
 
 
 # --- summary_state matrix ------------------------------------------------
