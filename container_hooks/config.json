@@ -22,7 +22,16 @@
     "initial_sweep": true,
     "debounce_seconds": 2,
     "skip_containers": [],
-    "container_overrides": []
+    "container_overrides": [],
+    "mqtt_host": "",
+    "mqtt_port": 1883,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "mqtt_discovery_prefix": "homeassistant",
+    "mqtt_base_topic": "container_hooks",
+    "client_id": "container-hooks",
+    "health_interval_seconds": 30,
+    "mqtt_disconnect_timeout_seconds": 300
   },
   "schema": {
     "log_level": "list(DEBUG|INFO|WARNING|ERROR)",
@@ -35,8 +44,18 @@
     "container_overrides": [
       {
         "container": "str",
-        "debounce_seconds": "int(0,60)?"
+        "debounce_seconds": "int(0,60)?",
+        "success_sentinel": "str?"
       }
-    ]
+    ],
+    "mqtt_host": "str?",
+    "mqtt_port": "port",
+    "mqtt_username": "str?",
+    "mqtt_password": "password?",
+    "mqtt_discovery_prefix": "str",
+    "mqtt_base_topic": "str",
+    "client_id": "str",
+    "health_interval_seconds": "int(5,600)",
+    "mqtt_disconnect_timeout_seconds": "int(5,600)"
   }
 }

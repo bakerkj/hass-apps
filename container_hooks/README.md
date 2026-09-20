@@ -171,14 +171,23 @@ esac
 
 ## Configuration
 
-| Option                | Default                          | Description                                                                                                                                                                                                                    |
-| --------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `log_level`           | `INFO`                           | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                                                                                                                                                                       |
-| `base_dir`            | `/homeassistant/container_hooks` | Root of the per-container hook tree. See "Layout" above.                                                                                                                                                                       |
-| `initial_sweep`       | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                                                                   |
-| `debounce_seconds`    | `2`                              | Per-container debounce window for the post-start `scripts/` path only, in seconds, 0-60 (`0` disables). Pre-start hooks (`pre-start-files/`, `pre-start-patches/`, `pre-start/`) bypass debounce — see "Debounce scope" below. |
-| `skip_containers`     | `[]`                             | Full docker container names to ignore (e.g. `app_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here.                                                      |
-| `container_overrides` | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                                                                                  |
+| Option                            | Default                          | Description                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `log_level`                       | `INFO`                           | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                                                                                                                                                                                                                                                                                                                                             |
+| `base_dir`                        | `/homeassistant/container_hooks` | Root of the per-container hook tree. See "Layout" above.                                                                                                                                                                                                                                                                                                                                             |
+| `initial_sweep`                   | `true`                           | Process currently-running containers when the add-on starts.                                                                                                                                                                                                                                                                                                                                         |
+| `debounce_seconds`                | `2`                              | Per-container debounce window for the post-start `scripts/` path only, in seconds, 0-60 (`0` disables). Pre-start hooks (`pre-start-files/`, `pre-start-patches/`, `pre-start/`) bypass debounce — see "Debounce scope" below.                                                                                                                                                                       |
+| `skip_containers`                 | `[]`                             | Full docker container names to ignore (e.g. `app_xxxxxxxx_esphome`). The add-on always skips its own container by resolved full name in addition to anything listed here.                                                                                                                                                                                                                            |
+| `container_overrides`             | `[]`                             | Per-container overrides. See "Per-Container Overrides" below.                                                                                                                                                                                                                                                                                                                                        |
+| `mqtt_host`                       | `""`                             | Broker hostname for the MQTT health publisher. Empty disables the whole feature (no broker connection, no sensors). See "MQTT Health Publisher" below.                                                                                                                                                                                                                                               |
+| `mqtt_port`                       | `1883`                           | Broker port.                                                                                                                                                                                                                                                                                                                                                                                         |
+| `mqtt_username`                   | `""`                             | Broker username (leave empty for anonymous brokers).                                                                                                                                                                                                                                                                                                                                                 |
+| `mqtt_password`                   | `""`                             | Broker password.                                                                                                                                                                                                                                                                                                                                                                                     |
+| `mqtt_discovery_prefix`           | `homeassistant`                  | HA MQTT Discovery prefix. Match your MQTT integration's setting.                                                                                                                                                                                                                                                                                                                                     |
+| `mqtt_base_topic`                 | `container_hooks`                | Base topic for availability and per-container state topics.                                                                                                                                                                                                                                                                                                                                          |
+| `client_id`                       | `container-hooks`                | MQTT client id and discovery device-id prefix. Must be unique on the broker. **Do not rename after first use** — the retained-scan reconciliation is scoped to the current `client_id`, so previously-published entities under an old id become invisible to cleanup and linger in HA. If you must rename, manually clear the old `homeassistant/*/<old_id>_*` retained configs on the broker first. |
+| `health_interval_seconds`         | `30`                             | How often to re-evaluate + publish per-container health (5-600 s).                                                                                                                                                                                                                                                                                                                                   |
+| `mqtt_disconnect_timeout_seconds` | `300`                            | Max broker downtime before container_hooks exits so Supervisor restarts it.                                                                                                                                                                                                                                                                                                                          |
 
 ### Per-Container Overrides
 
@@ -187,13 +196,117 @@ debounce_seconds: 2 # global default
 container_overrides:
   - container: app_xxxxxxxx_esphome
     debounce_seconds: 0 # never debounce this one
+    # Path inside the target that the payload touches when it runs
+    # successfully. Presence (tmpfs) or fresh mtime (overlay) proves
+    # the payload ran on this container lifecycle. See "MQTT Health
+    # Publisher" below.
+    success_sentinel: /dev/shm/container_hooks-esphome-ok
   - container: app_flapping_thing
     debounce_seconds: 10 # longer window for a noisy watchdog
 ```
 
 Only set the fields you want to override; everything else falls through to the
-global defaults. Today only `debounce_seconds` is overridable; this shape leaves
-room for more per-container knobs without breaking existing config.
+global defaults. Available fields:
+
+- `debounce_seconds` — override the global `debounce_seconds` for this
+  container.
+- `success_sentinel` — an in-target path used by the sentinel health check (see
+  below). When unset, only the `applied` sensor is published for this container.
+
+## MQTT Health Publisher
+
+When `mqtt_host` is set, the add-on publishes a per-target-container health
+device via HA MQTT Discovery. This exists to detect the two failure modes that
+would otherwise stay silent:
+
+1. container_hooks missed the target container's `create` event (add-on boot
+   race, addon-manager races, or events dropped mid-restart).
+2. The pre-start payload ran, but its side-effect didn't actually take (module
+   renamed in the target, Python import path shifted, the payload script errored
+   silently).
+
+### Sensors per container
+
+Each container the add-on has a `pre-start-files/` recipe for gets one HA device
+with up to three entities:
+
+| Entity                                          | Type            | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary_sensor.container_hooks_<slug>_applied`  | `binary_sensor` | `ON` iff `<container>/logs/pre-start.log` has a successful `put_archive` entry newer than the container's current `Created` timestamp. Answers "did we fire the hook on this lifecycle." (Uses `Created` — not `StartedAt` — because `put_archive` runs on the docker `create` event and `Created` is stable across `docker restart` of the same instance but fresh on `rm+create`; that anchors freshness to the container-instance identity rather than any time window.) |
+| `binary_sensor.container_hooks_<slug>_sentinel` | `binary_sensor` | Only when `success_sentinel` is set. `ON` iff the file is present (tmpfs) or its mtime ≥ `StartedAt` (overlay). Answers "did the payload actually run inside the target on this lifecycle."                                                                                                                                                                                                                                                                                 |
+| `sensor.container_hooks_<slug>_health`          | `sensor`        | Short verdict combining the two: `ok`, `not_applied`, `boot_race`, `payload_no_effect`, `stale_or_orphan`.                                                                                                                                                                                                                                                                                                                                                                  |
+
+The two binary sensors carry a `reason` JSON attribute so a red state is
+self-diagnosing. The summary sensor's attributes include both underlying reasons
+and a `sentinel_configured` flag.
+
+### Sentinel path guidance
+
+Pick a path that is **guaranteed absent** from the pristine image, so its
+presence unambiguously means the payload ran.
+
+- On containers where `/dev/shm` is tmpfs (Docker default), a path like
+  `/dev/shm/container_hooks-<addon>-ok` is ideal: tmpfs is remounted at every
+  container start, so presence alone proves freshness. The addon auto-detects
+  tmpfs via `findmnt`. If the target image is busybox-only (no `findmnt`),
+  auto-detect falls through and the addon uses the mtime path — still correct
+  when the sentinel lives on tmpfs (mtime resets with the tmpfs remount), just
+  slightly noisier in the logs.
+- On containers where `/tmp` and `/dev/shm` are on the writable overlay (some
+  s6-overlay images), the addon falls back to comparing the file's mtime against
+  the container's `StartedAt`. Have the payload `touch` (or overwrite) the
+  sentinel every time it runs; a stale sentinel from a previous lifecycle
+  correctly reads as `OFF`.
+
+Example sitecustomize-style payload that touches the sentinel after a
+monkey-patch succeeds:
+
+```python
+# sitecustomize.py -- shipped via pre-start-files/usr/local/lib/pythonX.Y/site-packages/
+from pathlib import Path
+
+try:
+    from some_addon.controllers import controller
+
+    controller.SomeClass.start = lambda self: None  # disable
+    Path("/dev/shm/container_hooks-some-addon-ok").touch()
+except Exception:
+    pass  # sentinel stays absent -> HA flips the sensor OFF
+```
+
+### Home Assistant automation
+
+Notify when any tracked container has been unhealthy for more than a minute:
+
+```yaml
+- alias: container_hooks unhealthy
+  trigger:
+    - platform: template
+      value_template: >
+        {{ states.sensor
+           | selectattr('entity_id', 'match',
+        'sensor\.container_hooks_.*_health')
+           | rejectattr('state', 'in', ['ok', 'unknown', 'unavailable'])
+           | list | count > 0 }}
+      for: "00:01:00"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: container_hooks health
+        message: >
+          {% set unhealthy = states.sensor
+             | selectattr('entity_id', 'match',
+          'sensor\.container_hooks_.*_health')
+             | rejectattr('state', 'in', ['ok', 'unknown', 'unavailable'])
+             | list %}
+          {% for s in unhealthy %} - {{ s.name }}: {{ s.state }} ({{
+          s.attributes.applied_reason }} / {{ s.attributes.sentinel_reason }})
+          {% endfor %}
+```
+
+The one-minute `for:` absorbs the normal boot window — the periodic poll
+(default 30 s) publishes fresh state on every cycle, so a container that comes
+up healthy on the first poll never trips the automation.
 
 ### Debounce scope
 
