@@ -45,7 +45,8 @@
       {
         "container": "str",
         "debounce_seconds": "int(0,60)?",
-        "success_sentinel": "str?"
+        "success_sentinel": "str?",
+        "success_sentinel_mode": "list(presence|content)?"
       }
     ],
     "mqtt_host": "str?",

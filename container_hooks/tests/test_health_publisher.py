@@ -131,15 +131,27 @@ class TestSentinelFor:
                 ContainerOverride(container="app_x", success_sentinel="/dev/shm/x"),
             )
         )
-        assert _sentinel_for(opts, "app_x") == "/dev/shm/x"
+        assert _sentinel_for(opts, "app_x") == ("/dev/shm/x", "presence")
 
     def test_returns_none_if_no_override(self):
         opts = Options()
-        assert _sentinel_for(opts, "app_x") is None
+        assert _sentinel_for(opts, "app_x") == (None, "presence")
 
     def test_returns_none_if_override_has_no_sentinel(self):
         opts = Options(container_overrides=(ContainerOverride(container="app_x"),))
-        assert _sentinel_for(opts, "app_x") is None
+        assert _sentinel_for(opts, "app_x") == (None, "presence")
+
+    def test_returns_content_mode_when_set(self):
+        opts = Options(
+            container_overrides=(
+                ContainerOverride(
+                    container="app_x",
+                    success_sentinel="/dev/shm/x",
+                    success_sentinel_mode="content",
+                ),
+            )
+        )
+        assert _sentinel_for(opts, "app_x") == ("/dev/shm/x", "content")
 
 
 # --- publish path end-to-end -----------------------------------------------

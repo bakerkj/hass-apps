@@ -120,7 +120,45 @@ def test_load_options_success_sentinel_string(tmp_path: Path) -> None:
             container="app_x",
             debounce_seconds=None,
             success_sentinel="/dev/shm/marker",
+            success_sentinel_mode="presence",
         ),
+    )
+
+
+def test_load_options_success_sentinel_mode_content(tmp_path: Path) -> None:
+    path = _write_options(
+        tmp_path,
+        container_overrides=[
+            {
+                "container": "app_x",
+                "success_sentinel": "/dev/shm/marker",
+                "success_sentinel_mode": "content",
+            },
+        ],
+    )
+    o = load_options(str(path))
+    assert o.container_overrides[0].success_sentinel_mode == "content"
+
+
+def test_load_options_success_sentinel_mode_invalid_warns(
+    tmp_path: Path, caplog
+) -> None:
+    path = _write_options(
+        tmp_path,
+        container_overrides=[
+            {
+                "container": "app_x",
+                "success_sentinel": "/dev/shm/marker",
+                "success_sentinel_mode": "bogus",
+            },
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        o = load_options(str(path))
+    assert o.container_overrides[0].success_sentinel_mode == "presence"
+    assert any(
+        "success_sentinel_mode" in rec.message and "bogus" in rec.message
+        for rec in caplog.records
     )
 
 

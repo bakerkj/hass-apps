@@ -5,6 +5,7 @@
 
 import asyncio
 import datetime
+import shlex
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -227,9 +228,17 @@ class TestCheckApplied:
 
 
 def _mock_docker_exec(
-    docker: MagicMock, *, fstype: str, sentinel_rc: int, mtime: str
+    docker: MagicMock,
+    *,
+    fstype: str,
+    sentinel_rc: int,
+    mtime: str,
+    sentinel_body: bytes = b"",
+    pid1_stat: bytes = b"",
 ) -> None:
-    """Attach an .exec that returns fstype for findmnt and mtime for stat."""
+    """Attach an .exec that returns fstype for findmnt, mtime for stat,
+    and (optionally) content bytes for ``cat <sentinel>`` and
+    ``cat /proc/1/stat`` — needed for the content-identity check."""
     call_log: list[list[str]] = []
 
     async def exec_impl(cmd: list[str], *, stdout: bool, stderr: bool):
@@ -252,8 +261,16 @@ def _mock_docker_exec(
                     payload = fstype.encode()
                 elif cmd[0] == "test":
                     payload = b""
+                elif cmd[0] == "sh" and "/proc/1/stat" in cmd[2]:
+                    payload = pid1_stat
+                elif cmd[0] == "sh" and "head -c" in cmd[2]:
+                    payload = sentinel_body
                 elif cmd[0] == "sh":
                     payload = mtime.encode()
+                elif cmd[:2] == ["cat", "/proc/1/stat"]:
+                    payload = pid1_stat
+                elif cmd[0] == "cat":
+                    payload = sentinel_body
                 else:
                     payload = b""
                 return MagicMock(data=payload)
@@ -278,6 +295,14 @@ def _mock_docker_exec(
     container.exec = AsyncMock(side_effect=exec_impl)
     docker.containers = MagicMock()
     docker.containers.get = AsyncMock(return_value=container)
+
+
+def _pid1_stat_line(ticks: int) -> bytes:
+    """A synthetic ``/proc/1/stat`` line where field 22 is ``ticks``.
+    Real format: ``<pid> (<comm>) <state> <ppid> ...``; field 22 is
+    ``starttime``. Comm can hold spaces/parens, so we test both."""
+    fields = ["1", "(complex init)"] + ["X"] * 19 + [str(ticks)] + ["0"] * 30
+    return (" ".join(fields) + "\n").encode()
 
 
 class TestCheckSentinel:
@@ -324,6 +349,223 @@ class TestCheckSentinel:
         result = await check_sentinel(docker, "x", "/tmp/marker")
         assert result is not None
         assert result.value is False
+
+    @pytest.mark.asyncio
+    async def test_presence_mode_ignores_body(self, monkeypatch: pytest.MonkeyPatch):
+        # Presence mode never opens the file — a garbage body on a
+        # present tmpfs sentinel is still ON.
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=b"total garbage",
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="presence")
+        assert result is not None
+        assert result.value is True
+
+
+class TestCheckSentinelContentMode:
+    @pytest.mark.asyncio
+    async def test_content_identity_match_returns_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-abc")
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=(
+                b'{"boot_id": "boot-abc", "pid1_start_ticks_since_boot": 42}'
+            ),
+            pid1_stat=_pid1_stat_line(42),
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None, "expected a HealthResult, got None"
+        assert result.value is True
+        assert "identity verified" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_boot_id_mismatch_returns_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-live")
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=(
+                b'{"boot_id": "boot-stale", "pid1_start_ticks_since_boot": 42}'
+            ),
+            pid1_stat=_pid1_stat_line(42),
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "prior host boot" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_pid1_mismatch_returns_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-abc")
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=(
+                b'{"boot_id": "boot-abc", "pid1_start_ticks_since_boot": 42}'
+            ),
+            pid1_stat=_pid1_stat_line(999),
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "prior container lifecycle" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_non_json_body_returns_off(self):
+        # In content mode a non-JSON body is a payload contract violation,
+        # so OFF — not the presence-mode fallthrough.
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=b"garbage not json",
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "not JSON" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_missing_pid1_field_returns_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-abc")
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=b'{"boot_id": "boot-abc"}',
+            pid1_stat=_pid1_stat_line(42),
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "pid1_start_ticks_since_boot" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_missing_file_returns_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # In content mode ``head -c`` on a missing file fails; the single
+        # read is what tells us the file is gone (no separate presence
+        # pre-check exists — that removed the two-call race window).
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-abc")
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=1,
+            mtime="",
+            sentinel_body=b"",  # empty because head -c on missing file returns no output
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "empty" in result.reason or "missing" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_empty_body_returns_off_with_specific_reason(self):
+        # File exists but is empty — distinguish from unreadable so the
+        # sensor's reason attribute points at the actual failure mode.
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker, fstype="tmpfs", sentinel_rc=0, mtime="", sentinel_body=b""
+        )
+        result = await check_sentinel(docker, "x", "/dev/shm/marker", mode="content")
+        assert result is not None
+        assert result.value is False
+        assert "empty" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_content_shell_metachars_in_path_are_quoted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Regression guard: the ``head -c`` shell string uses
+        # ``shlex.quote`` on the path. A path containing ``$``/spaces/``;``
+        # must land as a single argument to ``head``.
+        monkeypatch.setattr(health, "_host_boot_id", lambda: "boot-abc")
+        seen_cmds: list[list[str]] = []
+
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=(
+                b'{"boot_id": "boot-abc", "pid1_start_ticks_since_boot": 42}'
+            ),
+            pid1_stat=_pid1_stat_line(42),
+        )
+        orig_exec = docker.containers.get.return_value.exec
+
+        async def spy(cmd, **kwargs):
+            seen_cmds.append(list(cmd))
+            return await orig_exec(cmd, **kwargs)
+
+        docker.containers.get.return_value.exec = AsyncMock(side_effect=spy)
+
+        nasty = "/dev/shm/ok; rm -rf /$(id)"
+        result = await check_sentinel(docker, "x", nasty, mode="content")
+        assert result is not None
+        assert result.value is True
+        # The head -c command targeting the sentinel (not /proc/1/stat)
+        # must contain the nasty path shlex-quoted so the shell sees
+        # exactly one argument, not injected commands.
+        sentinel_reads = [
+            c
+            for c in seen_cmds
+            if c[0] == "sh" and "head -c" in c[2] and "/proc/1/stat" not in c[2]
+        ]
+        assert sentinel_reads, "expected a head -c on the sentinel path"
+        for c in sentinel_reads:
+            assert shlex.quote(nasty) in c[2], (
+                f"path not quoted in shell string: {c[2]!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_falls_back_to_presence(self):
+        # Fail-closed: a mode value that isn't ``content`` (typo, future
+        # value, stale caller) never triggers the identity read.
+        docker = MagicMock()
+        _mock_docker_exec(
+            docker,
+            fstype="tmpfs",
+            sentinel_rc=0,
+            mtime="",
+            sentinel_body=b'{"boot_id": "wrong", "pid1_start_ticks_since_boot": 1}',
+        )
+        result = await check_sentinel(
+            docker, "x", "/dev/shm/marker", mode="not-a-real-mode"
+        )
+        assert result is not None
+        # Presence-only: file exists → ON, content mismatch is not consulted.
+        assert result.value is True
 
 
 # --- rendering -------------------------------------------------------------

@@ -69,11 +69,13 @@ def _list_recipe_containers(options: Options) -> list[str]:
     return out
 
 
-def _sentinel_for(options: Options, container: str) -> str | None:
+def _sentinel_for(options: Options, container: str) -> tuple[str | None, str]:
+    """Return ``(path, mode)`` for a container. ``path=None`` if no
+    sentinel is configured; ``mode`` defaults to ``"presence"``."""
     for override in options.container_overrides:
         if override.container == container:
-            return override.success_sentinel
-    return None
+            return override.success_sentinel, override.success_sentinel_mode
+    return None, "presence"
 
 
 class HealthPublisher:
@@ -324,9 +326,9 @@ class HealthPublisher:
         expire = max(60, self.options.health_interval_seconds * 4)
         for slug, friendly in self._slugs.items():
             container = self._container_for_slug[slug]
-            sentinel = _sentinel_for(self.options, container)
-            active_keys = keys_for(sentinel_configured=sentinel is not None)
-            if sentinel is None:
+            sentinel_path, _ = _sentinel_for(self.options, container)
+            active_keys = keys_for(sentinel_configured=sentinel_path is not None)
+            if sentinel_path is None:
                 # sentinel dropped for this container — clear any retained
                 # discovery/state from a prior run where it was set.
                 await clear_container_entities(
@@ -396,13 +398,15 @@ class HealthPublisher:
             if self.stop.is_set():
                 return
             container = self._container_for_slug[slug]
-            sentinel = _sentinel_for(self.options, container)
+            sentinel_path, sentinel_mode = _sentinel_for(self.options, container)
             applied = await check_applied(
                 self.docker, container, pre_start_log(self.options, container)
             )
             sentinel_res: HealthResult | None = None
-            if sentinel is not None:
-                sentinel_res = await check_sentinel(self.docker, container, sentinel)
+            if sentinel_path is not None:
+                sentinel_res = await check_sentinel(
+                    self.docker, container, sentinel_path, mode=sentinel_mode
+                )
             # Both checks None → target unreachable → per-slug availability offline
             # instead of holding at ``unknown``. Any check returning a
             # real HealthResult keeps the target ``online`` — even a
@@ -419,7 +423,7 @@ class HealthPublisher:
                 slug,
                 applied,
                 sentinel_res,
-                sentinel_configured=sentinel is not None,
+                sentinel_configured=sentinel_path is not None,
             )
 
     async def _publish_snapshot(

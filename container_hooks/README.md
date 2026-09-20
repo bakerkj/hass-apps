@@ -274,6 +274,92 @@ except Exception:
     pass  # sentinel stays absent -> HA flips the sensor OFF
 ```
 
+### Sentinel modes
+
+Two modes, selected per-container by `success_sentinel_mode` under
+`container_overrides`. Default is `presence`.
+
+**When to pick `content`:** the sentinel path is on an overlay mount (not tmpfs,
+so mtime is the only freshness signal) AND you want protection against a payload
+that `touch`es a stale file, OR you want defense in depth on a tmpfs path
+against a payload that would leave stale content behind. Requires the payload to
+write JSON with **both required** identity fields — `boot_id` and
+`pid1_start_ticks_since_boot`. Missing either field, a mismatch against live
+values, or a non-JSON body is OFF. Stick with `presence` if the payload only
+`touch`es a file.
+
+Extra fields in the JSON body (`written_iso`, `python`, `container_id`, anything
+else) are diagnostic only — the addon reads and validates just the two identity
+fields. Adding extras is fine and useful for `cat` inspection; the addon ignores
+them.
+
+Content mode requires `sh`, `head`, and a readable `/proc/1/stat` inside the
+target container. Every mainstream base image (Alpine, Debian, Ubuntu,
+s6-overlay variants) provides them; a scratch-based target won't. Fall back to
+`presence` mode for such targets.
+
+| Mode                   | Payload writes                                                                          | Addon verifies                                                                                                                                         | Catches                                                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `presence` _(default)_ | Just `touch`es the file                                                                 | tmpfs: file exists; overlay: mtime ≥ StartedAt within slack                                                                                            | Payload never ran; payload ran on a previous lifecycle that got remounted (tmpfs)                                  |
+| `content`              | JSON body with `boot_id`, `pid1_start_ticks_since_boot` (+ any extra diagnostic fields) | Reads the body, compares its `boot_id` to the host's `/proc/sys/kernel/random/boot_id` and its `pid1_start_ticks_since_boot` to the target's pid1 stat | Everything `presence` catches, plus stale sentinel with a fresh mtime, plus a sentinel that survived a host reboot |
+
+Content mode requires the payload to write JSON that includes at least both
+identity fields — a missing field, a non-JSON body, or a mismatch against live
+values is OFF. This is strictly more robust than `presence` on overlay paths
+(and cheap defense in depth on tmpfs), but it means the payload contract is now
+"write JSON, not just touch."
+
+Example content-mode payload:
+
+```python
+import json
+import socket
+import sys
+import time
+from pathlib import Path
+
+_SENTINEL = "/dev/shm/container_hooks-some-addon-ok"
+
+
+def _boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+
+
+def _pid1_ticks():
+    try:
+        raw = Path("/proc/1/stat").read_text()
+    except OSError:
+        return None
+    tail = raw.rsplit(")", 1)[-1].split()
+    try:
+        return int(tail[19])
+    except IndexError, ValueError:
+        return None
+
+
+try:
+    from some_addon.controllers import controller
+
+    controller.SomeClass.start = lambda self: None
+    Path(_SENTINEL).write_text(
+        json.dumps(
+            {
+                "boot_id": _boot_id(),
+                "pid1_start_ticks_since_boot": _pid1_ticks(),
+                "container_id": socket.gethostname(),
+                "python": sys.version.split()[0],
+                "written_unix": time.time(),
+            },
+            sort_keys=True,
+        )
+    )
+except Exception:
+    pass  # sentinel stays absent (or stale) -> sensor flips OFF
+```
+
 ### Home Assistant automation
 
 Notify when any tracked container has been unhealthy for more than a minute:

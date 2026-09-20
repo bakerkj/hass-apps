@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .health import SENTINEL_MODE_CONTENT, SENTINEL_MODE_PRESENCE
+
 _log = logging.getLogger(__name__)
 
 _KNOWN_OPTION_KEYS = frozenset(
@@ -37,16 +39,42 @@ _KNOWN_OPTION_KEYS = frozenset(
         "mqtt_disconnect_timeout_seconds",
     }
 )
-_KNOWN_OVERRIDE_KEYS = frozenset({"container", "debounce_seconds", "success_sentinel"})
+_KNOWN_OVERRIDE_KEYS = frozenset(
+    {
+        "container",
+        "debounce_seconds",
+        "success_sentinel",
+        "success_sentinel_mode",
+    }
+)
+
+# Kept in lockstep with SENTINEL_MODE_* in health.py — that module is the
+# source of truth for what the runtime accepts; the tuple form is only
+# for parser-side validation + user-facing warning text.
+_SENTINEL_MODES = (SENTINEL_MODE_PRESENCE, SENTINEL_MODE_CONTENT)
 
 
 @dataclass(frozen=True)
 class ContainerOverride:
-    """Per-container overrides. Only ``container`` is required."""
+    """Per-container overrides. Only ``container`` is required.
+
+    ``success_sentinel_mode`` picks how the addon interprets the sentinel:
+
+    * ``"presence"`` (default) — a payload that just ``touch``es a file
+      is enough. The addon does presence-on-tmpfs or mtime-vs-StartedAt
+      checks and never opens the file.
+    * ``"content"`` — the payload writes a JSON body with identity
+      fields (``boot_id``, ``pid1_start_ticks_since_boot``). The addon
+      reads the body every poll and verifies those fields against the
+      live host boot id and the target's pid1 start ticks; a stale
+      sentinel from a prior lifecycle is caught even when its mtime
+      looks fresh.
+    """
 
     container: str
     debounce_seconds: int | None = None
     success_sentinel: str | None = None
+    success_sentinel_mode: str = SENTINEL_MODE_PRESENCE
 
 
 @dataclass(frozen=True)
@@ -183,11 +211,27 @@ def load_options(path: str) -> Options:
                 sentinel_raw,
             )
             sentinel = None
+        mode_raw = entry.get("success_sentinel_mode")
+        if mode_raw is None:
+            mode = SENTINEL_MODE_PRESENCE
+        elif isinstance(mode_raw, str) and mode_raw.strip() in _SENTINEL_MODES:
+            mode = mode_raw.strip()
+        else:
+            _log.warning(
+                "options: container_overrides[%r].success_sentinel_mode is "
+                "not one of (%s) (%r); using %r",
+                name,
+                "|".join(_SENTINEL_MODES),
+                mode_raw,
+                SENTINEL_MODE_PRESENCE,
+            )
+            mode = SENTINEL_MODE_PRESENCE
         overrides.append(
             ContainerOverride(
                 container=name,
                 debounce_seconds=debounce,
                 success_sentinel=sentinel,
+                success_sentinel_mode=mode,
             )
         )
     return Options(
