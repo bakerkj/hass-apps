@@ -31,8 +31,10 @@ jobs:
           # Two modes drive a single ``addons`` array:
           #
           #   smoke-all     : a cross-cutting file changed (this workflow,
-          #                   pyproject, uv.lock, or the repo-root
-          #                   conftest). Run every addon's test surface.
+          #                   pyproject, uv.lock, conftest, or
+          #                   .python-version; the e2e suites import
+          #                   their addon directly and ``uv run pytest``
+          #                   uses .python-version).
           #
           #   smoke-changed : regular diff — only addons whose dirs were
           #                   touched in this push/PR.
@@ -64,7 +66,7 @@ jobs:
           # splits the same check.
           if echo "$changed" | grep -qx "$WORKFLOW_PATH" \
               || echo "$changed" \
-              | grep -qxE "pyproject\.toml|uv\.lock|conftest\.py"; then
+              | grep -qxE "pyproject\.toml|uv\.lock|conftest\.py|\.python-version"; then
             echo "cross-cutting file touched -> smoke-all"
             mode='smoke-all'
             selected="$ALL"
