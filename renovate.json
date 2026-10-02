@@ -169,6 +169,12 @@
       "groupName": "alpine apk packages"
     },
     {
+      "description": "Group ``.python-version`` (depName ``python``, docker datasource) with the Dockerfile ``python3=X.Y.Z-rN`` apk pins (depName ``python3``, custom.aports) so the two sources of the Python runtime bump together as one PR. Must sit after ``alpine apk packages`` above; last-match-wins.",
+      "matchDepNames": ["python", "python3"],
+      "matchDatasources": ["docker", "custom.aports"],
+      "groupName": "python runtime"
+    },
+    {
       "description": "ffmpeg apt package resolves from the Ubuntu 26.04 (resolute) universe archive, matching the GitHub runner's sources. Must move in lockstep with the `runs-on:` runner OS — an exact-version pin only exists in the archives for the matching Ubuntu release.",
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["deb"],
@@ -204,8 +210,9 @@
       "enabled": false
     },
     {
-      "description": "Hold CI Python on the 3.14 line to match the Alpine 3.24 base image runtime (python3=3.14.5-r0). minimumReleaseAge gives uv time to catch up: uv only installs interpreters embedded in its release, and [tool.uv] required-version is an exact pin, so a patch bump landing before uv ships support fails CI with no self-heal (cf. #409).",
-      "matchDepNames": ["python"],
+      "description": "Hold the Python runtime on the 3.14 line (Alpine 3.24's). Covers BOTH ``python`` and ``python3`` so an Alpine 3.15 publish ahead of uv support can't move the apk pins alone while ``.python-version`` stays at 3.14 (cf. #409). minimumReleaseAge gives uv time to catch up. ``<3.15`` sorts correctly against ``3.14.8-r0`` under custom.aports' loose versioning.",
+      "matchDepNames": ["python", "python3"],
+      "matchDatasources": ["docker", "custom.aports"],
       "allowedVersions": "<3.15",
       "minimumReleaseAge": "3 days"
     },
