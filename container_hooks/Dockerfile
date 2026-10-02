@@ -12,8 +12,8 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.5.3-r1 \
-  python3=3.14.7-r1 \
+  docker-cli=29.8.2-r0 \
+  python3=3.14.8-r0 \
   py3-pip=26.1.2-r0 \
   uv=0.11.19-r0
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv.
