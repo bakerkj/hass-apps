@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.34](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.33...intel_gpu_top_mqtt-v0.3.34) (2026-10-02)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+
 ## [0.3.33](https://github.com/bakerkj/hass-apps/compare/intel_gpu_top_mqtt-v0.3.32...intel_gpu_top_mqtt-v0.3.33) (2026-09-18)
 
 
