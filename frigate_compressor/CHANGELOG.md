@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.60](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.59...frigate_compressor-v0.0.60) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+
 ## [0.0.59](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.58...frigate_compressor-v0.0.59) (2026-09-19)
 
 
