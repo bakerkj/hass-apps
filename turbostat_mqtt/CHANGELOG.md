@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.43](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.42...turbostat_mqtt-v0.0.43) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+
 ## [0.0.42](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.41...turbostat_mqtt-v0.0.42) (2026-09-05)
 
 
