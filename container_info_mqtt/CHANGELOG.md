@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.29](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.28...container_info_mqtt-v0.1.29) (2026-10-10)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+
 ## [0.1.28](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.27...container_info_mqtt-v0.1.28) (2026-09-06)
 
 
