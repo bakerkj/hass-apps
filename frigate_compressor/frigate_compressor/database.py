@@ -114,6 +114,19 @@ CREATE INDEX IF NOT EXISTS idx_files_t1_error ON files(t1_compressed_at)
 
 CREATE INDEX IF NOT EXISTS idx_files_t2_error ON files(t2_compressed_at)
   WHERE t2_status = 'error';
+
+-- give_up partials for the MQTT publisher's per-camera
+-- ``COUNT(*) WHERE camera=? AND t{1,2}_status='give_up'`` — without
+-- these the planner falls through to a full table scan (~0.7s each on
+-- 6M-row files), paid 12x per publish cycle.  Keyed on ``camera``, not
+-- the ``t{1,2}_compressed_at`` the error partials use: give_up has no
+-- range/ORDER BY consumer like ``recent_errors`` does, so ``camera``
+-- lets COUNT walk one contiguous range per camera.
+CREATE INDEX IF NOT EXISTS idx_files_t1_giveup ON files(camera)
+  WHERE t1_status = 'give_up';
+
+CREATE INDEX IF NOT EXISTS idx_files_t2_giveup ON files(camera)
+  WHERE t2_status = 'give_up';
 """
 
 

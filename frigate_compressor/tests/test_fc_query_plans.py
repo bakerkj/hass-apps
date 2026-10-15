@@ -511,3 +511,26 @@ def test_mqtt_error_counts_use_error_partial_indexes(ctx):
     )
     assert any("idx_files_t1_error" in p for p in t1_plans), t1_plans
     assert any("idx_files_t2_error" in p for p in t2_plans), t2_plans
+
+
+def test_mqtt_giveup_counts_use_giveup_partial_indexes(ctx):
+    """Per-camera give_up COUNTs in ``collect_frigate_stats`` —
+    ``SELECT COUNT(*) FROM files WHERE camera=? AND t{1,2}_status='give_up'``
+    must hit ``idx_files_t{1,2}_giveup``.  Without these partials the
+    planner falls through to a full table scan (~0.7s each on a 6M-row
+    files), paid 12x per publish cycle = ~2.8% of one core continuous.
+    """
+
+    cam = next(iter(ctx.cfg.cameras))
+    t1_plans = _plans(
+        ctx.compress_db,
+        "SELECT COUNT(*) FROM files WHERE camera = ? AND t1_status = 'give_up'",
+        (cam,),
+    )
+    t2_plans = _plans(
+        ctx.compress_db,
+        "SELECT COUNT(*) FROM files WHERE camera = ? AND t2_status = 'give_up'",
+        (cam,),
+    )
+    assert any("idx_files_t1_giveup" in p for p in t1_plans), t1_plans
+    assert any("idx_files_t2_giveup" in p for p in t2_plans), t2_plans
