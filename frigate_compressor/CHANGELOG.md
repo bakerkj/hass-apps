@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.60](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.59...frigate_compressor-v0.0.60) (2026-10-16)
+
+
+### Performance Improvements
+
+* **fc:** add give_up partial indexes to kill mqtt publisher full scans ([#572](https://github.com/bakerkj/hass-apps/issues/572)) ([0ab084b](https://github.com/bakerkj/hass-apps/commit/0ab084ba75aa85ef81ae7a396223ffafa30e1ddd))
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+
 ## [0.0.59](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.58...frigate_compressor-v0.0.59) (2026-09-19)
 
 
