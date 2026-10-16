@@ -104,7 +104,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
           cache-suffix: unit-tests
       - run: uv run pytest -m "not e2e" --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Unit test results"
@@ -168,7 +168,7 @@ jobs:
       - run:
           uv run pytest frigate_compressor/tests/ -m e2e -v
           --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Frigate Compressor e2e results"
@@ -215,7 +215,7 @@ jobs:
       - run:
           uv run pytest ffmpeg_snapshotter/tests/ -m e2e -v
           --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "FFmpeg Snapshotter e2e results"
@@ -277,7 +277,7 @@ jobs:
       - run:
           uv run pytest dashboard_entity_proxy/tests/integration/ -m e2e -v -s
           --junit-xml=junit.xml
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Dashboard Entity Proxy e2e results"
@@ -326,7 +326,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           CONTAINER_HOOKS_IMAGE: container_hooks_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Container Hooks e2e results"
@@ -394,7 +394,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           SIGNALK_BRIDGE_IMAGE: signalk_bridge_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Signal K Bridge e2e results"
@@ -441,7 +441,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           SIGNALK_SERVER_IMAGE: signalk_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Signal K e2e results"
@@ -487,7 +487,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           DASHBOARD_WEB_PROXY_IMAGE: dwp_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Dashboard Web Proxy e2e results"
@@ -555,7 +555,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           HALPI2_POWER_IMAGE: halpi2_power_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "HALPI2 Power e2e results"
@@ -601,7 +601,7 @@ jobs:
           --junit-xml=junit.xml
         env:
           DIREWOLF_IGATE_IMAGE: direwolf_igate_e2e:ci
-      - uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+      - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
           check_name: "Direwolf IGate e2e results"
