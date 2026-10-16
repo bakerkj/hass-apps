@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.20](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.19...birdnet_audio_stream-v0.1.20) (2026-10-16)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#579](https://github.com/bakerkj/hass-apps/issues/579)) ([c4d06e3](https://github.com/bakerkj/hass-apps/commit/c4d06e38490b58da66bd858344e94da6619eb8e1))
+
 ## [0.1.19](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.18...birdnet_audio_stream-v0.1.19) (2026-09-06)
 
 
