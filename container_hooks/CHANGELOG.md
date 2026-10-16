@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.5...container_hooks-v0.1.6) (2026-10-16)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+* **deps:** update alpine apk packages ([#579](https://github.com/bakerkj/hass-apps/issues/579)) ([c4d06e3](https://github.com/bakerkj/hass-apps/commit/c4d06e38490b58da66bd858344e94da6619eb8e1))
+
 ## [0.1.5](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.4...container_hooks-v0.1.5) (2026-09-20)
 
 
