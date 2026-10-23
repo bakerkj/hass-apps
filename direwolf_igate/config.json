@@ -3,7 +3,7 @@
   "slug": "direwolf_igate",
   "description": "Receive-only APRS IGate using Direwolf with an RTL-SDR dongle.",
   "url": "https://github.com/bakerkj/hass-apps",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "image": "ghcr.io/bakerkj/{arch}-direwolf_igate",
   "arch": [
     "amd64",
