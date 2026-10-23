@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
   docker-cli=29.9.2-r0 \
   python3=3.14.8-r0 \
   py3-pip=26.1.2-r0 \
-  uv=0.11.19-r0
+  uv=0.11.19-r1
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv.
 # aiomqtt 2.x wraps paho-mqtt 2.x -- pin both explicitly for reproducibility.
 RUN --mount=type=cache,target=/root/.cache/uv \

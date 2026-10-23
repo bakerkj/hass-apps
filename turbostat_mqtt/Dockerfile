@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       linux-tools=7.1.5-r0 \
       python3=3.14.8-r0 \
       util-linux=2.42.3-r1 \
-      uv=0.11.19-r0
+      uv=0.11.19-r1
 
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv. It needs
 # paho 2.x, which is likewise newer than the py3-paho-mqtt apk.
