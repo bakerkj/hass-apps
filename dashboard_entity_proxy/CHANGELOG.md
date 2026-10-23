@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.5...dashboard_entity_proxy-v0.1.6) (2026-10-23)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+* **deps:** update alpine apk packages ([#589](https://github.com/bakerkj/hass-apps/issues/589)) ([06f2736](https://github.com/bakerkj/hass-apps/commit/06f2736b513f20a146783b8d8fb4a13b2bfff52c))
+
 ## [0.1.5](https://github.com/bakerkj/hass-apps/compare/dashboard_entity_proxy-v0.1.4...dashboard_entity_proxy-v0.1.5) (2026-08-21)
 
 
