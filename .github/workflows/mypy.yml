@@ -18,6 +18,10 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: mypy
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .mypy_cache
@@ -31,7 +35,7 @@ jobs:
       # after the per-addon test relocation and are excluded — matches
       # the prek hook scope in ``.pre-commit-config.yaml``.
       - run:
-          uv run mypy container_hooks/container_hooks
+          uv run --no-sync mypy container_hooks/container_hooks
           container_info_mqtt/container_info_mqtt
           dashboard_entity_proxy/dashboard_entity_proxy
           direwolf_igate/direwolf_igate ffmpeg_snapshotter/ffmpeg_snapshotter

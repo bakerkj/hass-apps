@@ -103,7 +103,11 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: unit-tests
-      - run: uv run pytest -m "not e2e" --junit-xml=junit.xml
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
+      - run: uv run --no-sync pytest -m "not e2e" --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
@@ -146,6 +150,10 @@ jobs:
       # of dependencies. Keyed on the pin so a renovate bump busts it. A
       # user-owned archives dir avoids the root-owned
       # /var/cache/apt/archives permission problem on cache restore.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.apt-archives
@@ -166,7 +174,7 @@ jobs:
       # silently drop coverage instead of erroring.
       - run: ffmpeg -version && ffprobe -version
       - run:
-          uv run pytest frigate_compressor/tests/ -m e2e -v
+          uv run --no-sync pytest frigate_compressor/tests/ -m e2e -v
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
@@ -199,6 +207,10 @@ jobs:
         with:
           cache-dependency-glob: "uv.lock"
           cache-suffix: ffmpeg-snapshotter-e2e
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.apt-archives
@@ -213,7 +225,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-archives
       - run: ffmpeg -version && ffprobe -version
       - run:
-          uv run pytest ffmpeg_snapshotter/tests/ -m e2e -v
+          uv run --no-sync pytest ffmpeg_snapshotter/tests/ -m e2e -v
           --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
@@ -253,6 +265,10 @@ jobs:
       # tag. The base version comes from the Dockerfile's BUILD_FROM
       # default (renovate tracks it there) — no second copy here to
       # drift.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -275,8 +291,8 @@ jobs:
       # autouse ``_compose_stack`` fixture in conftest.py; nothing extra
       # to bring up here.
       - run:
-          uv run pytest dashboard_entity_proxy/tests/integration/ -m e2e -v -s
-          --junit-xml=junit.xml
+          uv run --no-sync pytest dashboard_entity_proxy/tests/integration/ -m
+          e2e -v -s --junit-xml=junit.xml
       - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: ${{ !cancelled() }}
         with:
@@ -311,6 +327,10 @@ jobs:
       # docker build. The base version comes from the Dockerfile's
       # BUILD_FROM default (renovate tracks it there) — no second copy
       # here to drift.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -322,7 +342,7 @@ jobs:
           cache-from: type=gha,scope=container-hooks-e2e
           cache-to: type=gha,scope=container-hooks-e2e,mode=max
       - run:
-          uv run pytest container_hooks/tests/integration/ -m e2e -v
+          uv run --no-sync pytest container_hooks/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           CONTAINER_HOOKS_IMAGE: container_hooks_e2e:ci
@@ -368,6 +388,10 @@ jobs:
       # 26.04's shipped AppArmor profile for `mosquitto` denies reads under
       # `/tmp` but permits `/etc/mosquitto/**`, so the fixture-written
       # mosquitto.conf lands somewhere the confined broker can read it.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
@@ -390,7 +414,7 @@ jobs:
           cache-from: type=gha,scope=signalk-bridge-e2e
           cache-to: type=gha,scope=signalk-bridge-e2e,mode=max
       - run:
-          uv run pytest signalk_bridge/tests/integration/ -m e2e -v
+          uv run --no-sync pytest signalk_bridge/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           SIGNALK_BRIDGE_IMAGE: signalk_bridge_e2e:ci
@@ -426,6 +450,10 @@ jobs:
       # The base version comes from the Dockerfile's BUILD_FROM default (the pin
       # renovate tracks) -- no second copy here to drift. Surfaced to the test via
       # ``SIGNALK_SERVER_IMAGE`` so it skips its own build.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -437,7 +465,7 @@ jobs:
           cache-from: type=gha,scope=signalk-e2e
           cache-to: type=gha,scope=signalk-e2e,mode=max
       - run:
-          uv run pytest signalk/tests/integration/ -m e2e -v
+          uv run --no-sync pytest signalk/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           SIGNALK_SERVER_IMAGE: signalk_e2e:ci
@@ -472,6 +500,10 @@ jobs:
       # so the apk layer is reused across runs. The base version comes from the
       # Dockerfile's BUILD_FROM default (renovate tracks it there). Surfaced to
       # the test via ``DASHBOARD_WEB_PROXY_IMAGE`` so it skips its own build.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -483,8 +515,8 @@ jobs:
           cache-from: type=gha,scope=dashboard-web-proxy-e2e
           cache-to: type=gha,scope=dashboard-web-proxy-e2e,mode=max
       - run:
-          uv run pytest dashboard_web_proxy/tests/integration/ -m e2e -v
-          --junit-xml=junit.xml
+          uv run --no-sync pytest dashboard_web_proxy/tests/integration/ -m e2e
+          -v --junit-xml=junit.xml
         env:
           DASHBOARD_WEB_PROXY_IMAGE: dwp_e2e:ci
       - uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
@@ -528,6 +560,10 @@ jobs:
       # 26.04's shipped AppArmor profile for `mosquitto` denies reads under
       # `/tmp` but permits `/etc/mosquitto/**`, so the fixture-written
       # mosquitto.conf lands somewhere the confined broker can read it.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - name: Install Mosquitto broker
         run: |
           sudo apt-get update
@@ -551,7 +587,7 @@ jobs:
           cache-from: type=gha,scope=halpi2-power-e2e
           cache-to: type=gha,scope=halpi2-power-e2e,mode=max
       - run:
-          uv run pytest halpi2_power/tests/integration/ -m e2e -v
+          uv run --no-sync pytest halpi2_power/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           HALPI2_POWER_IMAGE: halpi2_power_e2e:ci
@@ -586,6 +622,10 @@ jobs:
       # so the apk layer is reused across runs. The base version comes from the
       # Dockerfile's BUILD_FROM default (renovate tracks it there). Surfaced to
       # the test via ``DIREWOLF_IGATE_IMAGE`` so it skips its own build.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -597,7 +637,7 @@ jobs:
           cache-from: type=gha,scope=direwolf-igate-e2e
           cache-to: type=gha,scope=direwolf-igate-e2e,mode=max
       - run:
-          uv run pytest direwolf_igate/tests/integration/ -m e2e -v
+          uv run --no-sync pytest direwolf_igate/tests/integration/ -m e2e -v
           --junit-xml=junit.xml
         env:
           DIREWOLF_IGATE_IMAGE: direwolf_igate_e2e:ci
@@ -697,6 +737,10 @@ jobs:
       # Pull every test job's data file into the repo root so `coverage
       # combine` (and the subsequent source re-analysis) find them and the
       # sources.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install the locked environment
+        run: uv sync --group dev --frozen
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
@@ -706,19 +750,19 @@ jobs:
           MODE: ${{ needs.discover.outputs.mode }}
         run: |
           set -euo pipefail
-          uv run coverage combine
-          uv run coverage json -q -o coverage.json
+          uv run --no-sync coverage combine
+          uv run --no-sync coverage json -q -o coverage.json
           # Renders the full Markdown report: a TOTAL row per grouping
           # (by module, by file) with each breakdown collapsed beneath.
-          uv run python scripts/coverage_summary.py coverage.json \
+          uv run --no-sync python scripts/coverage_summary.py coverage.json \
             | tee coverage.md >> "$GITHUB_STEP_SUMMARY"
           # Only enforce the floor when every test job ran (``smoke-all``);
           # in ``smoke-changed`` mode the combined total is incomplete by
           # design and a hard threshold would be a misleading red flag.
           if [ "$MODE" = "smoke-all" ]; then
-            uv run coverage report --fail-under=30
+            uv run --no-sync coverage report --fail-under=30
           else
-            uv run coverage report
+            uv run --no-sync coverage report
           fi
       - name: Sticky PR comment
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
