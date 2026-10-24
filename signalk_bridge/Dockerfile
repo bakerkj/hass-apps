@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
       python3=3.14.8-r0 \
       py3-aiohttp=3.13.5-r0 \
       py3-websockets=16.0-r1 \
-      uv=0.11.19-r0
+      uv=0.11.19-r1
 
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv.
 # aiomqtt 2.x wraps paho-mqtt 2.x -- pin both explicitly for reproducibility
