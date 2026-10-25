@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.61](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.60...frigate_compressor-v0.0.61) (2026-10-25)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency ffmpeg to v8.1.3-r0 ([#602](https://github.com/bakerkj/hass-apps/issues/602)) ([1010a60](https://github.com/bakerkj/hass-apps/commit/1010a60ad6a2c2adb6c734ac4dd8ae5f4b86c82c))
+
 ## [0.0.60](https://github.com/bakerkj/hass-apps/compare/frigate_compressor-v0.0.59...frigate_compressor-v0.0.60) (2026-10-19)
 
 
