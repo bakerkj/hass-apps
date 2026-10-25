@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.17](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.16...ffmpeg_snapshotter-v0.8.17) (2026-10-25)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+* **deps:** update dependency ffmpeg to v8.1.3-r0 ([#602](https://github.com/bakerkj/hass-apps/issues/602)) ([1010a60](https://github.com/bakerkj/hass-apps/commit/1010a60ad6a2c2adb6c734ac4dd8ae5f4b86c82c))
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+
 ## [0.8.16](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.15...ffmpeg_snapshotter-v0.8.16) (2026-08-08)
 
 
