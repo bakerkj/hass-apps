@@ -17,7 +17,7 @@ LABEL \
 # --repository scopes the alternate repo to the second apk call only, so
 # future stable updates can't accidentally come from edge.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      python3=3.14.8-r0 \
+      python3=3.14.10-r1 \
       uv=0.11.19-r1 \
  && apk add \
       --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
