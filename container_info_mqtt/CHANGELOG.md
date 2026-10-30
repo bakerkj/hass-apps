@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.30](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.29...container_info_mqtt-v0.1.30) (2026-10-30)
+
+
+### Miscellaneous Chores
+
+* **deps:** combined apk bump — python3 3.14.10-r1 + curl 8.23.0-r0 ([#614](https://github.com/bakerkj/hass-apps/issues/614)) ([19198ca](https://github.com/bakerkj/hass-apps/commit/19198caafa73aefa62b681751ce6b3c29a883f46))
+* **deps:** update alpine apk packages ([#589](https://github.com/bakerkj/hass-apps/issues/589)) ([06f2736](https://github.com/bakerkj/hass-apps/commit/06f2736b513f20a146783b8d8fb4a13b2bfff52c))
+
 ## [0.1.29](https://github.com/bakerkj/hass-apps/compare/container_info_mqtt-v0.1.28...container_info_mqtt-v0.1.29) (2026-10-19)
 
 
