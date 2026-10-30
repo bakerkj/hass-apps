@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.18](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.17...ffmpeg_snapshotter-v0.8.18) (2026-10-30)
+
+
+### Miscellaneous Chores
+
+* **deps:** combined apk bump — python3 3.14.10-r1 + curl 8.23.0-r0 ([#614](https://github.com/bakerkj/hass-apps/issues/614)) ([19198ca](https://github.com/bakerkj/hass-apps/commit/19198caafa73aefa62b681751ce6b3c29a883f46))
+
 ## [0.8.17](https://github.com/bakerkj/hass-apps/compare/ffmpeg_snapshotter-v0.8.16...ffmpeg_snapshotter-v0.8.17) (2026-10-25)
 
 
