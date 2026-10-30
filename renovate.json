@@ -169,8 +169,8 @@
       "groupName": "alpine apk packages"
     },
     {
-      "description": "Group ``.python-version`` (depName ``python``, docker datasource) with the Dockerfile ``python3=X.Y.Z-rN`` apk pins (depName ``python3``, custom.aports) so the two sources of the Python runtime bump together as one PR. Must sit after ``alpine apk packages`` above; last-match-wins.",
-      "matchDepNames": ["python", "python3"],
+      "description": "Group ``.python-version``, ``python3=`` apk pins, and all ``py3-*`` apk packages. Alpine's resolver couples ``py3-*`` to python3's current ``-rN`` via a ``python3~X.Y`` dep, so independent PRs red each other on python rebuilds. Must sit after ``alpine apk packages``; last-match-wins.",
+      "matchDepNames": ["python", "python3", "/^py3-/"],
       "matchDatasources": ["docker", "custom.aports"],
       "groupName": "python runtime"
     },
