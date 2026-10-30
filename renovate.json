@@ -214,7 +214,7 @@
       "matchDepNames": ["python", "python3"],
       "matchDatasources": ["docker", "custom.aports"],
       "allowedVersions": "<3.15",
-      "minimumReleaseAge": "3 days"
+      "minimumReleaseAge": "2 days"
     },
     {
       "description": "Override the helpers:pinGitHubActionDigestsToSemver preset's semver versioning for home-assistant/builder, which moved from semver tags (1.x-7.x) to calver tags (2026.06.0+). With semver versioning, the calver tags don't parse and Renovate proposes 'upgrades' to the old pre-calver semver tags (this surfaced as the bogus #246 and #248 PRs).",
