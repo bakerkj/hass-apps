@@ -210,10 +210,10 @@
       "enabled": false
     },
     {
-      "description": "Hold the Python runtime on the 3.14 line (Alpine 3.24's). Covers BOTH ``python`` and ``python3`` so an Alpine 3.15 publish ahead of uv support can't move the apk pins alone while ``.python-version`` stays at 3.14 (cf. #409). minimumReleaseAge gives uv time to catch up. ``<3.15`` sorts correctly against ``3.14.8-r0`` under custom.aports' loose versioning.",
+      "description": "Hold the Python runtime on the 3.14 line (Alpine 3.24's). Covers BOTH ``python`` and ``python3`` so an Alpine 3.15 publish ahead of uv support can't move the apk pins alone while ``.python-version`` stays at 3.14 (cf. #409). minimumReleaseAge gives uv time to catch up. Range form (``<3.15``) falls back to npm semver which reads ``3.14.10-r1`` as a prerelease and silently filters every apk bump out; the regex form matches ``3.14.<anything>`` directly and sidesteps that.",
       "matchDepNames": ["python", "python3"],
       "matchDatasources": ["docker", "custom.aports"],
-      "allowedVersions": "<3.15",
+      "allowedVersions": "/^3\\.14\\./",
       "minimumReleaseAge": "2 days"
     },
     {
