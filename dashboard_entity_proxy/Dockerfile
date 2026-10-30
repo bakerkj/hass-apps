@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/var/cache/apk apk add \
   nginx=1.30.6-r0 \
   nginx-mod-http-brotli=1.30.6-r0 \
   nginx-mod-http-zstd=1.30.6-r0 \
-  python3=3.14.8-r0 \
+  python3=3.14.10-r1 \
   py3-aiohttp=3.13.5-r0 \
   py3-humanfriendly=10.0-r7 \
   py3-voluptuous=0.15.2-r1 \

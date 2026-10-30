@@ -77,9 +77,9 @@ LABEL \
 # Pin every apk to a concrete Alpine 3.24 version so renovate's alpine_3_23
 # custom manager (see renovate.json) can bump them.
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-      python3=3.14.8-r0 \
+      python3=3.14.10-r1 \
       py3-paho-mqtt=1.6.1-r4 \
-      curl=8.22.0-r0
+      curl=8.23.0-r0
 
 # halpid resolves the group for its API socket via a hardcoded getgrnam("halpid")
 # in main.rs -- it is NOT the configurable `socket-group` (that one only covers
