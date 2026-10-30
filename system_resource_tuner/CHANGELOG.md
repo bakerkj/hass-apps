@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.0.34](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.33...system_resource_tuner-v0.0.34) (2026-10-30)
+
+
+### Miscellaneous Chores
+
+* **deps:** combined apk bump — python3 3.14.10-r1 + curl 8.23.0-r0 ([#614](https://github.com/bakerkj/hass-apps/issues/614)) ([19198ca](https://github.com/bakerkj/hass-apps/commit/19198caafa73aefa62b681751ce6b3c29a883f46))
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+* **deps:** update dependency python3 to v3.14.7-r0 ([#451](https://github.com/bakerkj/hass-apps/issues/451)) ([dccea21](https://github.com/bakerkj/hass-apps/commit/dccea21b978d96bc394dc60e21f3ff6c48116636))
+* **deps:** update dependency python3 to v3.14.7-r1 ([#468](https://github.com/bakerkj/hass-apps/issues/468)) ([0eaea96](https://github.com/bakerkj/hass-apps/commit/0eaea9631fbc1facb14fb451e9efc7effdd2ec9f))
+* **deps:** update dependency uv to v0.11.19-r1 ([#597](https://github.com/bakerkj/hass-apps/issues/597)) ([cdafe94](https://github.com/bakerkj/hass-apps/commit/cdafe947cb4ea9eed07f1cd7b8eec2ca8ddf6ed2))
+
 ## [0.0.33](https://github.com/bakerkj/hass-apps/compare/system_resource_tuner-v0.0.32...system_resource_tuner-v0.0.33) (2026-07-24)
 
 
