@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.20...birdnet_audio_stream-v0.1.21) (2026-10-30)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency ffmpeg to v8.1.3-r0 ([#602](https://github.com/bakerkj/hass-apps/issues/602)) ([1010a60](https://github.com/bakerkj/hass-apps/commit/1010a60ad6a2c2adb6c734ac4dd8ae5f4b86c82c))
+
 ## [0.1.20](https://github.com/bakerkj/hass-apps/compare/birdnet_audio_stream-v0.1.19...birdnet_audio_stream-v0.1.20) (2026-10-19)
 
 
