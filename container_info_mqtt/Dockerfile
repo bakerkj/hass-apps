@@ -12,7 +12,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  docker-cli=29.9.2-r0 \
+  docker-cli=29.9.3-r0 \
   py3-paho-mqtt=1.6.1-r4 \
   python3=3.14.10-r1
 
