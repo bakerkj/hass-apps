@@ -1,5 +1,5 @@
 {
-  "birdnet_audio_stream": "0.1.20",
+  "birdnet_audio_stream": "0.1.21",
   "container_hooks": "0.1.6",
   "container_info_mqtt": "0.1.29",
   "dashboard_entity_proxy": "0.1.5",
