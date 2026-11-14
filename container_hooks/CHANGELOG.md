@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.7](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.6...container_hooks-v0.1.7) (2026-11-14)
+
+
+### Miscellaneous Chores
+
+* **deps:** combined apk bump — python3 3.14.10-r1 + curl 8.23.0-r0 ([#614](https://github.com/bakerkj/hass-apps/issues/614)) ([19198ca](https://github.com/bakerkj/hass-apps/commit/19198caafa73aefa62b681751ce6b3c29a883f46))
+* **deps:** update alpine apk packages ([#589](https://github.com/bakerkj/hass-apps/issues/589)) ([06f2736](https://github.com/bakerkj/hass-apps/commit/06f2736b513f20a146783b8d8fb4a13b2bfff52c))
+* **deps:** update alpine apk packages ([#639](https://github.com/bakerkj/hass-apps/issues/639)) ([89edde4](https://github.com/bakerkj/hass-apps/commit/89edde4ac43864b61eed176c16d6185937aa3238))
+* **deps:** update dependency docker-cli to v29.9.3-r0 ([#629](https://github.com/bakerkj/hass-apps/issues/629)) ([9566bec](https://github.com/bakerkj/hass-apps/commit/9566becb23fd7eae9224cabf26c5822e02e04ca5))
+* **deps:** update dependency uv to v0.11.19-r1 ([#597](https://github.com/bakerkj/hass-apps/issues/597)) ([cdafe94](https://github.com/bakerkj/hass-apps/commit/cdafe947cb4ea9eed07f1cd7b8eec2ca8ddf6ed2))
+
 ## [0.1.6](https://github.com/bakerkj/hass-apps/compare/container_hooks-v0.1.5...container_hooks-v0.1.6) (2026-10-19)
 
 
