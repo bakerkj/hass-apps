@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.6](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.5...dashboard_web_proxy-v0.0.6) (2026-11-20)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages ([#589](https://github.com/bakerkj/hass-apps/issues/589)) ([06f2736](https://github.com/bakerkj/hass-apps/commit/06f2736b513f20a146783b8d8fb4a13b2bfff52c))
+* **deps:** update alpine apk packages to v1.30.7-r0 ([#647](https://github.com/bakerkj/hass-apps/issues/647)) ([f6f7fc0](https://github.com/bakerkj/hass-apps/commit/f6f7fc056f31b08433db2384cc46bb7b31f7f44f))
+* **deps:** update dependency ca-certificates to v20261020 ([#585](https://github.com/bakerkj/hass-apps/issues/585)) ([6dcab0b](https://github.com/bakerkj/hass-apps/commit/6dcab0b8456ea5eca0cabf3d1f730c7a628e892b))
+
 ## [0.0.5](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.4...dashboard_web_proxy-v0.0.5) (2026-09-19)
 
 
