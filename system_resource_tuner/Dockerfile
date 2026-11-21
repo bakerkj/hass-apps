@@ -13,7 +13,7 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   python3=3.14.10-r1 \
-  py3-pip=26.1.2-r0 \
+  py3-pip=26.1.2-r1 \
   uv=0.11.19-r2
 RUN --mount=type=cache,target=/root/.cache/uv \
   uv pip install --system --break-system-packages \
