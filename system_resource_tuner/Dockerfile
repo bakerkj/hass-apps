@@ -12,7 +12,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  python3=3.14.10-r1 \
+  python3=3.14.10-r2 \
   py3-pip=26.1.2-r1 \
   uv=0.11.19-r2
 RUN --mount=type=cache,target=/root/.cache/uv \

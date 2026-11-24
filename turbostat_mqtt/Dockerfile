@@ -15,7 +15,7 @@ LABEL \
 RUN --mount=type=cache,target=/var/cache/apk apk add \
       cpupower=7.1.5-r0 \
       linux-tools=7.1.5-r0 \
-      python3=3.14.10-r1 \
+      python3=3.14.10-r2 \
       util-linux=2.42.3-r1 \
       uv=0.11.19-r2
 

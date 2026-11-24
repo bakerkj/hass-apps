@@ -13,7 +13,7 @@ LABEL \
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
   docker-cli=29.9.3-r1 \
-  python3=3.14.10-r1 \
+  python3=3.14.10-r2 \
   py3-pip=26.1.2-r1 \
   uv=0.11.19-r2
 # aiomqtt is not packaged in any Alpine branch, so it comes in via uv.
