@@ -15,7 +15,7 @@ LABEL \
     org.opencontainers.image.licenses="MIT"
 
 RUN --mount=type=cache,target=/var/cache/apk apk add \
-  nginx=1.30.7-r0 \
+  nginx=1.30.8-r0 \
   ca-certificates=20261020-r0
 
 COPY LICENSE.md /LICENSE
