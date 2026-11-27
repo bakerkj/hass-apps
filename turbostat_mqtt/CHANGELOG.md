@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.0.43](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.42...turbostat_mqtt-v0.0.43) (2026-11-27)
+
+
+### Miscellaneous Chores
+
+* **deps:** combined apk bump — python3 3.14.10-r1 + curl 8.23.0-r0 ([#614](https://github.com/bakerkj/hass-apps/issues/614)) ([19198ca](https://github.com/bakerkj/hass-apps/commit/19198caafa73aefa62b681751ce6b3c29a883f46))
+* **deps:** update alpine apk packages ([#544](https://github.com/bakerkj/hass-apps/issues/544)) ([130ecf0](https://github.com/bakerkj/hass-apps/commit/130ecf06be12e5b15a9efcc6c65bf73763b22ca7))
+* **deps:** update alpine apk packages ([#639](https://github.com/bakerkj/hass-apps/issues/639)) ([89edde4](https://github.com/bakerkj/hass-apps/commit/89edde4ac43864b61eed176c16d6185937aa3238))
+* **deps:** update dependency python3 to v3.14.10-r2 ([#658](https://github.com/bakerkj/hass-apps/issues/658)) ([d25e12f](https://github.com/bakerkj/hass-apps/commit/d25e12ffeb51e8830a1eca3c787e19de6353b63f))
+* **deps:** update dependency uv to v0.11.19-r1 ([#597](https://github.com/bakerkj/hass-apps/issues/597)) ([cdafe94](https://github.com/bakerkj/hass-apps/commit/cdafe947cb4ea9eed07f1cd7b8eec2ca8ddf6ed2))
+
 ## [0.0.42](https://github.com/bakerkj/hass-apps/compare/turbostat_mqtt-v0.0.41...turbostat_mqtt-v0.0.42) (2026-09-05)
 
 
