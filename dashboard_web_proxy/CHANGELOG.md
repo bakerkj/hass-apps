@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.6...dashboard_web_proxy-v0.0.7) (2026-11-27)
+
+
+### Miscellaneous Chores
+
+* **deps:** update alpine apk packages to v1.30.8-r0 ([#661](https://github.com/bakerkj/hass-apps/issues/661)) ([99a0ca9](https://github.com/bakerkj/hass-apps/commit/99a0ca95574092403c535094ade2c1e2fa1e2e00))
+
 ## [0.0.6](https://github.com/bakerkj/hass-apps/compare/dashboard_web_proxy-v0.0.5...dashboard_web_proxy-v0.0.6) (2026-11-20)
 
 
